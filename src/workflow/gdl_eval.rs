@@ -249,6 +249,16 @@ pub(crate) mod runner {
                 [],
             )
             .unwrap();
+        // F8: one corpus row carrying the ticket — the triage retrieval
+        // must return a hit for must-resolve seeds to resolve. Seeded
+        // BEFORE the `before` snapshot, so the knowledge delta stays 0.
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO knowledge(domain, title, content, flagged) VALUES ('acme', 'Test playbook', ?1, 0)",
+                rusqlite::params![format!("Test playbook covering the ticket: {ticket}")],
+            )
+            .unwrap();
         let before = BackendSnapshot::measure(&pool.get().unwrap(), 1).unwrap();
         let host = Arc::new(SqliteWorkflowHost::new(pool.clone()));
         let provider = LoopbackProvider::new("loopback", script);
@@ -492,6 +502,16 @@ mod tests {
                 "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
                  VALUES ('acme', 'troubleshoot', '{}', 0, 'active', 1, 1)",
                 [],
+            )
+            .unwrap();
+        // F8: the corpus row the happy script's citations resolve against.
+        // Seeded BEFORE the `before` snapshot, so the knowledge delta
+        // stays 0 (the happy path must not grow the tables).
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO knowledge(domain, title, content, flagged) VALUES ('acme', 'Test playbook', ?1, 0)",
+                rusqlite::params!["Test playbook covering the ticket: rebuild is slow"],
             )
             .unwrap();
         Substrate { tmp, pool }

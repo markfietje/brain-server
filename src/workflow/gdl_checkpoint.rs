@@ -398,7 +398,31 @@ impl GateRecord {
         }
         if let Some(artifact) = &self.artifact {
             let (_, normalized) = super::accept_ungated(self.phase, &text);
-            if self.verdict != "pass" || normalized.as_ref() != Some(artifact) {
+            // The triage artifact carries the server stamp
+            // (`confirmed_matches`) — the driver's deterministic record of
+            // the gate-verified citation, not the model's bytes. Compare
+            // the model-determined bytes, then check the stamp invariant
+            // (stamp == the committed citation set).
+            let model_bytes_match = match self.phase {
+                super::GdlPhase::Triage => {
+                    let committed: Option<super::TriageArtifact> =
+                        serde_json::from_str(artifact).ok();
+                    let receipt: Option<super::TriageArtifact> = normalized
+                        .as_ref()
+                        .and_then(|s| serde_json::from_str(s).ok());
+                    match (committed, receipt) {
+                        (Some(mut c), Some(mut r)) => {
+                            let stamped = c.confirmed_matches.clone();
+                            c.confirmed_matches = None;
+                            r.confirmed_matches = None;
+                            c == r && stamped.as_ref() == Some(&c.search_hits)
+                        }
+                        _ => false,
+                    }
+                }
+                _ => normalized.as_ref() == Some(artifact),
+            };
+            if self.verdict != "pass" || !model_bytes_match {
                 return Err(persist_error("GDL gate/receipt artifact mismatch"));
             }
         } else if !matches!(self.verdict.as_str(), "route" | "fail") {

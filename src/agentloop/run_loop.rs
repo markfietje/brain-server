@@ -2297,7 +2297,8 @@ mod tests {
         let requests = f.provider.requests();
         assert_eq!(requests.len(), 2);
         // The context projection frames user rows as
-        // "Source: user input\n{shaped}" — the pin is on the input bytes.
+        // wrap_fenced("Source: user input\n{shaped}") — the pin is on the
+        // input bytes riding inside the fence.
         let saw_user = |r: &ProviderRequest, input: &str| {
             let framed = format!("Source: user input\n{input}");
             r.messages
@@ -3848,7 +3849,17 @@ mod tests {
 
     #[test]
     fn r1_exchanges_beyond_replay_cap_keep_rows_and_outbox() {
-        let f = fixture(vec![scripted_text("first"), scripted_text("second")]);
+        // Compaction stays OFF here on purpose: fenced replay rows carry
+        // their honest wire weight into the pressure meter, so 500 of them
+        // would trip compaction and consume a scripted turn (the retention
+        // property under test is independent of compaction, which owns
+        // its dedicated pins). The knob is the product's own switch.
+        let mut config = LoopConfig::default();
+        config.compaction.just_before_call = false;
+        let f = fixture_with(
+            vec![scripted_text("first"), scripted_text("second")],
+            config,
+        );
         for n in 0..session_log::REPLAY_CAP {
             session_log::append(
                 &f.pool.get().unwrap(),
@@ -4129,6 +4140,13 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_str(&refused[0].payload_json).unwrap();
         assert_eq!(payload["ok"], serde_json::json!(false));
         assert!(payload["output"].as_str().unwrap().contains("unknown tool"));
+    }
+
+    /// F17: the tool-output cap pinned by value. Truncation holds at any
+    /// cap; the literal IS the ceiling the loop enforces by default.
+    #[test]
+    fn tool_output_cap_is_pinned_by_value() {
+        assert_eq!(TOOL_OUTPUT_CAP, 16_384);
     }
 
     #[test]
@@ -4734,7 +4752,11 @@ mod tests {
         for message in &requests[0].messages {
             assert!(!message.text().contains("synthetic@example.test"));
             assert!(message.text().contains("redacted:email"));
-            assert!(!message.text().contains(crate::fence::FENCE_END));
+            // F7: the summary call replays the same user rows through the
+            // same projection — fenced like every other replayed source,
+            // with shaping intact underneath the fence.
+            assert!(message.text().starts_with(crate::fence::FENCE_BEGIN));
+            assert!(message.text().contains(crate::fence::FENCE_END));
         }
         // The log was never rewritten: every seeded row still replays, the
         // compaction event appended after them.
@@ -4766,7 +4788,7 @@ mod tests {
         assert_eq!(&requests[1].messages[1..], expected.as_slice());
         assert_eq!(
             requests[1].messages.last().unwrap().text(),
-            "Source: user input\ncontinue"
+            crate::fence::wrap_fenced("Source: user input\ncontinue")
         );
         assert!(matches!(
             requests[1].messages[0],

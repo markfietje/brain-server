@@ -1919,7 +1919,7 @@ mod tests {
             assert_eq!(
                 request.messages,
                 vec![ChatMessage::User {
-                    text: format!("Source: user input\n{task}"),
+                    text: r2_framed("user input", task),
                 }],
                 "same display name must not select another invocation's task or outcome"
             );
@@ -1967,7 +1967,7 @@ mod tests {
         assert_eq!(
             requests[0].messages,
             vec![ChatMessage::User {
-                text: format!("Source: user input\n{}", child.task),
+                text: r2_framed("user input", &child.task),
             }]
         );
         let [
@@ -2097,7 +2097,7 @@ mod tests {
             requests[1].messages,
             vec![
                 ChatMessage::User {
-                    text: "Source: user input\nparent earlier task".into()
+                    text: r2_framed("user input", "parent earlier task"),
                 },
                 ChatMessage::Assistant {
                     text: r2_framed("historical assistant prose", "parent earlier answer"),
@@ -2116,7 +2116,7 @@ mod tests {
                     summary: r2_framed("delegated child output", "second projected outcome"),
                 },
                 ChatMessage::User {
-                    text: "Source: user input\nparent later task".into()
+                    text: r2_framed("user input", "parent later task"),
                 },
             ]
         );
@@ -2203,7 +2203,7 @@ mod tests {
             assert_eq!(
                 request.messages[0],
                 ChatMessage::User {
-                    text: format!("Source: user input\n{}", child.task),
+                    text: r2_framed("user input", &child.task),
                 }
             );
             let encoded = serde_json::to_string(request).unwrap();
@@ -2232,7 +2232,7 @@ mod tests {
         assert_eq!(
             old_task,
             &ChatMessage::User {
-                text: "Source: user input\nretained parent task".into()
+                text: r2_framed("user input", "retained parent task"),
             }
         );
         assert_eq!(
@@ -2251,7 +2251,7 @@ mod tests {
         assert_eq!(
             new_task,
             &ChatMessage::User {
-                text: "Source: user input\nrequested parent task".into()
+                text: r2_framed("user input", "requested parent task"),
             }
         );
         assert!(

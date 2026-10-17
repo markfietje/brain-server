@@ -344,10 +344,10 @@ pub(crate) mod tests {
     const OP_TOKEN: &str = "r10-op-token";
 
     const INTAKE_JSON: &str = r#"{"is_not":{"what":{"is":"PERC H740P write-cache write-through","is_not":"read cache"},"where":{"is":"node-042 RAID-10 VDs","is_not":"node-041"},"when":{"is":"since 03:12 during rebuild","is_not":"before 03:12"},"extent":{"is":"VD 5 only","is_not":"all VDs"}},"telemetry_refs":["tsr://node-042","sel://events"],"what_changed":"fw 2.10 flashed last week","known_good":"node-041 same fw"}"#;
-    const TRIAGE_JSON: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["P-STORAGE-0104"],"verdict":"accept","acuity_band":"GREEN","esi_level":4,"care_setting":"in_person_primary","red_flag":{"worst_case":"battery-induced data corruption during rebuild","ruled_out":true,"rule_out_basis":["test:racadm battery state reports Failed"],"first_would_miss_impact":"write-cache loss corrupts VD 5"}}"#;
-    const HYPOTHESIZE_JSON: &str = r#"{"hypotheses":[{"statement":"PERC battery dead","prediction":"racadm battery state reports Failed","sources":["actual:SEL event 0x42","test:racadm get storageservices.battery"],"confidence":0.7}]}"#;
+    const TRIAGE_JSON: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["kb:1"],"verdict":"accept","acuity_band":"GREEN","esi_level":4,"care_setting":"in_person_primary","red_flag":{"worst_case":"battery-induced data corruption during rebuild","ruled_out":true,"rule_out_basis":["test:sel://events"],"first_would_miss_impact":"write-cache loss corrupts VD 5"}}"#;
+    const HYPOTHESIZE_JSON: &str = r#"{"hypotheses":[{"statement":"PERC battery dead","prediction":"racadm battery state reports Failed","sources":["actual:write-cache write-through","test:sel://events"],"confidence":0.7}]}"#;
     const PLAN_JSON: &str = r#"{"steps":[{"order":1,"kind":"check","skill_gate":"L1","description":"query battery state","command":"racadm get storageservices.battery","expected":"Ready","fail_action":2,"invasiveness":0,"justification":null},{"order":2,"kind":"action","skill_gate":"L2","description":"replace battery ring 3","command":"hw replace battery","expected":"battery Ready","fail_action":null,"invasiveness":2,"justification":null}],"verify_step":{"re_run":"rebuild rate on VD 5 under the customer load","pass_condition":">10%/h"},"dead_end":{"escalate_to":"eng-storage","required_evidence":["TSR","test log"]}}"#;
-    const ACT_JSON: &str = r#"{"rows":[{"order":1,"kind":"check","description":"query battery state","playbook_ref":"P-STORAGE-0104","variables":["battery state"],"expected":"Ready","actual":"Failed","verdict":"fail","evidence_ref":"TSR p.12","dtfvc":{"diagnose":"battery fault hypothesis","test":"racadm query","fix":null,"verify":"battery state readback matches Failed","capture":null},"invasiveness":0,"justification":null},{"order":2,"kind":"action","description":"replace battery ring 3","playbook_ref":"P-STORAGE-0104","variables":["battery"],"expected":"battery Ready","actual":"Ready","verdict":"pass","evidence_ref":"TSR p.13","dtfvc":{"diagnose":"battery fault confirmed by row 1","test":"racadm query post-replace","fix":"replaced battery ring 3","verify":"rebuild rate 14%/h","capture":"battery replacement row"},"invasiveness":2,"justification":null}],"complete":true}"#;
+    const ACT_JSON: &str = r#"{"rows":[{"order":1,"kind":"check","description":"query battery state","playbook_ref":"kb:1","variables":["battery state"],"expected":"Ready","actual":"Failed","verdict":"fail","evidence_ref":"tsr://node-042","dtfvc":{"diagnose":"battery fault hypothesis","test":"racadm query","fix":null,"verify":"battery state readback matches Failed","capture":null},"invasiveness":0,"justification":null},{"order":2,"kind":"action","description":"replace battery ring 3","playbook_ref":"kb:1","variables":["battery"],"expected":"battery Ready","actual":"Ready","verdict":"pass","evidence_ref":"sel://events","dtfvc":{"diagnose":"battery fault confirmed by row 1","test":"racadm query post-replace","fix":"replaced battery ring 3","verify":"rebuild rate 14%/h","capture":"battery replacement row"},"invasiveness":2,"justification":null}],"complete":true}"#;
     const VERIFY_PASS_JSON: &str = r#"{"re_run":"rebuild rate on VD 5 under the customer load","pass_condition":">10%/h","pass":true,"stability_window_min":15,"negative_check":true}"#;
     const RECHECK_PASS_JSON: &str =
         r#"{"contradicted":false,"reason":"no falsifier in the captured evidence"}"#;
@@ -371,6 +371,15 @@ pub(crate) mod tests {
             text_turn(VERIFY_PASS_JSON),
             text_turn(HANDOFF_JSON),
         ]
+    }
+
+    /// One corpus row carrying the ticket, so the triage retrieval
+    /// returns exactly one hit (kb:1) for the accept-driving launch. The
+    /// SQL lives in the KCS core (`seed_test_article`) — handlers call
+    /// the core, never SQL directly.
+    pub(crate) fn seed_kb(state: &AppState, ticket: &str) {
+        let conn = state.pool.get().unwrap();
+        crate::workflow::kcs::seed_test_article(&conn, "acme", ticket);
     }
 
     /// Opaque-mode state (the twokeys fixture shape): the operator bearer
@@ -503,6 +512,7 @@ pub(crate) mod tests {
     async fn gdl_pending_capture_remains_human_reviewed() {
         let f = fixture();
         let run_id = seed_run(&f.state, "acme");
+        seed_kb(&f.state, "perc battery dead on node-042");
         let addr = spawn_turns(happy_script()).await;
         let provider = pinned_adapter(addr);
         let (status, v) = body_bytes(
@@ -541,8 +551,8 @@ pub(crate) mod tests {
         // No-auto-publication, behaviorally.
         assert_eq!(
             knowledge_and_vec_counts(&conn).unwrap(),
-            (0, 0),
-            "no knowledge row was published"
+            (1, 0),
+            "no knowledge row was published — the single row is the seeded triage corpus"
         );
         // The chain carries the episode (denials AND the no-auto-publish row).
         assert!(crate::audit::verify_chain(&conn), "audit chain green");
@@ -572,6 +582,7 @@ pub(crate) mod tests {
                 .expect("configured profile");
             assert_eq!(profile.secret_root, root.path());
             let addr = rt.block_on(spawn_turns(happy_script()));
+            seed_kb(&f.state, "configured provider");
             let provider = pinned_adapter(addr);
             rt.block_on(async {
                 body_bytes(
@@ -597,6 +608,7 @@ pub(crate) mod tests {
     async fn gdl_fresh_troubleshoot_launch_law_is_unchanged() {
         let f = fixture();
         let run_id = seed_run(&f.state, "acme");
+        seed_kb(&f.state, "freshness");
         let addr = spawn_turns(happy_script()).await;
         let provider = pinned_adapter(addr);
         let body = launch_body("freshness", &format!("http://{addr}/v1/stream"));
@@ -642,6 +654,7 @@ pub(crate) mod tests {
     async fn route_verify_failure_hands_off_to_a_human() {
         let f = fixture();
         let run_id = seed_run(&f.state, "acme");
+        seed_kb(&f.state, "t");
         let mut script = vec![
             text_turn(INTAKE_JSON),
             text_turn(TRIAGE_JSON),
@@ -670,8 +683,8 @@ pub(crate) mod tests {
         let conn = f.state.pool.get().unwrap();
         assert_eq!(
             knowledge_and_vec_counts(&conn).unwrap().0,
-            0,
-            "a failed verify publishes nothing"
+            1,
+            "a failed verify publishes nothing — the single row is the seeded triage corpus"
         );
     }
 
@@ -682,6 +695,7 @@ pub(crate) mod tests {
     async fn gdl_deny_all_execution_and_empty_tool_registry_are_unchanged() {
         let f = fixture();
         let run_id = seed_run(&f.state, "acme");
+        seed_kb(&f.state, "t");
         let script = vec![
             tool_use_turn("c1", "definitely_not_registered"),
             // After the fail-closed refusal the exchange continues; the
@@ -1298,6 +1312,9 @@ mod conformance {
             let now = chrono::Utc::now().timestamp();
             let run_id = insert_fresh_troubleshoot_run(&conn, "acme", now).expect("seed fresh run");
             drop(conn);
+            // F8: the corpus row the pack's citations resolve against —
+            // seeded per case ticket (content carries the ticket verbatim).
+            super::tests::seed_kb(&state, &case.ticket);
             let addr = spawn_turns(case.turns.iter().map(|t| text_turn(t)).collect()).await;
             let provider: std::sync::Arc<dyn crate::agentloop::provider::LlmProvider> = {
                 let cfg = HttpProviderConfig {

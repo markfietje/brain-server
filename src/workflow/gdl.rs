@@ -429,7 +429,12 @@ pub(crate) fn red_flag_closes(rf: &RedFlagArtifact) -> bool {
 /// The red-flag gate (the triage duty's forcing function), mirroring the
 /// intake gate's shape: every refusal names its law, and the record is
 /// required — there is no bypass and no default-open posture.
-fn red_flag_gate(a: &RedFlagArtifact) -> Vec<String> {
+/// The red-flag record law. Shape (T12 vocabulary, T13 verify-class
+/// citation, T14 impact) plus resolution: every cited basis must
+/// resolve to server-held evidence. The universe is a parameter because
+/// the triage record and the handoff closing record resolve against
+/// different committed states; the gate itself is pure.
+fn red_flag_gate(a: &RedFlagArtifact, universe: &[String]) -> Vec<String> {
     let mut errors = Vec::new();
     if a.rule_out_basis.len() > MAX_RULE_OUT_BASIS {
         errors.push(err(
@@ -457,6 +462,24 @@ fn red_flag_gate(a: &RedFlagArtifact) -> Vec<String> {
              evidence required",
         ));
     }
+    // A cited basis that resolves nowhere is invention, whether or
+    // not the flag claims to close on it — unknown cited ids are named
+    // errors at the record that cites them.
+    for b in &a.rule_out_basis {
+        let resolves = b
+            .split_once(':')
+            .is_some_and(|(_, locator)| locator_resolves(locator, universe));
+        if !resolves {
+            errors.push(err(
+                "T13",
+                &format!(
+                    "rule-out basis {b:?} cites unknown evidence — a basis \
+                     must resolve to held evidence (ticket, declared \
+                     telemetry, retrieved knowledge, executed rows)"
+                ),
+            ));
+        }
+    }
     if a.first_would_miss_impact.trim().is_empty() {
         errors.push(err(
             "T14",
@@ -480,7 +503,10 @@ pub(crate) struct Hypothesis {
     pub sources: Vec<String>,
     /// The model's stated confidence, if any — recorded as typed
     /// `confidence` evidence (never trusted as confirmation: triangulation
-    /// is arbiter-computed from distinct sources).
+    /// is arbiter-computed from distinct sources). It is SUBJECTIVE
+    /// self-report, non-blocking by construction: no gate reads it, no
+    /// threshold binds it, and stating it (or omitting it) never advances
+    /// or stalls a case.
     #[serde(default)]
     pub confidence: Option<f64>,
 }
@@ -952,6 +978,14 @@ pub(crate) struct GdlCase {
     /// referral pipeline writes its row from it).
     #[serde(default)]
     pub back_referral: Option<BackReferralContract>,
+    /// The current pass's server retrieval (retrieval carrier, NOT checkpoint
+    /// state): set before the triage instruction is built, read by the
+    /// triage gate, never persisted — the durable record is the artifact's
+    /// server-stamped `confirmed_matches`. A stale value cannot survive a
+    /// pass boundary because checkpoints persist only through `apply` of
+    /// gated artifacts, and `apply` never touches this field.
+    #[serde(default)]
+    pub triage_search: Vec<KbHit>,
 }
 
 impl GdlCase {
@@ -970,6 +1004,7 @@ impl GdlCase {
             capture: None,
             closure: None,
             back_referral: None,
+            triage_search: Vec::new(),
         }
     }
 
@@ -1082,6 +1117,22 @@ fn intake_gate(a: &IntakeArtifact) -> Vec<String> {
              without a TSR is a destroyed diagnosis",
         ));
     }
+    // The declared evidence universe must be well-formed — every
+    // telemetry ref is a scheme://locator (tsr://, sel://, ...), never
+    // prose. Later citations resolve against these strings, so a prose
+    // "reference" would poison every resolution that touches it.
+    for r in &a.telemetry_refs {
+        if !r.contains("://") {
+            errors.push(err(
+                "L1",
+                &format!(
+                    "telemetry_ref {r:?} is not a locator — a captured \
+                     reference names its scheme (tsr://, sel://); prose is \
+                     not evidence"
+                ),
+            ));
+        }
+    }
     if a.what_changed.trim().is_empty() {
         errors.push(err(
             "L4",
@@ -1127,7 +1178,7 @@ fn intake_gate(a: &IntakeArtifact) -> Vec<String> {
 /// triage duty (ESI/MTS/ATA): an acuity classification, a disposition,
 /// the telehealth modality decision, and the red-flag forcing function —
 /// required at Triage exit in EVERY case, no bypass, no default.
-fn triage_gate(a: &TriageArtifact) -> Vec<String> {
+fn triage_gate(a: &TriageArtifact, case: &GdlCase) -> Vec<String> {
     let mut errors = Vec::new();
     if a.search_hits.len() > MAX_SEARCH_HITS {
         errors.push(err(
@@ -1153,6 +1204,46 @@ fn triage_gate(a: &TriageArtifact) -> Vec<String> {
             "L9",
             "accept with zero search hits — search-first is KCS step 1; a case \
              the knowledge layer does not cover escalates with the bundle",
+        ));
+    }
+    // No accept without a SERVER search hit. The model names
+    // candidates; the server ran the retrieval — an accept with zero
+    // retrieved hits is a claim the knowledge layer never saw.
+    if a.verdict == "accept" && case.triage_search.is_empty() {
+        errors.push(err(
+            "L9",
+            "accept with no server knowledge hits — the retrieval returned \
+             nothing for this ticket; search-first is KCS step 1, and a case \
+             the knowledge layer does not cover escalates with the bundle",
+        ));
+    }
+    // Every cited id must be one the server returned. A playbook
+    // string from the model's weights is an unknown cited id — named,
+    // never silently carried.
+    if a.verdict == "accept" {
+        let held: std::collections::BTreeSet<i64> =
+            case.triage_search.iter().map(|h| h.id).collect();
+        for hit in &a.search_hits {
+            let known = parse_kb_cite(hit).is_some_and(|id| held.contains(&id));
+            if !known {
+                errors.push(err(
+                    "L9",
+                    &format!(
+                        "unknown knowledge id {hit:?} — cite only the kb:{{id}} \
+                         ids the server retrieval returned for this case"
+                    ),
+                ));
+            }
+        }
+    }
+    // The confirmation record is server-owned. A model that writes
+    // the server's stamp is forging the durable record — omit it; the
+    // machine stamps the gate-verified citation after the pass.
+    if a.confirmed_matches.is_some() {
+        errors.push(err(
+            "L9",
+            "confirmed_matches is server-stamped — omit it; the machine \
+             records the gate-verified citation set",
         ));
     }
     if !matches!(a.verdict.as_str(), "accept" | "defer" | "unknown") {
@@ -1253,7 +1344,7 @@ fn triage_gate(a: &TriageArtifact) -> Vec<String> {
              before Triage exits",
         ));
     }
-    errors.extend(red_flag_gate(&a.red_flag));
+    errors.extend(red_flag_gate(&a.red_flag, &citation_universe(case)));
     errors
 }
 
@@ -1366,14 +1457,122 @@ fn kind_source(s: &str) -> Option<super::evidence::EvidenceKind> {
         .find(|k| k.prefix() == prefix)
 }
 
+// ── The triage retrieval (KCS step 1 as a server call) ───────────────
+
+/// One server-retrieved knowledge candidate. The ROW ID is the citation
+/// vocabulary (`kb:{id}`) — never a model-invented playbook string. The
+/// title rides the instruction beside its id so the model cites with
+/// context, not blind.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct KbHit {
+    pub id: i64,
+    pub title: String,
+}
+
+/// Render a citable knowledge id. Parsing is the strict inverse: lowercase
+/// `kb:` + a positive integer, nothing else — `KB:1`, `kb:1 ` and `kb:01`
+/// are unknown ids, not near-misses. (`kb:01` parses to 1 via `parse` —
+/// the leading zero rides through; identity is numeric, so `kb:01` and
+/// `kb:1` name the same row. Strictness here is about SHAPE, and the
+/// membership check against the retrieved set is what rejects strangers.)
+pub(crate) fn kb_cite(id: i64) -> String {
+    format!("kb:{id}")
+}
+
+pub(crate) fn parse_kb_cite(s: &str) -> Option<i64> {
+    s.strip_prefix("kb:")?
+        .parse::<i64>()
+        .ok()
+        .filter(|n| *n > 0)
+}
+
+/// The triage retrieval: a bounded LIKE over the run domain's unflagged,
+/// unexpired knowledge rows (the reuse-candidate seam), keyed by the ticket
+/// verbatim. Fail-open to empty — zero candidates refuse accept downstream,
+/// they never fail the case read. Callers persist nothing here; the hits
+/// ride the triage instruction and the gate, and the durable record is the
+/// artifact's server-stamped `confirmed_matches`.
+pub(crate) fn triage_knowledge_hits(conn: &Connection, domain: &str, ticket: &str) -> Vec<KbHit> {
+    let now = chrono::Utc::now().timestamp();
+    super::kcs::reuse_candidates(conn, domain, ticket, now)
+        .into_iter()
+        .map(|(id, title, _content)| KbHit {
+            id,
+            title: title.unwrap_or_default(),
+        })
+        .collect()
+}
+
+// ── Resolved locators (citations into held evidence) ─────────────────
+
+/// Minimum locator length. A 1–2 char locator matches nearly anything by
+/// containment, so without a floor `e` in `node` would "resolve" — the
+/// floor keeps resolution a real constraint, not a vowel check.
+pub(crate) const MIN_CITATION_LOCATOR_CHARS: usize = 3;
+
+/// The citation universe: every string the server holds that a locator may
+/// resolve against. Phase-relative BY CONSTRUCTION — only committed case
+/// state is read (the operator's ticket, intake declarations, the in-pass
+/// kb titles, committed test-log rows). Model artifacts of the CURRENT
+/// pass are never consulted: a citation cannot resolve against the pass
+/// that cites it. (The dead-end's `required_evidence` is deliberately
+/// absent: it names what an ESCALATION must carry, a forward requirement
+/// on the human receiver — not a citation of held evidence.)
+pub(crate) fn citation_universe(case: &GdlCase) -> Vec<String> {
+    let mut universe = vec![case.ticket.clone()];
+    if let Some(intake) = &case.intake {
+        universe.extend(intake.telemetry_refs.iter().cloned());
+        for row in [
+            &intake.is_not.what,
+            &intake.is_not.place,
+            &intake.is_not.time,
+            &intake.is_not.extent,
+        ] {
+            universe.push(row.is.clone());
+        }
+    }
+    universe.extend(case.triage_search.iter().map(|h| h.title.clone()));
+    for row in &case.test_log {
+        universe.push(row.description.clone());
+        universe.push(row.expected.clone());
+        if let Some(actual) = &row.actual {
+            universe.push(actual.clone());
+        }
+        universe.push(row.dtfvc.diagnose.clone());
+        universe.push(row.dtfvc.test.clone());
+        for text in [&row.dtfvc.verify, &row.dtfvc.capture]
+            .iter()
+            .filter_map(|slot| slot.as_deref())
+        {
+            universe.push(text.to_string());
+        }
+    }
+    universe
+}
+
+/// A locator resolves iff it is at least the floor long and appears
+/// (case-insensitive containment) in held evidence. Direction matters:
+/// the SHORT locator must sit inside the LONGER held string — held
+/// evidence is never asked to fit inside a citation.
+pub(crate) fn locator_resolves(locator: &str, universe: &[String]) -> bool {
+    let needle = locator.trim().to_lowercase();
+    if needle.chars().count() < MIN_CITATION_LOCATOR_CHARS {
+        return false;
+    }
+    universe.iter().any(|e| e.to_lowercase().contains(&needle))
+}
+
 /// Hypotheses: at least one live statement, each with a falsifiable
 /// prediction (a test that cannot fail proves nothing — the scientific
 /// core). Sources are kind-prefixed and bounded (≤8, each a
 /// `{kind}:{locator}`); a malformed source is a named L7 failure, never
 /// silently counted. Confirmation is arbiter-computed downstream, never
 /// claimed here (L7: one line = hypothesis, not root cause).
-fn hypothesize_gate(a: &HypothesizeArtifact) -> Vec<String> {
+fn hypothesize_gate(a: &HypothesizeArtifact, case: &GdlCase) -> Vec<String> {
     let mut errors = Vec::new();
+    // Built once: every source in every hypothesis resolves against the
+    // same committed state.
+    let universe = citation_universe(case);
     if a.hypotheses.len() > MAX_HYPOTHESES {
         errors.push(err(
             "A3",
@@ -1423,6 +1622,23 @@ fn hypothesize_gate(a: &HypothesizeArtifact) -> Vec<String> {
                          source is an independent kind-prefixed locator \
                          (kind:locator over the 8-kind evidence vocabulary, \
                          locator 1..=96 chars)"
+                    ),
+                ));
+            }
+        }
+        // A well-formed source that resolves nowhere is still
+        // invention — the locator must sit inside held evidence (ticket,
+        // declared telemetry, retrieved knowledge, executed rows).
+        for s in &h.sources {
+            let resolves = s
+                .split_once(':')
+                .is_some_and(|(_, locator)| locator_resolves(locator, &universe));
+            if !resolves {
+                errors.push(err(
+                    "L7",
+                    &format!(
+                        "hypothesis[{i}] source {s:?} cites unknown evidence — \
+                         a source locator must resolve to case-held evidence"
                     ),
                 ));
             }
@@ -1573,6 +1789,20 @@ fn plan_gate(a: &PlanArtifact) -> Vec<String> {
 /// and an evidence reference — unsupported evidence does not close.
 fn act_gate(a: &ActArtifact, case: &GdlCase) -> Vec<String> {
     let mut errors = Vec::new();
+    // Resolution sets, built once: the triage-committed playbook
+    // ids (the server-stamped record, not the model's claim) and the
+    // committed-state citation universe. `case.test_log` holds PRIOR
+    // passes only — the rows under gate cannot resolve against
+    // themselves.
+    let confirmed: std::collections::BTreeSet<&str> = case
+        .triage
+        .as_ref()
+        .and_then(|t| t.confirmed_matches.as_deref())
+        .unwrap_or_default()
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let universe = citation_universe(case);
     if a.rows.len() > MAX_TEST_LOG_ROWS {
         errors.push(err(
             "§4",
@@ -1727,6 +1957,39 @@ fn act_gate(a: &ActArtifact, case: &GdlCase) -> Vec<String> {
                 ),
             ));
         }
+        // A cited playbook must be one the case committed to at
+        // triage (the server-stamped set) — executing an uncommitted
+        // playbook is acting on evidence the case never saw. The
+        // experimental path (no ref + justification) is untouched.
+        if let Some(playbook) = r.playbook_ref.as_deref()
+            && !confirmed.contains(playbook)
+        {
+            errors.push(err(
+                "L9",
+                &format!(
+                    "row[{i}] cites unknown playbook {playbook:?} — execute \
+                     only a kb:{{id}} the triage search returned and the \
+                     case confirmed"
+                ),
+            ));
+        }
+        // A present evidence_ref must resolve to held evidence. An
+        // absent ref is governed by the A4 unevidenced rule above; a
+        // present-but-unresolvable one is invention with a citation
+        // attached, which is worse.
+        if let Some(evidence) = r.evidence_ref.as_deref()
+            && !evidence.trim().is_empty()
+            && !locator_resolves(evidence, &universe)
+        {
+            errors.push(err(
+                "A4",
+                &format!(
+                    "row[{i}] evidence_ref {evidence:?} resolves to no \
+                     server-held evidence — cite the ticket, declared \
+                     telemetry, retrieved knowledge, or an executed row"
+                ),
+            ));
+        }
     }
     errors
 }
@@ -1857,7 +2120,7 @@ pub(crate) fn parse_and_gate(
                         serde_json::to_string(&a).ok(),
                     );
                 }
-                let errors = triage_gate(&a);
+                let errors = triage_gate(&a, case);
                 let gate = if errors.is_empty() {
                     Gate::Pass
                 } else {
@@ -1873,7 +2136,7 @@ pub(crate) fn parse_and_gate(
         GdlPhase::Hypothesize => {
             match serde_json::from_value::<HypothesizeArtifact>(parsed.clone()) {
                 Ok(a) => {
-                    let errors = hypothesize_gate(&a);
+                    let errors = hypothesize_gate(&a, case);
                     let gate = if errors.is_empty() {
                         Gate::Pass
                     } else {
@@ -2146,6 +2409,34 @@ pub(crate) fn plan_strip_with_law(case: &GdlCase, corroboration_ablated: bool) -
     lines.join("\n")
 }
 
+/// The citable title width. Retrieved titles are untrusted
+/// operator-adjacent text riding the instruction; the clamp bounds the
+/// dynamic section (retrieval already caps at 5 hits).
+pub(crate) const KB_HIT_TITLE_CHARS: usize = 120;
+
+/// Render the server's retrieved candidates into the triage instruction —
+/// the ONLY vocabulary `search_hits` may cite. Zero hits renders the
+/// explicit defer direction, not silence: an accept with no server hit
+/// fails at the gate.
+fn triage_candidates_section(case: &GdlCase) -> String {
+    if case.triage_search.is_empty() {
+        return "SERVER KNOWLEDGE CANDIDATES: none — the retrieval returned \
+                nothing for this ticket. Verdict defer|unknown and escalate \
+                with the bundle; an accept with no server hit fails."
+            .to_string();
+    }
+    let mut lines = vec![
+        "SERVER KNOWLEDGE CANDIDATES (cite by id; accept requires ≥1 cited \
+         from THIS list — any other id fails as unknown):"
+            .to_string(),
+    ];
+    for h in &case.triage_search {
+        let title: String = h.title.chars().take(KB_HIT_TITLE_CHARS).collect();
+        lines.push(format!("{} — {title}", kb_cite(h.id)));
+    }
+    lines.join("\n")
+}
+
 /// [`phase_instruction_with_law`] under a selected corroboration law (the
 /// registered eval arm C selects the 1-source threshold; production
 /// always passes `false`).
@@ -2159,19 +2450,28 @@ pub(crate) fn phase_instruction_with_law(
         GdlPhase::Intake => {
             "Emit ONE JSON object: \
 {\"is_not\":{\"what\":{\"is\":\"..\",\"is_not\":\"..\"},\"where\":{..},\"when\":{..},\"extent\":{..}},\
-\"telemetry_refs\":[\"tsr://..\"],\"what_changed\":\".. or unknown\",\"known_good\":\".. or none available\"}"
+\"telemetry_refs\":[\"tsr://..\"],\"what_changed\":\".. or unknown\",\"known_good\":\".. or none available\"} — \
+telemetry_refs are scheme://locators (tsr://, sel://); prose is not a reference"
         }
         GdlPhase::Triage => {
             "Emit ONE JSON object: \
-{\"priority\":\"P1..P4\",\"stabilized\":bool,\"search_hits\":[\"playbook ids\"],\"verdict\":\"accept|defer|unknown\",\
+{\"priority\":\"P1..P4\",\"stabilized\":bool,\"search_hits\":[\"kb:{id} from SERVER KNOWLEDGE CANDIDATES\"],\"verdict\":\"accept|defer|unknown\",\
 \"acuity_band\":\"RED|ORANGE|YELLOW|GREEN|BLUE\",\"esi_level\":1,\"care_setting\":\"self_care|virtual_primary|in_person_primary|refer|facility|ed\",\
-\"modality_adequacy\":\"adequate|inadequate_in_person_required|unknown\",\"red_flag\":{\"worst_case\":\"..\",\"ruled_out\":false|true|\"partial\",\"rule_out_basis\":[\"..\"],\"first_would_miss_impact\":\"..\"}} — \
+\"modality_adequacy\":\"adequate|inadequate_in_person_required|unknown\",\"red_flag\":{\"worst_case\":\"..\",\"ruled_out\":false|true|\"partial\",\"rule_out_basis\":[\"kind:locator into held evidence\"],\"first_would_miss_impact\":\"..\"}} — \
+search_hits cites ONLY the kb:{id} ids listed under SERVER KNOWLEDGE CANDIDATES \
+(unknown ids fail); accept requires ≥1 cited; no candidates listed ⇒ verdict \
+defer|unknown and escalate; every rule_out_basis locator must resolve to \
+case-held evidence — \
 acuity band OR ESI level is required; modality_adequacy is required when the \
 encounter is telehealth; the red-flag record is always required"
         }
         GdlPhase::Hypothesize => {
             "Emit ONE JSON object: \
-{\"hypotheses\":[{\"statement\":\"..\",\"prediction\":\"falsifiable expectation\",\"sources\":[\"evidence refs\"]}]}"
+{\"hypotheses\":[{\"statement\":\"..\",\"prediction\":\"falsifiable expectation\",\"sources\":[\"kind:locator into held evidence\"]}]} — \
+every source locator must resolve to case-held evidence (unknown locators fail); \
+confidence, if stated, is the model's SUBJECTIVE self-report (0..1), recorded \
+but never trusted: it confirms nothing and blocks nothing; only ≥2 distinct \
+evidence kinds confirm, arbiter-computed"
         }
         GdlPhase::Plan => {
             "Emit ONE JSON object: \
@@ -2182,10 +2482,12 @@ encounter is telehealth; the red-flag record is always required"
         }
         GdlPhase::Act => {
             "Emit ONE JSON object: \
-{\"rows\":[{\"order\":1,\"kind\":\"check\",\"description\":\"..\",\"playbook_ref\":\"P-.. or null\",\
+{\"rows\":[{\"order\":1,\"kind\":\"check\",\"description\":\"..\",\"playbook_ref\":\"kb:{id} or null\",\
 \"variables\":[\"the one variable\"],\"expected\":\"..\",\"actual\":\"..\",\"verdict\":\"pass|fail|rejected|done|experimental\",\
-\"evidence_ref\":\"..\",\"dtfvc\":{\"diagnose\":\"..\",\"test\":\"..\",\"fix\":null,\"verify\":null,\"capture\":null},\
-\"invasiveness\":0,\"justification\":null}],\"complete\":bool}"
+\"evidence_ref\":\"locator into held evidence\",\"dtfvc\":{\"diagnose\":\"..\",\"test\":\"..\",\"fix\":null,\"verify\":null,\"capture\":null},\
+\"invasiveness\":0,\"justification\":null}],\"complete\":bool} — \
+playbook_ref cites a triage-confirmed kb:{id} (unknown ids fail); every \
+evidence_ref must resolve to held evidence"
         }
         GdlPhase::Verify => {
             "Emit ONE JSON object: \
@@ -2206,6 +2508,11 @@ no case resolves without a law-clean closure artifact; a referral-type handoff \
         format!("PHASE {}: produce this phase's artifact.", phase.as_str()),
         contract.to_string(),
     ];
+    // The server's retrieved candidates ride the triage instruction —
+    // the model cites from this list, never from its weights.
+    if phase == GdlPhase::Triage {
+        parts.push(triage_candidates_section(case));
+    }
     if !retry_errors.is_empty() {
         parts.push(format!(
             "Your previous artifact was REJECTED for: {}. Fix these — do not repeat them.",
@@ -2213,6 +2520,26 @@ no case resolves without a law-clean closure artifact; a referral-type handoff \
         ));
     }
     parts.join("\n\n")
+}
+
+/// Stamp the server-confirmed set onto a passed triage artifact.
+/// The gate proved `search_hits` ⊆ retrieved hits, so the stamp equals
+/// the citation — and any model-supplied `confirmed_matches` value is
+/// discarded here, never trusted. The stamp is the durable record the
+/// Act gate resolves playbook citations against.
+fn stamp_confirmed_matches(artifact_json: &str, case: &GdlCase) -> String {
+    let Ok(mut a) = serde_json::from_str::<TriageArtifact>(artifact_json) else {
+        return artifact_json.to_string();
+    };
+    let held: std::collections::BTreeSet<i64> = case.triage_search.iter().map(|h| h.id).collect();
+    a.confirmed_matches = Some(
+        a.search_hits
+            .iter()
+            .filter(|h| parse_kb_cite(h).is_some_and(|id| held.contains(&id)))
+            .cloned()
+            .collect(),
+    );
+    serde_json::to_string(&a).unwrap_or_else(|_| artifact_json.to_string())
 }
 
 /// The typed evidence a phase pass emits (the 8-type vocabulary's emit
@@ -2439,6 +2766,15 @@ pub(crate) struct GdlDriver {
     /// allowed-tool set is empty by construction — it reasons over the
     /// task text only, never executes.
     recheck: Option<RecheckDeps>,
+    /// The case's spending authority. Parents the adversarial re-check's
+    /// reservation, so recheck spend lands in the case ledger instead of a
+    /// throwaway per-delegation root (the old shape). Phase exchanges
+    /// deliberately keep their own ledgers: a shared multi-exchange
+    /// authority would let one incomplete stream poison the case root
+    /// (`mark_incomplete` closes the shared dispatch and fails every later
+    /// admission) — isolation there is the fail-closed posture, and the
+    /// recheck reservation is the only spend this authority parents.
+    case_budget: crate::agentloop::subagents::ExchangeBudget,
 }
 
 /// The one-delegation seam for the adversarial re-check.
@@ -2524,6 +2860,7 @@ impl GdlDriver {
             corroboration_ablated: false,
             adversarial_recheck,
             recheck: Some(recheck),
+            case_budget: crate::agentloop::subagents::ExchangeBudget::new(None),
         }
     }
 
@@ -2564,6 +2901,7 @@ impl GdlDriver {
             corroboration_ablated: false,
             adversarial_recheck: false,
             recheck: None,
+            case_budget: crate::agentloop::subagents::ExchangeBudget::new(None),
         }
     }
 
@@ -2685,7 +3023,8 @@ impl GdlDriver {
         cancel: &CancellationToken,
     ) -> AdversarialFinding {
         use crate::agentloop::subagents::{SubagentCaps, SubagentOutcome, SubagentSpec};
-        const TRUNCATE: usize = 512;
+        // No local shadow: the reason ceiling is ADVERSARIAL_REASON_CHARS,
+        // pinned by value — a second literal here would drift silently.
         let Some(deps) = self.recheck.as_ref() else {
             return AdversarialFinding::Unavailable("no delegation seam".into());
         };
@@ -2706,7 +3045,10 @@ impl GdlDriver {
             token_budget: 2_000,
         };
         let invocation_key = format!("gdl:{episode}:phase:verify:attempt:{attempt}:recheck");
-        match crate::agentloop::subagents::delegate_owned(
+        // The recheck reserves against the CASE budget, not a throwaway
+        // per-delegation root — its spend propagates to `case_budget` via
+        // the reservation's parent link, where the pin reads it.
+        match crate::agentloop::subagents::delegate_owned_budgeted(
             &self.pool,
             &deps.host,
             &deps.env,
@@ -2717,6 +3059,7 @@ impl GdlDriver {
             &invocation_key,
             owner,
             cancel,
+            &self.case_budget,
         )
         .await
         {
@@ -2728,7 +3071,7 @@ impl GdlDriver {
                             .and_then(serde_json::Value::as_str)
                             .unwrap_or("")
                             .chars()
-                            .take(TRUNCATE)
+                            .take(ADVERSARIAL_REASON_CHARS)
                             .collect::<String>();
                         if v.get("contradicted").and_then(serde_json::Value::as_bool) == Some(true)
                         {
@@ -2749,7 +3092,10 @@ impl GdlDriver {
                 "recheck child hit its cap without a finding".into(),
             ),
             Err(e) => AdversarialFinding::Unavailable(
-                e.to_string().chars().take(TRUNCATE).collect::<String>(),
+                e.to_string()
+                    .chars()
+                    .take(ADVERSARIAL_REASON_CHARS)
+                    .collect::<String>(),
             ),
         }
     }
@@ -2922,6 +3268,21 @@ impl GdlDriver {
                 })
                 .await
                 .map_err(persist_error)??;
+                // The triage retrieval runs BEFORE the instruction is
+                // built — the candidates section below is a server call,
+                // and the gate admits only citations into this set. Same
+                // ticket + same corpus ⇒ deterministic across retries.
+                if phase == GdlPhase::Triage {
+                    let pool = self.pool.clone();
+                    let domain = cp.case_domain().to_string();
+                    let ticket = case.ticket.clone();
+                    case.triage_search = tokio::task::spawn_blocking(move || {
+                        let conn = pool.get().map_err(persist_error)?;
+                        Ok::<_, LoopError>(triage_knowledge_hits(&conn, &domain, &ticket))
+                    })
+                    .await
+                    .map_err(persist_error)??;
+                }
                 let instruction = phase_instruction_with_law(
                     phase,
                     &case,
@@ -3063,8 +3424,10 @@ impl GdlDriver {
                             let mut closed_by_new_record =
                                 h.red_flag.as_ref().is_some_and(red_flag_closes);
                             if closed_by_new_record {
-                                let closing_problems =
-                                    red_flag_gate(h.red_flag.as_ref().expect("present"));
+                                let closing_problems = red_flag_gate(
+                                    h.red_flag.as_ref().expect("present"),
+                                    &citation_universe(&case),
+                                );
                                 if !closing_problems.is_empty() {
                                     // A close that fails the record law does
                                     // NOT close the flag. The lock holds, and
@@ -3295,6 +3658,14 @@ impl GdlDriver {
                                     }
                                 }
                             } else {
+                                // Stamp the server-confirmed set onto the
+                                // passed triage artifact before it commits —
+                                // the durable record, not the model's words.
+                                let artifact = if phase == GdlPhase::Triage {
+                                    stamp_confirmed_matches(&artifact, &case)
+                                } else {
+                                    artifact
+                                };
                                 change.artifact = Some(artifact);
                                 if phase == GdlPhase::Handoff {
                                     change.terminal = Some(GdlOutcome::Resolved {
@@ -4605,6 +4976,42 @@ mod tests {
         tmp: tempfile::NamedTempFile,
     }
 
+    /// F8: seed one knowledge row carrying the ticket, so the triage
+    /// retrieval returns exactly one hit (id 1 on the fresh fixture DB).
+    /// Every accept-driving test seeds its ticket before `run_case` — an
+    /// accept with no server hit fails by law, and a cited id the server
+    /// never returned fails as unknown.
+    fn seed_kb_for_ticket(f: &Fixture, ticket: &str) {
+        seed_kb_path(f.tmp.path(), ticket);
+    }
+
+    /// F8: the same one-row corpus seed on a bare DB file, for
+    /// reload-built drivers that hold no Fixture.
+    fn seed_kb_path(path: &std::path::Path, ticket: &str) {
+        let conn = Connection::open(path).unwrap();
+        let n = conn
+            .execute(
+                "INSERT INTO knowledge(domain, title, content, flagged) \
+                 VALUES ('acme', 'Test playbook', ?1, 0)",
+                rusqlite::params![format!("Test playbook covering the ticket: {ticket}")],
+            )
+            .unwrap();
+        assert_eq!(n, 1, "the triage corpus seeds exactly one row");
+    }
+
+    /// F8/F9: a triage-gate case with one retrieved hit (kb:1, "Test
+    /// playbook") and the standard intake declaration — the universe the
+    /// shared fixtures' locators resolve against.
+    fn gate_case(ticket: &str) -> GdlCase {
+        let mut case = GdlCase::fresh(ticket);
+        case.intake = Some(serde_json::from_str(INTAKE_JSON).unwrap());
+        case.triage_search = vec![KbHit {
+            id: 1,
+            title: "Test playbook".into(),
+        }];
+        case
+    }
+
     fn fixture(script: Vec<Vec<crate::agentloop::provider::StreamEvent>>) -> Fixture {
         register_sqlite_vec();
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -4805,6 +5212,7 @@ mod tests {
     #[test]
     fn gdl_confirmation_provider_failure_uses_confirm_receipt() {
         let (driver, tmp, calls) = confirmation_failure_fixture();
+        seed_kb_path(tmp.path(), "confirmation failure");
         let outcome = rt()
             .block_on(driver.run_case(1, "confirmation failure", &CancellationToken::new()))
             .expect("confirmation provider failure terminalizes the GDL checkpoint");
@@ -4922,10 +5330,10 @@ mod tests {
     // The happy-path per-phase artifacts — the JSON contracts the phase
     // instructions name, one scripted model turn per phase.
     const INTAKE_JSON: &str = r#"{"is_not":{"what":{"is":"PERC H740P write-cache write-through","is_not":"read cache"},"where":{"is":"node-042 RAID-10 VDs","is_not":"node-041"},"when":{"is":"since 03:12 during rebuild","is_not":"before 03:12"},"extent":{"is":"VD 5 only","is_not":"all VDs"}},"telemetry_refs":["tsr://node-042","sel://events"],"what_changed":"fw 2.10 flashed last week","known_good":"node-041 same fw"}"#;
-    const TRIAGE_JSON: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["P-STORAGE-0104"],"verdict":"accept","acuity_band":"GREEN","esi_level":4,"care_setting":"in_person_primary","red_flag":{"worst_case":"battery-induced data corruption during rebuild","ruled_out":true,"rule_out_basis":["test:racadm battery state reports Failed"],"first_would_miss_impact":"write-cache loss corrupts VD 5 mid-rebuild"}}"#;
-    const HYPOTHESIZE_JSON: &str = r#"{"hypotheses":[{"statement":"PERC battery dead","prediction":"racadm battery state reports Failed","sources":["actual:SEL event 0x42","test:racadm get storageservices.battery"],"confidence":0.7}]}"#;
+    const TRIAGE_JSON: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["kb:1"],"verdict":"accept","acuity_band":"GREEN","esi_level":4,"care_setting":"in_person_primary","red_flag":{"worst_case":"battery-induced data corruption during rebuild","ruled_out":true,"rule_out_basis":["test:sel://events"],"first_would_miss_impact":"write-cache loss corrupts VD 5 mid-rebuild"}}"#;
+    const HYPOTHESIZE_JSON: &str = r#"{"hypotheses":[{"statement":"PERC battery dead","prediction":"racadm battery state reports Failed","sources":["actual:write-cache write-through","test:sel://events"],"confidence":0.7}]}"#;
     const PLAN_JSON: &str = r#"{"steps":[{"order":1,"kind":"check","skill_gate":"L1","description":"query battery state","command":"racadm get storageservices.battery","expected":"Ready","fail_action":2,"invasiveness":0,"justification":null},{"order":2,"kind":"action","skill_gate":"L2","description":"replace battery ring 3","command":"hw replace battery","expected":"battery Ready","fail_action":null,"invasiveness":2,"justification":null}],"verify_step":{"re_run":"rebuild rate on VD 5 under the customer load","pass_condition":">10%/h"},"dead_end":{"escalate_to":"eng-storage","required_evidence":["TSR","test log"]}}"#;
-    const ACT_JSON: &str = r#"{"rows":[{"order":1,"kind":"check","description":"query battery state","playbook_ref":"P-STORAGE-0104","variables":["battery state"],"expected":"Ready","actual":"Failed","verdict":"fail","evidence_ref":"TSR p.12","dtfvc":{"diagnose":"battery fault hypothesis","test":"racadm query","fix":null,"verify":"battery state readback matches Failed","capture":null},"invasiveness":0,"justification":null},{"order":2,"kind":"action","description":"replace battery ring 3","playbook_ref":"P-STORAGE-0104","variables":["battery"],"expected":"battery Ready","actual":"Ready","verdict":"pass","evidence_ref":"TSR p.13","dtfvc":{"diagnose":"battery fault confirmed by row 1","test":"racadm query post-replace","fix":"replaced battery ring 3","verify":"rebuild rate 14%/h","capture":"battery replacement row"},"invasiveness":2,"justification":null}],"complete":true}"#;
+    const ACT_JSON: &str = r#"{"rows":[{"order":1,"kind":"check","description":"query battery state","playbook_ref":"kb:1","variables":["battery state"],"expected":"Ready","actual":"Failed","verdict":"fail","evidence_ref":"tsr://node-042","dtfvc":{"diagnose":"battery fault hypothesis","test":"racadm query","fix":null,"verify":"battery state readback matches Failed","capture":null},"invasiveness":0,"justification":null},{"order":2,"kind":"action","description":"replace battery ring 3","playbook_ref":"kb:1","variables":["battery"],"expected":"battery Ready","actual":"Ready","verdict":"pass","evidence_ref":"sel://events","dtfvc":{"diagnose":"battery fault confirmed by row 1","test":"racadm query post-replace","fix":"replaced battery ring 3","verify":"rebuild rate 14%/h","capture":"battery replacement row"},"invasiveness":2,"justification":null}],"complete":true}"#;
     const VERIFY_JSON: &str = r#"{"re_run":"rebuild rate on VD 5 under the customer load","pass_condition":">10%/h","pass":true,"stability_window_min":15,"negative_check":true}"#;
     const RECHECK_JSON: &str =
         r#"{"contradicted":false,"reason":"no falsifier in the captured evidence"}"#;
@@ -5020,6 +5428,7 @@ mod tests {
     #[test]
     fn r1_reload_every_phase_never_duplicates_act() {
         let f = fixture(vec![]);
+        seed_kb_for_ticket(&f, "reload");
         let runtime = rt();
         let mut script = happy_script().into_iter();
         // One reload per phase settlement. Verify settles over THREE
@@ -5091,6 +5500,7 @@ mod tests {
             assert_eq!(terminal.is_some(), attempt == 3);
         }
         let (driver, provider) = reload(f.tmp.path(), happy_script(), LoopConfig::default());
+        seed_kb_path(f.tmp.path(), "retry");
         let retry = runtime
             .block_on(driver.run_case(1, "retry", &CancellationToken::new()))
             .unwrap();
@@ -5122,6 +5532,7 @@ mod tests {
                 _ => {}
             }
             let f = fixture(vec![]);
+            seed_kb_for_ticket(&f, "terminal");
             let (driver, _) = reload(f.tmp.path(), script, config.clone());
             let first = runtime
                 .block_on(driver.run_case(1, "terminal", &cancel))
@@ -5168,6 +5579,7 @@ mod tests {
         let runtime = rt();
         // (1) The evidence-gated closure: resolved carries both conditions.
         let f = fixture(happy_script());
+        seed_kb_for_ticket(&f, "close");
         let outcome = runtime
             .block_on(f.driver.run_case(1, "close", &CancellationToken::new()))
             .unwrap();
@@ -5241,6 +5653,7 @@ mod tests {
                 script.insert(index + 2, scripted_text(artifact));
             }
             let f = fixture(script);
+            seed_kb_for_ticket(&f, name);
             let outcome = runtime
                 .block_on(f.driver.run_case(1, name, &CancellationToken::new()))
                 .unwrap();
@@ -5328,6 +5741,7 @@ mod tests {
         }
         script.push(scripted_text(HANDOFF_JSON)); // never reached
         let f = fixture(script);
+        seed_kb_for_ticket(&f, "disagree");
         let outcome = runtime
             .block_on(f.driver.run_case(1, "disagree", &CancellationToken::new()))
             .unwrap();
@@ -5458,6 +5872,30 @@ mod tests {
         assert_eq!(ADVERSARIAL_REASON_CHARS, 512);
     }
 
+    /// F17, the remainder: every artifact bound pinned by value. The G7
+    /// relational test (`gdl_artifact_vecs_are_bounded`, n=200) passes at
+    /// ANY cap — a bound raised tenfold keeps it green. These literals are
+    /// the actual ceilings; retuning one is a named act, so it fails here
+    /// first.
+    #[test]
+    fn artifact_bounds_are_pinned_by_value() {
+        assert_eq!(MAX_TELEMETRY_REFS, 32);
+        assert_eq!(MAX_SEARCH_HITS, 16);
+        assert_eq!(MAX_RULE_OUT_BASIS, 16);
+        assert_eq!(MAX_HYPOTHESES, 16);
+        assert_eq!(MAX_PLAN_STEPS, 32);
+        assert_eq!(MAX_TEST_LOG_ROWS, 64);
+        assert_eq!(MAX_REQUIRED_EVIDENCE, 16);
+        assert_eq!(MAX_REQUIRED_REPORT, 16);
+        assert_eq!(MAX_DIAGNOSTIC_SEAMS, 16);
+        assert_eq!(MAX_SOURCES_PER_HYPOTHESIS, 8);
+        assert_eq!(PLAN_STRIP_MAX_LINES, 24);
+        assert_eq!(VERIFY_STABILITY_WINDOW_MIN, 15);
+        assert_eq!(MAX_RETURN_WINDOW_SECS, 2_592_000);
+        assert_eq!(KB_HIT_TITLE_CHARS, 120);
+        assert_eq!(MIN_CITATION_LOCATOR_CHARS, 3);
+    }
+
     #[test]
     fn adversarial_contradiction_is_a_named_gate_failure() {
         let runtime = rt();
@@ -5470,6 +5908,7 @@ mod tests {
         }
         script.push(scripted_text(HANDOFF_JSON)); // never reached
         let f = fixture(script);
+        seed_kb_for_ticket(&f, "falsified");
         let outcome = runtime
             .block_on(f.driver.run_case(1, "falsified", &CancellationToken::new()))
             .unwrap();
@@ -5504,6 +5943,7 @@ mod tests {
         // The child answered in prose, not the agreed JSON shape.
         script[6] = scripted_text("no contradiction found after reviewing the evidence");
         let f = fixture(script);
+        seed_kb_for_ticket(&f, "no recheck child");
         let outcome = runtime
             .block_on(
                 f.driver
@@ -5549,6 +5989,7 @@ mod tests {
             ..LoopConfig::default()
         };
         let (driver, _) = reload(f.tmp.path(), script, config);
+        seed_kb_path(f.tmp.path(), "no recheck");
         let outcome = runtime
             .block_on(driver.run_case(1, "no recheck", &CancellationToken::new()))
             .unwrap();
@@ -5617,6 +6058,13 @@ mod tests {
                 .unwrap();
                 let _ = run_id;
             }
+            // F8: one corpus row naming every burst ticket — each case's
+            // LIKE retrieval returns hit kb:1, the id every script cites.
+            conn.execute(
+                "INSERT INTO knowledge(domain, title, content, flagged) VALUES ('acme', 'Test playbook', ?1, 0)",
+                rusqlite::params!["Test playbook covering the tickets: burst 1, burst 2, burst 3, burst 4"],
+            )
+            .unwrap();
         }
         for run_id in 1..=4 {
             let (driver, provider) = reload(f.tmp.path(), happy_script(), LoopConfig::default());
@@ -5660,6 +6108,7 @@ mod tests {
         let f = fixture(happy_script());
         seed_repeater_priors(f.tmp.path(), 2);
         let runtime = rt();
+        seed_kb_for_ticket(&f, "dsar");
         let outcome = runtime
             .block_on(f.driver.run_case(1, "dsar", &CancellationToken::new()))
             .unwrap();
@@ -5669,8 +6118,8 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
             .unwrap();
         assert_eq!(
-            knowledge, 0,
-            "a resolved run publishes nothing erasable — capture is proposal-only"
+            knowledge, 1,
+            "a resolved run publishes nothing erasable — the single row is the seeded triage corpus"
         );
         let pending: i64 = conn
             .query_row(
@@ -5697,6 +6146,7 @@ mod tests {
             r#"{"priority":"P3","stabilized":false,"search_hits":[],"verdict":"defer"}"#,
         );
         let f = fixture(script);
+        seed_kb_for_ticket(&f, "defer");
         let outcome = runtime
             .block_on(f.driver.run_case(1, "defer", &CancellationToken::new()))
             .unwrap();
@@ -5725,6 +6175,7 @@ mod tests {
             r#"{"priority":"P3","stabilized":false,"search_hits":[],"verdict":"defer"}"#,
         );
         let f = fixture(script);
+        seed_kb_for_ticket(&f, "defer");
         let outcome = runtime
             .block_on(f.driver.run_case(1, "defer", &CancellationToken::new()))
             .unwrap();
@@ -5852,6 +6303,7 @@ mod tests {
     #[test]
     fn escape_mid_act_routes_at_the_next_boundary_with_no_further_exchanges() {
         let f = fixture(vec![]);
+        seed_kb_for_ticket(&f, "mid-act");
         let runtime = rt();
         let mut script = happy_script().into_iter();
         // Intake..Act settle on the first driver; the escape is raised
@@ -6044,6 +6496,7 @@ mod tests {
         let phases = GdlPhase::ALL;
         for (p, expected_at) in phases.iter().enumerate() {
             let f = fixture(happy_script());
+            seed_kb_for_ticket(&f, "sweep");
             let escape = EscapeFlag::new();
             let runtime = rt();
             if p == 0 {
@@ -6092,6 +6545,7 @@ mod tests {
     #[test]
     fn offer_boundary_resume_continues_at_the_recorded_phase_with_zero_reexecution() {
         let f = fixture(happy_script());
+        seed_kb_for_ticket(&f, "handoff");
         let runtime = rt();
         // Settle Intake..Act, then pause.
         let paused = runtime
@@ -6131,6 +6585,7 @@ mod tests {
         };
         // Resume: the case continues at Verify (the recorded phase) and
         // resolves; the step rows prove zero re-execution.
+        seed_kb_for_ticket(&f, "handoff");
         let outcome = runtime
             .block_on(f.driver.run_case(1, "handoff", &CancellationToken::new()))
             .unwrap();
@@ -6210,9 +6665,10 @@ mod tests {
         let runtime = rt();
         let mut script = happy_script();
         script[1] = scripted_text(
-            r#"{"priority":"P1","stabilized":true,"search_hits":["P-STORAGE-0104"],"verdict":"accept","acuity_band":"ORANGE","esi_level":2,"care_setting":"in_person_primary","red_flag":{"worst_case":"battery-induced data corruption during rebuild","ruled_out":true,"rule_out_basis":["test:racadm battery state reports Failed"],"first_would_miss_impact":"write-cache loss corrupts VD 5"}}"#,
+            r#"{"priority":"P1","stabilized":true,"search_hits":["kb:1"],"verdict":"accept","acuity_band":"ORANGE","esi_level":2,"care_setting":"in_person_primary","red_flag":{"worst_case":"battery-induced data corruption during rebuild","ruled_out":true,"rule_out_basis":["test:sel://events"],"first_would_miss_impact":"write-cache loss corrupts VD 5"}}"#,
         );
         let f = fixture(script);
+        seed_kb_for_ticket(&f, "P1 clock");
         let outcome = runtime
             .block_on(f.driver.run_case(1, "P1 clock", &CancellationToken::new()))
             .unwrap();
@@ -6264,6 +6720,7 @@ mod tests {
     #[test]
     fn the_sla_clock_arms_inside_the_phase_pass_it_makes_actionable() {
         let f = fixture(happy_script());
+        seed_kb_for_ticket(&f, "atomic clock");
         {
             let conn = Connection::open(f.tmp.path()).unwrap();
             conn.execute_batch(
@@ -6503,6 +6960,7 @@ mod tests {
     fn r1_terminal_retry_refuses_changed_loop_policy() {
         let f = fixture(happy_script());
         let runtime = rt();
+        seed_kb_for_ticket(&f, "policy");
         runtime
             .block_on(f.driver.run_case(1, "policy", &CancellationToken::new()))
             .unwrap();
@@ -6546,6 +7004,7 @@ mod tests {
             if corruption == "outcome" {
                 cancel.cancel();
             }
+            seed_kb_for_ticket(&f, "receipt");
             runtime
                 .block_on(f.driver.run_case(1, "receipt", &cancel))
                 .unwrap();
@@ -6619,6 +7078,7 @@ mod tests {
     fn r1_checked_seal_audit_failure_rolls_back_checkpoint() {
         let f = fixture(happy_script());
         let runtime = rt();
+        seed_kb_for_ticket(&f, "audit");
         runtime
             .block_on(f.driver.run_case_until(
                 1,
@@ -6705,6 +7165,7 @@ mod tests {
             "kind='interview'",
         ] {
             let f = fixture(happy_script());
+            seed_kb_for_ticket(&f, "t");
             runtime
                 .block_on(f.driver.run_case(1, "t", &CancellationToken::new()))
                 .unwrap();
@@ -6726,6 +7187,7 @@ mod tests {
         let runtime = rt();
         for corrupt in ["null", "{}", "[]", "{", "version", "terminal"] {
             let f = fixture(happy_script());
+            seed_kb_for_ticket(&f, "t");
             runtime
                 .block_on(f.driver.run_case(1, "t", &CancellationToken::new()))
                 .unwrap();
@@ -6757,6 +7219,7 @@ mod tests {
     fn r1_checkpoint_trigger_failure_rolls_back_and_retains_claim() {
         let f = fixture(happy_script());
         let runtime = rt();
+        seed_kb_for_ticket(&f, "t");
         runtime
             .block_on(f.driver.run_case_until(
                 1,
@@ -6826,10 +7289,12 @@ mod tests {
     fn r1_terminal_retry_is_exact_without_provider_work() {
         let f = fixture(happy_script());
         let runtime = rt();
+        seed_kb_for_ticket(&f, "retry");
         let first = runtime
             .block_on(f.driver.run_case(1, "retry", &CancellationToken::new()))
             .unwrap();
         let calls = f.provider.requests().len();
+        seed_kb_for_ticket(&f, "retry");
         let second = runtime
             .block_on(f.driver.run_case(1, "retry", &CancellationToken::new()))
             .unwrap();
@@ -6847,6 +7312,7 @@ mod tests {
             } else {
                 session_log::append(&conn, 1, "user", "{}", "old", 1).unwrap();
             }
+            seed_kb_for_ticket(&f, "retry");
             assert!(
                 rt().block_on(f.driver.run_case(1, "retry", &CancellationToken::new()))
                     .is_err()
@@ -7021,6 +7487,7 @@ mod tests {
             let conn = Connection::open(f.tmp.path()).unwrap();
             super::super::state::cas_update(&conn, 1, 0, corrupt, "active", 1).unwrap();
             let before = super::super::state::read_state_and_revision(&conn, 1).unwrap();
+            seed_kb_for_ticket(&f, "original");
             let err = runtime
                 .block_on(f.driver.run_case(1, "original", &CancellationToken::new()))
                 .unwrap_err();
@@ -7063,6 +7530,7 @@ mod tests {
                 rusqlite::params![kind, status, serde_json::to_string(&case).unwrap()],
             )
             .unwrap();
+            seed_kb_for_ticket(&f, "retry");
             let before = super::super::state::read_state_and_revision(&conn, 1).unwrap();
             let result = runtime.block_on(f.driver.run_case(1, "retry", &CancellationToken::new()));
             assert!(
@@ -7090,6 +7558,7 @@ mod tests {
     fn gdl_case_runs_all_seven_phases_end_to_end() {
         let f = fixture(happy_script());
         let cancel = CancellationToken::new();
+        seed_kb_for_ticket(&f, "node-042 rebuild is slow");
         let outcome = rt()
             .block_on(f.driver.run_case(1, "node-042 rebuild is slow", &cancel))
             .unwrap();
@@ -7215,6 +7684,7 @@ mod tests {
         // denied unless it carries a recorded justification.
         let f = fixture(happy_script());
         let cancel = CancellationToken::new();
+        seed_kb_for_ticket(&f, "node-042 rebuild is slow");
         let outcome = rt()
             .block_on(f.driver.run_case(1, "node-042 rebuild is slow", &cancel))
             .unwrap();
@@ -7268,6 +7738,7 @@ mod tests {
             scripted_text(bad),
         ]);
         let cancel = CancellationToken::new();
+        seed_kb_for_ticket(&f, "server is slow");
         let outcome = rt()
             .block_on(f.driver.run_case(1, "server is slow", &cancel))
             .unwrap();
@@ -7376,12 +7847,13 @@ mod tests {
         // Pure: accept with zero knowledge coverage is L9-broken.
         let mut a = serde_json::from_str::<TriageArtifact>(TRIAGE_JSON).unwrap();
         a.search_hits.clear();
-        let errors = triage_gate(&a);
+        let errors = triage_gate(&a, &gate_case("odd case"));
         assert!(errors.iter().any(|e| e.starts_with("L9")), "{errors:?}");
         // E2E: a defer verdict escalates WITH the bundle (L8).
         let defer = r#"{"priority":"P2","stabilized":true,"search_hits":[],"verdict":"defer"}"#;
         let f = fixture(vec![scripted_text(INTAKE_JSON), scripted_text(defer)]);
         let cancel = CancellationToken::new();
+        seed_kb_for_ticket(&f, "odd case");
         let outcome = rt()
             .block_on(f.driver.run_case(1, "odd case", &cancel))
             .unwrap();
@@ -7515,15 +7987,22 @@ mod tests {
         assert!(plan_gate(&a).iter().any(|e| e.starts_with("L8")));
     }
 
+    /// F8: an act-gate case with intake + plan + a triage that confirmed
+    /// kb:1 — the universe the shared act fixtures resolve against.
+    fn act_case() -> GdlCase {
+        let mut c = GdlCase::fresh("t");
+        c.intake = Some(serde_json::from_str(INTAKE_JSON).unwrap());
+        let plan: PlanArtifact = serde_json::from_str(PLAN_JSON).unwrap();
+        c.plan = plan.steps;
+        let mut triage: TriageArtifact = serde_json::from_str(TRIAGE_JSON).unwrap();
+        triage.confirmed_matches = Some(vec!["kb:1".into()]);
+        c.triage = Some(triage);
+        c
+    }
+
     #[test]
     fn act_gate_enforces_one_variable_playbook_citation_and_dtfvc() {
-        let case = {
-            let mut c = GdlCase::fresh("t");
-            c.intake = Some(serde_json::from_str(INTAKE_JSON).unwrap());
-            let plan: PlanArtifact = serde_json::from_str(PLAN_JSON).unwrap();
-            c.plan = plan.steps;
-            c
-        };
+        let case = act_case();
         let mut a = serde_json::from_str::<ActArtifact>(ACT_JSON).unwrap();
         assert!(act_gate(&a, &case).is_empty(), "the happy act passes");
         // L2: two variables in one row invalidate the test.
@@ -7628,6 +8107,7 @@ mod tests {
             scripted_text(HANDOFF_JSON),
         ]);
         let cancel = CancellationToken::new();
+        seed_kb_for_ticket(&f, "seamless case");
         let outcome = rt()
             .block_on(f.driver.run_case(1, "seamless case", &cancel))
             .unwrap();
@@ -7872,13 +8352,7 @@ mod tests {
     /// plan step with no outcome and no evidence. It must not.
     #[test]
     fn act_complete_rejects_pending_or_unevidenced_rows() {
-        let case = {
-            let mut c = GdlCase::fresh("t");
-            c.intake = Some(serde_json::from_str(INTAKE_JSON).unwrap());
-            let plan: PlanArtifact = serde_json::from_str(PLAN_JSON).unwrap();
-            c.plan = plan.steps;
-            c
-        };
+        let case = act_case();
         let a = serde_json::from_str::<ActArtifact>(ACT_JSON).unwrap();
         assert!(act_gate(&a, &case).is_empty(), "the happy act passes");
         // A `Pending` row is the agent's own unevaluated record. It counts as
@@ -8029,11 +8503,11 @@ mod tests {
         let mut triage: TriageArtifact = serde_json::from_str(TRIAGE_JSON).unwrap();
         triage.search_hits = many("P-STORAGE-");
         assert!(
-            triage_gate(&triage)
+            triage_gate(&triage, &gate_case("t"))
                 .iter()
                 .any(|e| e.contains("search_hits")),
             "errors: {:?}",
-            triage_gate(&triage)
+            triage_gate(&triage, &gate_case("t"))
         );
         // RedFlagArtifact.rule_out_basis
         let mut flags = serde_json::from_str::<TriageArtifact>(TRIAGE_JSON)
@@ -8041,11 +8515,11 @@ mod tests {
             .red_flag;
         flags.rule_out_basis = many("test:racadm-");
         assert!(
-            red_flag_gate(&flags)
+            red_flag_gate(&flags, &citation_universe(&gate_case("t")))
                 .iter()
                 .any(|e| e.contains("rule_out_basis")),
             "errors: {:?}",
-            red_flag_gate(&flags)
+            red_flag_gate(&flags, &citation_universe(&gate_case("t")))
         );
         // HypothesizeArtifact.hypotheses
         let one: Hypothesis = serde_json::from_str::<HypothesizeArtifact>(HYPOTHESIZE_JSON)
@@ -8056,11 +8530,11 @@ mod tests {
             hypotheses: (0..n).map(|_| one.clone()).collect(),
         };
         assert!(
-            hypothesize_gate(&hypotheses)
+            hypothesize_gate(&hypotheses, &gate_case("t"))
                 .iter()
                 .any(|e| e.contains("hypotheses")),
             "errors: {:?}",
-            hypothesize_gate(&hypotheses)
+            hypothesize_gate(&hypotheses, &gate_case("t"))
         );
         // PlanArtifact.steps
         let mut plan: PlanArtifact = serde_json::from_str(PLAN_JSON).unwrap();
@@ -8116,6 +8590,291 @@ mod tests {
         );
     }
 
+    /// F10: model-stated confidence is documented — in the phase contract
+    /// the model reads — as subjective self-report that confirms nothing
+    /// and blocks nothing. A contract that merely accepted a `confidence`
+    /// key would let the model believe the number argues; the sentence
+    /// below is what tells it the number is recorded, never trusted.
+    #[test]
+    fn hypothesize_contract_states_confidence_is_subjective_non_blocking() {
+        let instruction = phase_instruction_with_law(
+            GdlPhase::Hypothesize,
+            &GdlCase::fresh("contract probe"),
+            &[],
+            false,
+        );
+        assert!(
+            instruction.contains("SUBJECTIVE self-report"),
+            "the contract must name confidence as subjective: {instruction}"
+        );
+        assert!(
+            instruction.contains("confirms nothing and blocks nothing"),
+            "the contract must state confidence is non-blocking: {instruction}"
+        );
+    }
+
+    // ── Phase D (F8/F9/F11) grounding pins: the exit criteria ──────────
+
+    /// F8 exit: no accept without a SERVER search hit. The model cites
+    /// kb:1, but the retrieval returned nothing — the accept fails on the
+    /// server's silence, not the model's words.
+    #[test]
+    fn accept_without_a_server_search_hit_fails() {
+        let a = serde_json::from_str::<TriageArtifact>(TRIAGE_JSON).unwrap();
+        let mut case = GdlCase::fresh("t");
+        case.intake = Some(serde_json::from_str(INTAKE_JSON).unwrap());
+        let errors = triage_gate(&a, &case);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with("L9") && e.contains("no server knowledge hits")),
+            "an accept with zero retrieved hits must fail: {errors:?}"
+        );
+    }
+
+    /// F8 exit: unknown cited ids are named errors. The server returned
+    /// kb:1; the model cites kb:2 — a stranger, not a near-miss.
+    #[test]
+    fn unknown_cited_knowledge_id_fails() {
+        let mut a = serde_json::from_str::<TriageArtifact>(TRIAGE_JSON).unwrap();
+        a.search_hits = vec!["kb:2".into()];
+        let errors = triage_gate(&a, &gate_case("t"));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with("L9") && e.contains("unknown knowledge id")),
+            "a cited id the server never returned must fail: {errors:?}"
+        );
+    }
+
+    /// F8: the confirmation record is server-owned. A model that writes
+    /// the stamp is forging the durable record — rejected, never merged.
+    #[test]
+    fn model_supplied_confirmed_matches_is_rejected() {
+        let mut a = serde_json::from_str::<TriageArtifact>(TRIAGE_JSON).unwrap();
+        a.confirmed_matches = Some(vec!["kb:1".into()]);
+        let errors = triage_gate(&a, &gate_case("t"));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with("L9") && e.contains("server-stamped")),
+            "a model-supplied confirmed_matches must fail: {errors:?}"
+        );
+    }
+
+    /// F8: the stamp lands on the committed artifact. End to end: the
+    /// model's citation, gate-verified, is what the server records — and
+    /// anything the model smuggled into `confirmed_matches` is gone.
+    #[test]
+    fn triage_pass_stamps_the_server_confirmed_set() {
+        let f = fixture(happy_script());
+        seed_kb_for_ticket(&f, "confirmed stamp");
+        let outcome = rt()
+            .block_on(
+                f.driver
+                    .run_case(1, "confirmed stamp", &CancellationToken::new()),
+            )
+            .unwrap();
+        assert!(
+            matches!(outcome, GdlOutcome::Resolved { .. }),
+            "{outcome:?}"
+        );
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let state_json: String = conn
+            .query_row(
+                "SELECT state_json FROM workflow_runs WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let case: GdlCase = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(
+            case.triage
+                .as_ref()
+                .and_then(|t| t.confirmed_matches.clone()),
+            Some(vec!["kb:1".into()]),
+            "the committed triage carries the server-confirmed set"
+        );
+    }
+
+    /// F8: the triage instruction carries the retrieved candidates — the
+    /// only vocabulary `search_hits` may cite. Zero hits renders the
+    /// defer direction, never silence.
+    #[test]
+    fn triage_instruction_renders_the_retrieved_candidates() {
+        let mut case = GdlCase::fresh("instruction probe");
+        let bare = phase_instruction_with_law(GdlPhase::Triage, &case, &[], false);
+        assert!(
+            bare.contains("SERVER KNOWLEDGE CANDIDATES: none"),
+            "zero hits must render the defer direction: {bare}"
+        );
+        case.triage_search = vec![KbHit {
+            id: 7,
+            title: "Battery playbook".into(),
+        }];
+        let rendered = phase_instruction_with_law(GdlPhase::Triage, &case, &[], false);
+        assert!(
+            rendered.contains("kb:7 — Battery playbook"),
+            "the citable id rides the instruction: {rendered}"
+        );
+        // The clamp: a 10KB title cannot ride the prompt unbounded.
+        case.triage_search[0].title = "x".repeat(10_000);
+        let clamped = phase_instruction_with_law(GdlPhase::Triage, &case, &[], false);
+        let line = clamped
+            .lines()
+            .find(|l| l.starts_with("kb:7"))
+            .expect("candidate line");
+        assert!(
+            line.chars().count() <= "kb:7 — ".chars().count() + KB_HIT_TITLE_CHARS,
+            "titles clamp at {KB_HIT_TITLE_CHARS} chars"
+        );
+    }
+
+    /// F9: every evidence_refs entry resolves or is rejected — one arm
+    /// per citation site, each naming its law.
+    #[test]
+    fn citations_resolve_against_held_evidence_or_fail_by_name() {
+        let case = gate_case("t");
+        // Hypothesize sources (L7): an unheld locator is invention.
+        let h = HypothesizeArtifact {
+            hypotheses: vec![Hypothesis {
+                statement: "s".into(),
+                prediction: "p".into(),
+                sources: vec!["actual:unheld nowhere".into()],
+                confidence: None,
+            }],
+        };
+        assert!(
+            hypothesize_gate(&h, &case)
+                .iter()
+                .any(|e| e.starts_with("L7") && e.contains("unknown evidence")),
+            "an unresolvable source must fail"
+        );
+        // Rule-out bases (T13): same law, closing record or not.
+        let rf = RedFlagArtifact {
+            worst_case: "w".into(),
+            ruled_out: serde_json::Value::Bool(true),
+            rule_out_basis: vec!["test:unheld nowhere".into()],
+            first_would_miss_impact: "i".into(),
+        };
+        assert!(
+            red_flag_gate(&rf, &citation_universe(&case))
+                .iter()
+                .any(|e| e.starts_with("T13") && e.contains("unknown evidence")),
+            "an unresolvable basis must fail"
+        );
+        // Act playbooks (L9): kb:9 was never committed.
+        let act = ActArtifact {
+            rows: vec![TestLogRow {
+                order: 1,
+                playbook_ref: Some("kb:9".into()),
+                ..serde_json::from_str::<ActArtifact>(ACT_JSON).unwrap().rows[0].clone()
+            }],
+            complete: true,
+        };
+        let mut act_case = act_case();
+        act_case.triage.as_mut().unwrap().confirmed_matches = Some(vec!["kb:1".into()]);
+        assert!(
+            act_gate(&act, &act_case)
+                .iter()
+                .any(|e| e.starts_with("L9") && e.contains("unknown playbook")),
+            "an uncommitted playbook must fail"
+        );
+        // Act evidence (A4): present but held nowhere.
+        let mut ev = serde_json::from_str::<ActArtifact>(ACT_JSON).unwrap();
+        ev.rows[0].evidence_ref = Some("unheld nowhere".into());
+        assert!(
+            act_gate(&ev, &act_case)
+                .iter()
+                .any(|e| e.starts_with("A4") && e.contains("resolves to no")),
+            "an unresolvable evidence_ref must fail"
+        );
+    }
+
+    /// F9: the locator floor. "ts" sits inside "tsr://node-042" by
+    /// containment — without the floor it would "resolve". Two chars
+    /// must never count as evidence.
+    #[test]
+    fn citation_locator_floor_rejects_substring_fragments() {
+        let case = gate_case("t");
+        let universe = citation_universe(&case);
+        assert!(
+            universe.iter().any(|e| e.contains("tsr://")),
+            "the fixture universe holds telemetry"
+        );
+        assert!(
+            !locator_resolves("ts", &universe),
+            "a 2-char fragment must not resolve"
+        );
+        assert!(
+            locator_resolves("tsr://node-042", &universe),
+            "the full locator resolves"
+        );
+    }
+
+    /// F9: telemetry refs are scheme://locators. Prose in the declared
+    /// universe poisons every resolution that touches it — refused at
+    /// intake, where the universe is declared.
+    #[test]
+    fn intake_telemetry_must_be_scheme_locators() {
+        let mut a: IntakeArtifact = serde_json::from_str(INTAKE_JSON).unwrap();
+        a.telemetry_refs = vec!["a TSR export someone mentioned".into()];
+        assert!(
+            intake_gate(&a)
+                .iter()
+                .any(|e| e.starts_with("L1") && e.contains("not a locator")),
+            "prose telemetry must fail"
+        );
+    }
+
+    /// F11 exit: the adversarial re-check spends from the case budget.
+    /// Same script twice — recheck on vs off. The spend appears with the
+    /// recheck on and only then: no throwaway ledger, no phase leakage
+    /// (phases keep their own ledgers by design).
+    #[test]
+    fn adversarial_recheck_spend_lands_in_the_case_budget() {
+        let f = fixture(happy_script());
+        seed_kb_for_ticket(&f, "recheck spend");
+        let outcome = rt()
+            .block_on(
+                f.driver
+                    .run_case(1, "recheck spend", &CancellationToken::new()),
+            )
+            .unwrap();
+        assert!(
+            matches!(outcome, GdlOutcome::Resolved { .. }),
+            "{outcome:?}"
+        );
+        let spent = f.driver.case_budget.usage().total();
+        assert!(
+            spent > 0,
+            "the recheck's provider spend propagates to the case budget"
+        );
+        // Recheck off: the same case spends nothing from the case budget.
+        let g = fixture(happy_script());
+        seed_kb_for_ticket(&g, "recheck spend");
+        let off = LoopConfig {
+            adversarial_recheck: false,
+            ..LoopConfig::default()
+        };
+        // No recheck turn: the confirmation follows Verify directly.
+        let mut off_script = happy_script();
+        off_script.remove(6);
+        let (driver, _) = reload(g.tmp.path(), off_script, off);
+        let outcome = rt()
+            .block_on(driver.run_case(1, "recheck spend", &CancellationToken::new()))
+            .unwrap();
+        assert!(
+            matches!(outcome, GdlOutcome::Resolved { .. }),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            driver.case_budget.usage().total(),
+            0,
+            "with the recheck off, nothing touches the case budget"
+        );
+    }
+
     #[test]
     fn failed_verify_hands_back_with_bundle_not_silent_retry() {
         let fail = r#"{"re_run":"rebuild rate on VD 5 under the customer load","pass_condition":">10%/h","pass":false,"stability_window_min":15,"negative_check":true}"#;
@@ -8127,6 +8886,7 @@ mod tests {
             scripted_text(ACT_JSON),
             scripted_text(fail),
         ]);
+        seed_kb_for_ticket(&f, "t");
         let cancel = CancellationToken::new();
         let outcome = rt().block_on(f.driver.run_case(1, "t", &cancel)).unwrap();
         match &outcome {
@@ -8276,6 +9036,7 @@ mod tests {
             scripted_text(RECHECK_JSON),
             scripted_text(VERIFY_JSON),
         ]);
+        seed_kb_for_ticket(&f, "t");
         let runtime = rt();
         // Intake..Verify committed, then a clean pause.
         runtime
@@ -8483,6 +9244,7 @@ mod tests {
     fn canceled_case_settles_clean() {
         let f = fixture(vec![scripted_text(INTAKE_JSON)]);
         let cancel = CancellationToken::new();
+        seed_kb_for_ticket(&f, "t");
         cancel.cancel();
         let outcome = rt().block_on(f.driver.run_case(1, "t", &cancel)).unwrap();
         assert_eq!(outcome, GdlOutcome::Canceled);
@@ -8499,6 +9261,7 @@ mod tests {
         // Hypothesize (owned by L3) escalates WITH the bundle — the
         // escalation path is the one capability never narrowed away.
         let f = fixture(happy_script());
+        seed_kb_for_ticket(&f, "node-042 rebuild is slow");
         let cancel = CancellationToken::new();
         // Rebuild the driver at L1 over the same substrate.
         let pool: Pool = {
@@ -8579,10 +9342,14 @@ mod tests {
                 .unwrap();
         // Same normalization for Triage: the canonical re-serialization
         // (with the additive fields' nulls) is what the receipt law
-        // compares against.
-        let triage_normalized =
-            serde_json::to_string(&serde_json::from_str::<TriageArtifact>(TRIAGE_JSON).unwrap())
-                .unwrap();
+        // compares against — plus the server stamp the pass would have
+        // carried, so the resumed Act resolves playbooks the committed
+        // way.
+        let triage_normalized = {
+            let mut triage = serde_json::from_str::<TriageArtifact>(TRIAGE_JSON).unwrap();
+            triage.confirmed_matches = Some(vec!["kb:1".into()]);
+            serde_json::to_string(&triage).unwrap()
+        };
         {
             let mut conn = pool.get().unwrap();
             let mut cp = checkpoint::admit(&mut conn, 1, "t", &policy, "fixture").unwrap();
@@ -8618,8 +9385,8 @@ mod tests {
         // The act artifact tries to execute BOTH rows — row 2 acts on the
         // L3-gated step: a named authority violation, retried, then routed.
         let launder = r#"{"rows":[
-            {"order":1,"kind":"check","description":"query battery state","playbook_ref":"P-STORAGE-0104","variables":["battery state"],"expected":"Ready","actual":"Failed","verdict":"fail","evidence_ref":"TSR p.12","dtfvc":{"diagnose":"d","test":"t","fix":null,"verify":null,"capture":null},"invasiveness":0,"justification":null},
-            {"order":2,"kind":"action","description":"replace battery","playbook_ref":"P-STORAGE-0104","variables":["battery"],"expected":"Ready","actual":"Ready","verdict":"pass","evidence_ref":"TSR p.13","dtfvc":{"diagnose":"d","test":"t","fix":"ring 3","verify":"14%/h","capture":"row"},"invasiveness":2,"justification":null}
+            {"order":1,"kind":"check","description":"query battery state","playbook_ref":"kb:1","variables":["battery state"],"expected":"Ready","actual":"Failed","verdict":"fail","evidence_ref":"tsr://node-042","dtfvc":{"diagnose":"d","test":"t","fix":null,"verify":null,"capture":null},"invasiveness":0,"justification":null},
+            {"order":2,"kind":"action","description":"replace battery","playbook_ref":"kb:1","variables":["battery"],"expected":"Ready","actual":"Ready","verdict":"pass","evidence_ref":"sel://events","dtfvc":{"diagnose":"d","test":"t","fix":"ring 3","verify":"14%/h","capture":"row"},"invasiveness":2,"justification":null}
         ],"complete":true}"#;
         let pool2: Pool = {
             let mgr = crate::pool::SqliteConnectionManager::file(f.tmp.path());
@@ -8704,6 +9471,7 @@ mod tests {
         let f = fixture(happy_script());
         seed_repeater_priors(f.tmp.path(), 2);
         let cancel = CancellationToken::new();
+        seed_kb_for_ticket(&f, "capture");
         let outcome = rt()
             .block_on(f.driver.run_case(1, "capture", &cancel))
             .unwrap();
@@ -8757,8 +9525,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             (knowledge, vec_rows),
-            (0, 0),
-            "knowledge/vec byte-unchanged"
+            (1, 0),
+            "knowledge/vec byte-unchanged apart from the seeded triage corpus"
         );
         assert!(
             verify_chain(&conn),
@@ -8818,6 +9586,7 @@ mod tests {
         let run = |path: &std::path::Path| {
             let f = fixture(happy_script());
             let cancel = CancellationToken::new();
+            seed_kb_for_ticket(&f, "capture");
             let outcome = rt()
                 .block_on(f.driver.run_case(1, "capture", &cancel))
                 .unwrap();
@@ -8924,6 +9693,7 @@ mod tests {
     #[test]
     fn reflection_only_after_final_closure() {
         let f = fixture(happy_script());
+        seed_kb_for_ticket(&f, "capture");
         let outcome = rt()
             .block_on(f.driver.run_case(1, "capture", &CancellationToken::new()))
             .unwrap();
@@ -8983,6 +9753,7 @@ mod tests {
     #[test]
     fn clean_resolve_writes_no_disagreement_row() {
         let f = fixture(happy_script());
+        seed_kb_for_ticket(&f, "capture");
         let outcome = rt()
             .block_on(f.driver.run_case(1, "capture", &CancellationToken::new()))
             .unwrap();
@@ -9049,6 +9820,7 @@ mod tests {
         script.push(scripted_text(HANDOFF_JSON));
         script.push(scripted_text(HANDOFF_JSON));
         let f = fixture(script);
+        seed_kb_for_ticket(&f, "disagree");
         let outcome = rt()
             .block_on(f.driver.run_case(1, "disagree", &CancellationToken::new()))
             .unwrap();
@@ -9139,6 +9911,7 @@ mod tests {
             )
             .unwrap();
         }
+        seed_kb_for_ticket(&f, "capture");
         let result = rt().block_on(f.driver.run_case(1, "capture", &CancellationToken::new()));
         match result {
             Err(LoopError::Persist(message)) => {
@@ -9189,6 +9962,7 @@ mod tests {
         // fixed-text no-warrant outcome is recorded exactly once.
         let f = fixture(happy_script());
         seed_repeater_priors(f.tmp.path(), 0);
+        seed_kb_for_ticket(&f, "capture");
         let outcome = rt()
             .block_on(f.driver.run_case(1, "capture", &CancellationToken::new()))
             .unwrap();
@@ -9233,6 +10007,7 @@ mod tests {
         let defer = r#"{"priority":"P2","stabilized":true,"search_hits":[],"verdict":"defer"}"#;
         let f = fixture(vec![scripted_text(INTAKE_JSON), scripted_text(defer)]);
         seed_repeater_priors(f.tmp.path(), 2);
+        seed_kb_for_ticket(&f, "defer");
         let outcome = rt()
             .block_on(f.driver.run_case(1, "defer", &CancellationToken::new()))
             .unwrap();
@@ -9260,11 +10035,19 @@ mod tests {
     }
     // ---- the R18 Diagnostic Closure battery (Triage duty / Closure / Contract) ----
 
-    const TRIAGE_REFER_CLOSED_JSON: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["P-STORAGE-0104"],"verdict":"accept","acuity_band":"GREEN","esi_level":4,"care_setting":"refer","red_flag":{"worst_case":"battery-induced data corruption during rebuild","ruled_out":true,"rule_out_basis":["test:racadm battery state reports Failed"],"first_would_miss_impact":"write-cache loss corrupts VD 5"}}"#;
+    const TRIAGE_REFER_CLOSED_JSON: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["kb:1"],"verdict":"accept","acuity_band":"GREEN","esi_level":4,"care_setting":"refer","red_flag":{"worst_case":"battery-induced data corruption during rebuild","ruled_out":true,"rule_out_basis":["test:sel://events"],"first_would_miss_impact":"write-cache loss corrupts VD 5"}}"#;
     const HANDOFF_REFER_CONTRACT_JSON: &str = r#"{"capture":{"resolution":"write-through during rebuild -> dead PERC battery -> replaced ring 3 -> verified 14%/h","bundle_hash":"h0"},"closure":{"decision":"referred to eng-storage with the full bundle","communicated_to":["customer:acme"],"shared_decision":true,"warning_signs":["rebuild rate drops again"],"escalation_path":"reopen the ticket","follow_up":"report-back expected within the return window","modality":{"telehealth":false},"closure_means":"portal_note"},"back_referral":{"referrer":"l1:steward-dpc","receiver":"eng-storage","clinical_question":"confirm the battery is the root cause of the write-through","required_report":["finding","treatment_plan","follow_up"],"status":"open"}}"#;
 
     fn triage_from(json: serde_json::Value) -> TriageArtifact {
         serde_json::from_value(json).unwrap()
+    }
+
+    /// The triage gate under the standard F8/F9 case: one retrieved hit
+    /// (kb:1) and the intake declaration the shared fixtures resolve
+    /// against. Tests of OTHER laws use this so their errors are exactly
+    /// the law under test.
+    fn triage_errors(json: serde_json::Value) -> Vec<String> {
+        triage_gate(&triage_from(json), &gate_case("t"))
     }
 
     fn rf_from(json: serde_json::Value) -> RedFlagArtifact {
@@ -9275,7 +10058,7 @@ mod tests {
         serde_json::json!({
             "worst_case": "battery-induced data corruption",
             "ruled_out": true,
-            "rule_out_basis": ["test:racadm battery state reports Failed"],
+            "rule_out_basis": ["test:sel://events"],
             "first_would_miss_impact": "write-cache loss mid-rebuild",
         })
     }
@@ -9296,43 +10079,43 @@ mod tests {
         for acuity in [Some(("GREEN", 4u8)), Some(("RED", 1)), None] {
             let mut t = serde_json::json!({
                 "priority": "P3", "stabilized": false,
-                "search_hits": ["P"], "verdict": "accept",
+                "search_hits": ["kb:1"], "verdict": "accept",
                 "care_setting": "in_person_primary", "red_flag": closed_flag(),
             });
             if let Some((band, level)) = acuity {
                 t["acuity_band"] = serde_json::json!(band);
                 t["esi_level"] = serde_json::json!(level);
             }
-            let errors = triage_gate(&triage_from(t));
+            let errors = triage_errors(t);
             assert_eq!(
                 errors.iter().any(|e| e.starts_with("T4")),
                 acuity.is_none(),
                 "T4 exactly when neither band nor level is present: {errors:?}"
             );
         }
-        let bad_band = triage_gate(&triage_from(serde_json::json!({
-            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+        let bad_band = triage_errors(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["kb:1"],
             "verdict": "accept", "acuity_band": "PURPLE",
             "care_setting": "in_person_primary", "red_flag": closed_flag(),
-        })));
+        }));
         assert!(
             bad_band.iter().any(|e| e.starts_with("T15:")),
             "{bad_band:?}"
         );
-        let bad_level = triage_gate(&triage_from(serde_json::json!({
-            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+        let bad_level = triage_errors(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["kb:1"],
             "verdict": "accept", "esi_level": 6,
             "care_setting": "in_person_primary", "red_flag": closed_flag(),
-        })));
+        }));
         assert!(
             bad_level.iter().any(|e| e.starts_with("T16:")),
             "{bad_level:?}"
         );
-        let bad_care = triage_gate(&triage_from(serde_json::json!({
-            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+        let bad_care = triage_errors(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["kb:1"],
             "verdict": "accept", "esi_level": 3, "care_setting": "home",
             "red_flag": closed_flag(),
-        })));
+        }));
         assert!(
             bad_care.iter().any(|e| e.starts_with("T18:")),
             "{bad_care:?}"
@@ -9343,20 +10126,20 @@ mod tests {
     fn ed_disposition_requires_open_red_flag_fails_closed() {
         // ed WITH an open flag is the one escalation-bearing path the
         // law admits; ed WITHOUT one is the named self-escalation.
-        let with_open = triage_gate(&triage_from(serde_json::json!({
+        let with_open = triage_errors(serde_json::json!({
             "priority": "P1", "stabilized": false, "search_hits": [],
             "verdict": "accept", "esi_level": 1, "care_setting": "ed",
             "red_flag": open_flag(),
-        })));
+        }));
         assert!(
             !with_open.iter().any(|e| e.starts_with("T5")),
             "ed under an open flag is lawful: {with_open:?}"
         );
-        let without = triage_gate(&triage_from(serde_json::json!({
-            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+        let without = triage_errors(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["kb:1"],
             "verdict": "accept", "esi_level": 4, "care_setting": "ed",
             "red_flag": closed_flag(),
-        })));
+        }));
         assert!(
             without.iter().any(|e| e.starts_with("T5:")),
             "ed without an open flag refuses by name: {without:?}"
@@ -9365,31 +10148,31 @@ mod tests {
 
     #[test]
     fn telehealth_without_modality_adequacy_is_a_named_gate_error() {
-        let missing = triage_gate(&triage_from(serde_json::json!({
-            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+        let missing = triage_errors(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["kb:1"],
             "verdict": "accept", "esi_level": 4,
             "care_setting": "virtual_primary", "red_flag": closed_flag(),
-        })));
+        }));
         assert!(
             missing.iter().any(|e| e.starts_with("T6:")),
             "telehealth without the adequacy decision is a gate error, not a \
              warning: {missing:?}"
         );
-        let carried = triage_gate(&triage_from(serde_json::json!({
-            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+        let carried = triage_errors(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["kb:1"],
             "verdict": "accept", "esi_level": 4,
             "care_setting": "virtual_primary",
             "modality_adequacy": "inadequate_in_person_required",
             "red_flag": closed_flag(),
-        })));
+        }));
         assert!(!carried.iter().any(|e| e.starts_with("T6")), "{carried:?}");
-        let bad_value = triage_gate(&triage_from(serde_json::json!({
-            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+        let bad_value = triage_errors(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["kb:1"],
             "verdict": "accept", "esi_level": 4,
             "care_setting": "virtual_primary",
             "modality_adequacy": "probably fine",
             "red_flag": closed_flag(),
-        })));
+        }));
         assert!(
             bad_value.iter().any(|e| e.starts_with("T17:")),
             "{bad_value:?}"
@@ -9416,7 +10199,7 @@ mod tests {
             if let Some(c) = care {
                 t["care_setting"] = serde_json::json!(c);
             }
-            let errors = triage_gate(&triage_from(t));
+            let errors = triage_errors(t);
             assert_eq!(
                 errors.iter().any(|e| e.starts_with("T10")),
                 !lawful,
@@ -9457,7 +10240,7 @@ mod tests {
         let self_care = TriageArtifact {
             priority: "P2".into(),
             stabilized: true,
-            search_hits: vec![],
+            search_hits: vec!["kb:1".into()],
             verdict: "accept".into(),
             acuity_band: Some("YELLOW".into()),
             esi_level: Some(3),
@@ -9467,7 +10250,7 @@ mod tests {
             confirmed_matches: None,
             red_flag: base.clone(),
         };
-        let free_text_rules: Vec<String> = triage_gate(&self_care);
+        let free_text_rules: Vec<String> = triage_gate(&self_care, &gate_case("free text"));
         assert!(
             free_text_rules.iter().any(|r| r.starts_with("T10")),
             "an open red flag must lock the loop escalate-first; free text produced none of \
@@ -9476,7 +10259,7 @@ mod tests {
 
         // The legit close is unchanged: a real basis closes it and T10 goes quiet.
         let cited = RedFlagArtifact {
-            rule_out_basis: vec!["test:somelog".into()],
+            rule_out_basis: vec!["test:sel://events".into()],
             ..base
         };
         assert!(
@@ -9484,10 +10267,13 @@ mod tests {
             "a kind-prefixed basis IS a citation"
         );
         assert!(!red_flag_is_open(&cited), "and a cited rule-out is closed");
-        let cited_rules = triage_gate(&TriageArtifact {
-            red_flag: cited,
-            ..self_care
-        });
+        let cited_rules = triage_gate(
+            &TriageArtifact {
+                red_flag: cited,
+                ..self_care
+            },
+            &gate_case("cited"),
+        );
         assert!(
             !cited_rules.iter().any(|r| r.starts_with("T10")),
             "a properly cited rule-out is not an open flag, so the lock stays quiet: \
@@ -9506,7 +10292,7 @@ mod tests {
             rule_out_basis: vec!["looked fine to me".into()],
             first_would_miss_impact: "data destroyed".into(),
         };
-        let errors = red_flag_gate(&a);
+        let errors = red_flag_gate(&a, &citation_universe(&gate_case("t13")));
         assert!(
             errors.iter().any(|e| e.starts_with("T13")),
             "a free-text basis must raise T13 — the rule's own message says verify-class \
@@ -9514,12 +10300,14 @@ mod tests {
         );
 
         let cited = RedFlagArtifact {
-            rule_out_basis: vec!["test:ok".into()],
+            rule_out_basis: vec!["test:sel://events".into()],
             ..a
         };
         assert!(
-            !red_flag_gate(&cited).iter().any(|e| e.starts_with("T13")),
-            "a kind-prefixed basis satisfies T13"
+            !red_flag_gate(&cited, &citation_universe(&gate_case("t13")))
+                .iter()
+                .any(|e| e.starts_with("T13")),
+            "a kind-prefixed basis that resolves to held evidence satisfies T13"
         );
     }
 
@@ -9650,17 +10438,17 @@ mod tests {
     fn red_flag_partial_rule_out_keeps_flag_open() {
         // "partial" is OPEN: the ed short-circuit (T5) and the lock (T10)
         // both treat it as unresolved, and a true-without-basis refuses.
-        let partial = triage_gate(&triage_from(serde_json::json!({
-            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+        let partial = triage_errors(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["kb:1"],
             "verdict": "accept", "esi_level": 4, "care_setting": "self_care",
             "red_flag": {
                 "worst_case": "sepsis", "ruled_out": "partial",
                 "rule_out_basis": ["pending lactate"],
                 "first_would_miss_impact": "transfer delay",
             },
-        })));
+        }));
         assert!(partial.iter().any(|e| e.starts_with("T10")), "{partial:?}");
-        let ed_partial = triage_gate(&triage_from(serde_json::json!({
+        let ed_partial = triage_errors(serde_json::json!({
             "priority": "P1", "stabilized": false, "search_hits": [],
             "verdict": "accept", "esi_level": 1, "care_setting": "ed",
             "red_flag": {
@@ -9668,26 +10456,26 @@ mod tests {
                 "rule_out_basis": ["pending lactate"],
                 "first_would_miss_impact": "transfer delay",
             },
-        })));
+        }));
         assert!(
             !ed_partial.iter().any(|e| e.starts_with("T5")),
             "partial IS open: the ed short-circuit stays lawful — {ed_partial:?}"
         );
-        let unproven = triage_gate(&triage_from(serde_json::json!({
-            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+        let unproven = triage_errors(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["kb:1"],
             "verdict": "accept", "esi_level": 4,
             "care_setting": "in_person_primary",
             "red_flag": {
                 "worst_case": "sepsis", "ruled_out": true,
                 "rule_out_basis": [], "first_would_miss_impact": "transfer delay",
             },
-        })));
+        }));
         assert!(
             unproven.iter().any(|e| e.starts_with("T13")),
             "{unproven:?}"
         );
-        let malformed = triage_gate(&triage_from(serde_json::json!({
-            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+        let malformed = triage_errors(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["kb:1"],
             "verdict": "accept", "esi_level": 4,
             "care_setting": "in_person_primary",
             "red_flag": {
@@ -9695,7 +10483,7 @@ mod tests {
                 "rule_out_basis": ["pending lactate"],
                 "first_would_miss_impact": "transfer delay",
             },
-        })));
+        }));
         assert!(
             malformed.iter().any(|e| e.starts_with("T12")),
             "{malformed:?}"
@@ -9840,7 +10628,7 @@ mod tests {
                 match f {
                     0 => {
                         if let Ok(rf) = serde_json::from_str::<RedFlagArtifact>(&text) {
-                            let _ = red_flag_gate(&rf);
+                            let _ = red_flag_gate(&rf, &[]);
                             let _ = red_flag_is_open(&rf);
                             let _ = red_flag_closes(&rf);
                         }
@@ -9900,7 +10688,7 @@ mod tests {
     fn case_with_triage(care: Option<&str>) -> GdlCase {
         let mut case = GdlCase::fresh("t");
         case.triage = Some(triage_from(serde_json::json!({
-            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+            "priority": "P3", "stabilized": false, "search_hits": ["kb:1"],
             "verdict": "accept", "esi_level": 4,
             "care_setting": care, "red_flag": closed_flag(),
         })));
@@ -10070,6 +10858,7 @@ mod tests {
         script.truncate(8);
         script.extend(std::iter::repeat_n(scripted_text(bare), 3));
         let f = fixture(script);
+        seed_kb_for_ticket(&f, "no closure");
         let outcome = runtime
             .block_on(
                 f.driver
@@ -10101,6 +10890,7 @@ mod tests {
         script.truncate(8);
         script.extend(std::iter::repeat_n(scripted_text(bare_handoff), 3));
         let f = fixture(script);
+        seed_kb_for_ticket(&f, "refer");
         let outcome = runtime
             .block_on(f.driver.run_case(1, "refer", &CancellationToken::new()))
             .unwrap();
@@ -10127,6 +10917,7 @@ mod tests {
         script[1] = scripted_text(&urgent_refer);
         script[8] = scripted_text(bare_handoff);
         let f = fixture(script);
+        seed_kb_for_ticket(&f, "urgent refer");
         let outcome = runtime
             .block_on(
                 f.driver
@@ -10147,6 +10938,7 @@ mod tests {
         script.truncate(8);
         script.extend(std::iter::repeat_n(scripted_text(bare_handoff), 3));
         let f = fixture(script);
+        seed_kb_for_ticket(&f, "open flag refer");
         let outcome = runtime
             .block_on(
                 f.driver
@@ -10172,6 +10964,7 @@ mod tests {
         script[1] = scripted_text(TRIAGE_REFER_CLOSED_JSON);
         script[8] = scripted_text(HANDOFF_REFER_CONTRACT_JSON);
         let f = fixture(script);
+        seed_kb_for_ticket(&f, "refer with contract");
         let outcome = runtime
             .block_on(
                 f.driver
@@ -10858,16 +11651,16 @@ mod eval_run1 {
             r#"{{"is_not":{{"what":{{"is":"{symptom} on {component}","is_not":"read path"}},"where":{{"is":"{where_}","is_not":"sibling nodes"}},"when":{{"is":"since monday","is_not":"before monday"}},"extent":{{"is":"one {component}","is_not":"all units"}}}},"telemetry_refs":["tsr://{where_}","sel://{where_}"],"what_changed":"fw update two weeks ago","known_good":"sibling node same fw"}}"#
         );
         let triage = format!(
-            r#"{{"priority":"P3","stabilized":false,"search_hits":["{playbook}"],"verdict":"accept","acuity_band":"GREEN","esi_level":4,"care_setting":"in_person_primary","red_flag":{{"worst_case":"{component} fault spreads to siblings","ruled_out":true,"rule_out_basis":["test:{command} output isolates the fault"],"first_would_miss_impact":"repeat incidents across the fleet"}}}}"#
+            r#"{{"priority":"P3","stabilized":false,"search_hits":["{playbook}"],"verdict":"accept","acuity_band":"GREEN","esi_level":4,"care_setting":"in_person_primary","red_flag":{{"worst_case":"{component} fault spreads to siblings","ruled_out":true,"rule_out_basis":["test:sel://{where_}"],"first_would_miss_impact":"repeat incidents across the fleet"}}}}"#
         );
         let hypothesize = format!(
-            r#"{{"hypotheses":[{{"statement":"{hypothesis}","prediction":"{command} reports degraded","sources":["actual:sel event","test:{command} output"],"confidence":0.8}}]}}"#
+            r#"{{"hypotheses":[{{"statement":"{hypothesis}","prediction":"{command} reports degraded","sources":["actual:{symptom}","test:sel://{where_}"],"confidence":0.8}}]}}"#
         );
         let plan = format!(
             r#"{{"steps":[{{"order":1,"kind":"check","skill_gate":"L1","description":"query {component} state","command":"{command}","expected":"healthy","fail_action":2,"invasiveness":0,"justification":null}},{{"order":2,"kind":"action","skill_gate":"L2","description":"replace {component} part","command":"hw replace","expected":"state healthy","fail_action":null,"invasiveness":2,"justification":null}}],"verify_step":{{"re_run":"the customer workload on {where_}","pass_condition":"latency normal"}},"dead_end":{{"escalate_to":"eng-{component}","required_evidence":["TSR","test log"]}}}}"#
         );
         let act = format!(
-            r#"{{"rows":[{{"order":1,"kind":"check","description":"query {component} state","playbook_ref":"{playbook}","variables":["{component} state"],"expected":"healthy","actual":"degraded","verdict":"fail","evidence_ref":"TSR p.1","dtfvc":{{"diagnose":"{hypothesis}","test":"{command}","fix":null,"verify":"state readback matches degraded","capture":null}},"invasiveness":0,"justification":null}},{{"order":2,"kind":"action","description":"replace {component} part","playbook_ref":"{playbook}","variables":["{component} part"],"expected":"state healthy","actual":"state healthy","verdict":"pass","evidence_ref":"TSR p.2","dtfvc":{{"diagnose":"{hypothesis} confirmed","test":"{command} post-change","fix":"replaced part","verify":"latency normal","capture":"row"}},"invasiveness":2,"justification":null}}],"complete":true}}"#
+            r#"{{"rows":[{{"order":1,"kind":"check","description":"query {component} state","playbook_ref":"{playbook}","variables":["{component} state"],"expected":"healthy","actual":"degraded","verdict":"fail","evidence_ref":"tsr://{where_}","dtfvc":{{"diagnose":"{hypothesis}","test":"{command}","fix":null,"verify":"state readback matches degraded","capture":null}},"invasiveness":0,"justification":null}},{{"order":2,"kind":"action","description":"replace {component} part","playbook_ref":"{playbook}","variables":["{component} part"],"expected":"state healthy","actual":"state healthy","verdict":"pass","evidence_ref":"tsr://{where_}","dtfvc":{{"diagnose":"{hypothesis} confirmed","test":"{command} post-change","fix":"replaced part","verify":"latency normal","capture":"row"}},"invasiveness":2,"justification":null}}],"complete":true}}"#
         );
         let verify = r#"{"re_run":"PLACEHOLDER","pass_condition":"latency normal","pass":true,"stability_window_min":15,"negative_check":true}"#
             .replace("PLACEHOLDER", &format!("the customer workload on {where_}"));
@@ -10903,7 +11696,7 @@ mod eval_run1 {
             "node-042",
             "racadm get battery",
             "battery dead",
-            "P-STORAGE-0104",
+            "kb:1",
         );
         let thermal = (
             "psu",
@@ -10911,7 +11704,7 @@ mod eval_run1 {
             "rack-3",
             "ipmitool sdr",
             "psu failing",
-            "P-POWER-0201",
+            "kb:1",
         );
         let net = (
             "nic",
@@ -10919,7 +11712,7 @@ mod eval_run1 {
             "leaf-7",
             "ethtool -S",
             "sfp degraded",
-            "P-NET-0303",
+            "kb:1",
         );
         let fw = (
             "ssd",
@@ -10927,7 +11720,7 @@ mod eval_run1 {
             "vault-2",
             "smartctl -a",
             "firmware regression",
-            "P-STORAGE-0110",
+            "kb:1",
         );
         let cfg = (
             "switch",
@@ -10935,7 +11728,7 @@ mod eval_run1 {
             "spine-1",
             "show run diff",
             "nightly push failing",
-            "P-NET-0311",
+            "kb:1",
         );
         let mem = (
             "dimm",
@@ -10943,7 +11736,7 @@ mod eval_run1 {
             "node-117",
             "racdm memtest",
             "dimm seat",
-            "P-HW-0402",
+            "kb:1",
         );
         vec![
             Seed { id: "happy-battery", ticket: "rebuild is slow", topic: battery, bad: None, note: "canonical happy case" },
@@ -11018,7 +11811,7 @@ mod eval_run1 {
             "node-042",
             "racadm get battery",
             "battery dead",
-            "P-STORAGE-0104",
+            "kb:1",
         )
     }
 
@@ -11052,6 +11845,15 @@ mod eval_run1 {
                 "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
                  VALUES ('acme', 'troubleshoot', '{}', 0, 'active', 1, 1)",
                 [],
+            )
+            .unwrap();
+        // F8: one corpus row carrying the ticket — the triage retrieval
+        // must return a hit for the must-resolve seeds to resolve.
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO knowledge(domain, title, content, flagged) VALUES ('acme', 'Test playbook', ?1, 0)",
+                rusqlite::params![format!("Test playbook covering the ticket: {}", seed.ticket)],
             )
             .unwrap();
         let host = Arc::new(SqliteWorkflowHost::new(pool.clone()));
@@ -11254,6 +12056,15 @@ mod eval_run1 {
                 [],
             )
             .unwrap();
+        // F8: the one corpus row the differential's citations resolve
+        // against (ticket "rebuild is slow", hit kb:1 in both arms).
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO knowledge(domain, title, content, flagged) VALUES ('acme', 'Test playbook', ?1, 0)",
+                rusqlite::params!("Test playbook covering the ticket: rebuild is slow"),
+            )
+            .unwrap();
         let host = Arc::new(SqliteWorkflowHost::new(pool.clone()));
         let provider = LoopbackProvider::new("loopback", script.to_vec());
         let driver = ctor(
@@ -11315,11 +12126,11 @@ mod eval_run1 {
             "node-042",
             "racadm get battery",
             "battery dead",
-            "P-STORAGE-0104",
+            "kb:1",
         );
         let mut script = happy_script_args(battery);
         script[2] = scripted_text(
-            r#"{"hypotheses":[{"statement":"battery dead","prediction":"racadm get battery reports degraded","sources":["actual:sel event"],"confidence":0.8}]}"#,
+            r#"{"hypotheses":[{"statement":"battery dead","prediction":"racadm get battery reports degraded","sources":["actual:sel://node-042"],"confidence":0.8}]}"#,
         );
         script
     }
@@ -11406,16 +12217,16 @@ mod eval_run1 {
     /// worst case — an open red-flag under a self-care disposition. The
     /// gate refuses (T10); the ablation arm is STILL caught, by the
     /// loop's transition-predicate lock (the backstop finding).
-    const DIAG_SELF_CARE_UNDER_OPEN_FLAG: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["P-STORAGE-0104"],"verdict":"accept","acuity_band":"GREEN","esi_level":4,"care_setting":"self_care","red_flag":{"worst_case":"battery fault spreads to the cluster","ruled_out":false,"rule_out_basis":[],"first_would_miss_impact":"repeat incidents across the fleet"}}"#;
+    const DIAG_SELF_CARE_UNDER_OPEN_FLAG: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["kb:1"],"verdict":"accept","acuity_band":"GREEN","esi_level":4,"care_setting":"self_care","red_flag":{"worst_case":"battery fault spreads to the cluster","ruled_out":false,"rule_out_basis":[],"first_would_miss_impact":"repeat incidents across the fleet"}}"#;
 
     /// E1a's bad triage: the same shape minus the acuity classification
     /// (T4) — a GATE-only duty, so it is the one where the classic
     /// ON/OFF contrast is observable through this instrument.
-    const DIAG_NO_ACUITY: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["P-STORAGE-0104"],"verdict":"accept","care_setting":"in_person_primary","red_flag":{"worst_case":"battery fault","ruled_out":true,"rule_out_basis":["test:racadm battery state reports Failed"],"first_would_miss_impact":"write-cache loss"}}"#;
+    const DIAG_NO_ACUITY: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["kb:1"],"verdict":"accept","care_setting":"in_person_primary","red_flag":{"worst_case":"battery fault","ruled_out":true,"rule_out_basis":["test:sel://node-042"],"first_would_miss_impact":"write-cache loss"}}"#;
 
     /// E3's referral disposition: a non-urgent `refer` whose flag is
     /// verify-class closed; its handoff carries NO return contract (B1).
-    const DIAG_REFER_TRIAGE: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["P-STORAGE-0104"],"verdict":"accept","acuity_band":"GREEN","esi_level":4,"care_setting":"refer","red_flag":{"worst_case":"battery-induced data corruption","ruled_out":true,"rule_out_basis":["test:racadm battery state reports Failed"],"first_would_miss_impact":"write-cache loss"}}"#;
+    const DIAG_REFER_TRIAGE: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["kb:1"],"verdict":"accept","acuity_band":"GREEN","esi_level":4,"care_setting":"refer","red_flag":{"worst_case":"battery-induced data corruption","ruled_out":true,"rule_out_basis":["test:sel://node-042"],"first_would_miss_impact":"write-cache loss"}}"#;
 
     /// E2's bad handoff: the closure-less capture — the auto-close drift
     /// the closure duty exists to block (A8).
@@ -11437,6 +12248,14 @@ mod eval_run1 {
                 "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
                  VALUES ('acme', 'troubleshoot', '{}', 0, 'active', 1, 1)",
                 [],
+            )
+            .unwrap();
+        // F8: the corpus row the diag scripts' citations resolve against.
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO knowledge(domain, title, content, flagged) VALUES ('acme', 'Test playbook', ?1, 0)",
+                rusqlite::params!["Test playbook covering the ticket: diag eval"],
             )
             .unwrap();
         let host = Arc::new(SqliteWorkflowHost::new(pool.clone()));

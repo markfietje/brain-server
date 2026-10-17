@@ -426,6 +426,13 @@ mod tests {
         assert_eq!(CHARS_PER_TOKEN, 4);
     }
 
+    /// F17: the summary cap pinned by value. `shape_summary` refuses past
+    /// it at any value; the literal IS the ceiling.
+    #[test]
+    fn summary_cap_is_pinned_by_value() {
+        assert_eq!(SUMMARY_CAP, 16_384);
+    }
+
     #[test]
     fn below_pressure_returns_none() {
         // 10 events × 1,000 tokens = 10k < 16k pressure.

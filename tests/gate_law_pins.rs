@@ -433,7 +433,10 @@ fn r51_gate_law_register_entries_carry_justifications() {
 #[test]
 fn r51_gdl_engine_site_is_bound_to_new_with_proficiency() {
     let lines = strip_comments(&read_src("src/workflow/gdl.rs"));
-    let site_line = 2500usize;
+    // Re-dated for Phase D (F11): the triage-retrieval + resolution gates
+    // moved the engine construction down. The register binds the SYMBOL
+    // (`new_with_proficiency`); this number is the re-derived anchor.
+    let site_line = 2841usize;
 
     // Walk backwards to the nearest `fn` declaration.
     let enclosing = lines
@@ -454,8 +457,8 @@ fn r51_gdl_engine_site_is_bound_to_new_with_proficiency() {
         "the `LoopDriver::new` at gdl.rs:{site_line} lives inside a function declared at \
          :{decl_line} — `{decl}` — but the register binds `{GDL_ENCLOSING_SYMBOL}`. The \
          register must bind the function the call actually lives in: `GdlDriver::new` \
-         (:2458) is only the L3-delegating wrapper that calls `new_with_proficiency` \
-         (:2482), which is where the engine is built."
+         (:2799) is only the L3-delegating wrapper that calls `new_with_proficiency` \
+         (:2823), which is where the engine is built."
     );
 
     // And the wrapper really is a delegator, not a constructor. Bound the search to
@@ -635,11 +638,13 @@ fn r51_spawn_outcome_reaches_parse_and_gate_bounded_by_phase_attempts() {
     let gdl = strip_comments(&read_src("src/workflow/gdl.rs"));
 
     // The seam: the delegate call is followed by the Completed outcome being consumed.
+    // (F11: the seam spends from the case budget via the budgeted variant;
+    // the outcome-consumption property this pin guards is unchanged.)
     let seam = gdl
         .iter()
-        .position(|l| l.contains("delegate_owned("))
+        .position(|l| l.contains("delegate_owned_budgeted("))
         .map(|i| i + 1)
-        .expect("gdl.rs must call delegate_owned (the adversarial-recheck seam)");
+        .expect("gdl.rs must call delegate_owned_budgeted (the adversarial-recheck seam)");
     let window: String = gdl[(seam - 1).min(gdl.len())..(seam + 60).min(gdl.len())].join("\n");
     assert!(
         window.contains("SubagentOutcome::Completed"),

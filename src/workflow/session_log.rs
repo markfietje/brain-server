@@ -1129,6 +1129,18 @@ mod tests {
         assert!(scoped_replay(&conn, 1, 10, Some(parent)).is_err());
     }
 
+    /// F17: the scope-scan caps pinned by value. The select-before-cap
+    /// behavior holds at any cap; these literals ARE the scan budget, the
+    /// key/kind byte fences, and the replay window.
+    #[test]
+    fn scope_caps_are_pinned_by_value() {
+        assert_eq!(REPLAY_CAP, 500);
+        assert_eq!(PAYLOAD_CAP_BYTES, 65_536);
+        assert_eq!(SCOPE_LOOKUP_CAP, 8192);
+        assert_eq!(SCOPE_KEY_BYTES, 1024);
+        assert_eq!(SCOPE_KIND_BYTES, 256);
+    }
+
     #[test]
     fn scoped_replay_selects_before_cap_and_refuses_lookup_exhaustion() {
         let conn = db();

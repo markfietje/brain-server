@@ -986,6 +986,26 @@ pub(crate) fn publishable_article_row(
     .optional()
 }
 
+/// The triage corpus seed (test-only): one unflagged, unexpired knowledge
+/// row carrying the ticket, so the server retrieval returns exactly one
+/// hit. The SQL lives HERE — a domain core taking `&Connection` — because
+/// handlers are protocol adapters: the Cornerstone law bans SQL under
+/// `src/handlers/` with no allowlist, test helpers included. It sits just
+/// before the tests module: after all production code (so the
+/// production-view scanners never truncate on it) and before it (so the
+/// items-after-test-module lint stays quiet).
+#[cfg(test)]
+pub(crate) fn seed_test_article(conn: &Connection, domain: &str, ticket: &str) -> i64 {
+    let n = conn
+        .execute(
+            "INSERT INTO knowledge(domain, title, content, flagged) VALUES (?1, 'Test playbook', ?2, 0)",
+            params![domain, format!("Test playbook covering the ticket: {ticket}")],
+        )
+        .unwrap();
+    assert_eq!(n, 1, "the triage corpus seeds exactly one row");
+    conn.last_insert_rowid()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
