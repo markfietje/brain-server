@@ -8676,6 +8676,10 @@ Final paragraph after the rule.";
             "gdl_instruction_replays_with_model_fragments_inside_the_fence",
             "user_replay_arm_neutralizes_a_forged_fence_close",
             "plain_user_prefixes_are_not_envelopes_and_escaped_content_is_checked",
+            // The recall path's own injection row: a real question, a real
+            // stored attack, the composed app. Named so a future reader does
+            // not assume the read seam is covered by the fence row above.
+            "recall_injection_flow",
         ] {
             assert!(
                 reg.contains(must_name),
