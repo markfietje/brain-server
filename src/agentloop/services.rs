@@ -328,6 +328,9 @@ pub(crate) struct AgentsSvc {
     tools: Vec<ToolDef>,
     provider: Arc<dyn LlmProvider>,
     budget: ExchangeBudget,
+    /// The owner driver's posture: children inherit it (F13), never
+    /// re-default. Boxed: LoopConfig is large and `Built` is a wide enum.
+    config: Box<crate::agentloop::run_loop::LoopConfig>,
     injects: Vec<&'static str>,
 }
 
@@ -363,6 +366,7 @@ impl AgentsSvc {
             &self.host,
             &self.env,
             &self.tools,
+            &self.config,
             Arc::clone(&self.provider),
             run_id,
             spec,
@@ -630,6 +634,7 @@ fn build(
                 .as_ref()
                 .and_then(|c| c.budget_accounting.clone())
                 .unwrap_or_else(|| ExchangeBudget::new(None));
+            let config = owners.config.clone().unwrap_or_default().into();
             Built::Agents(AgentsSvc {
                 pool,
                 host: Arc::clone(host),
@@ -637,6 +642,7 @@ fn build(
                 tools,
                 provider,
                 budget,
+                config,
                 injects: edges,
             })
         }

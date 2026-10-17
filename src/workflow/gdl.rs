@@ -2791,6 +2791,9 @@ struct RecheckDeps {
     provider: Arc<dyn LlmProvider>,
     env: ExecutionEnv,
     tools: Vec<ToolDef>,
+    /// The driver's own posture: the recheck child inherits it (F13),
+    /// never re-defaults.
+    config: LoopConfig,
 }
 
 /// The typed outcome of the adversarial re-check. A contradiction is the
@@ -2844,6 +2847,7 @@ impl GdlDriver {
             provider: provider.clone(),
             env: env.clone(),
             tools: tools.clone(),
+            config: config.clone(),
         };
         let harness = Arc::new(AgentHarness::new(host.clone(), "gdl", GDL_METHOD_PROMPT));
         let mut loop_driver = LoopDriver::new(
@@ -3061,6 +3065,7 @@ impl GdlDriver {
             &deps.host,
             &deps.env,
             &deps.tools,
+            &deps.config,
             deps.provider.clone(),
             run_id,
             &spec,

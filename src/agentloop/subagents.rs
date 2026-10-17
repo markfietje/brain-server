@@ -567,6 +567,7 @@ pub(crate) async fn delegate(
     host: &Arc<SqliteWorkflowHost>,
     parent_env: &ExecutionEnv,
     parent_tools: &[ToolDef],
+    parent_config: &crate::agentloop::run_loop::LoopConfig,
     provider: Arc<dyn LlmProvider>,
     run_id: i64,
     spec: &SubagentSpec,
@@ -579,6 +580,7 @@ pub(crate) async fn delegate(
         host,
         parent_env,
         parent_tools,
+        parent_config,
         provider,
         run_id,
         spec,
@@ -599,6 +601,7 @@ pub(crate) async fn delegate_owned(
     host: &Arc<SqliteWorkflowHost>,
     parent_env: &ExecutionEnv,
     parent_tools: &[ToolDef],
+    parent_config: &crate::agentloop::run_loop::LoopConfig,
     provider: Arc<dyn LlmProvider>,
     run_id: i64,
     spec: &SubagentSpec,
@@ -612,6 +615,7 @@ pub(crate) async fn delegate_owned(
         host,
         parent_env,
         parent_tools,
+        parent_config,
         provider,
         run_id,
         spec,
@@ -631,6 +635,7 @@ pub(crate) async fn delegate_owned_budgeted(
     host: &Arc<SqliteWorkflowHost>,
     parent_env: &ExecutionEnv,
     parent_tools: &[ToolDef],
+    parent_config: &crate::agentloop::run_loop::LoopConfig,
     provider: Arc<dyn LlmProvider>,
     run_id: i64,
     spec: &SubagentSpec,
@@ -652,6 +657,30 @@ pub(crate) async fn delegate_owned_budgeted(
         .filter(|t| spec.allowed_tools.contains(&t.name))
         .cloned()
         .collect();
+    // F13: the child starts from the PARENT's posture, never the default.
+    // The spec's two bounds apply tighten-only: a widening ask is a
+    // delegation REFUSAL before any dispatch, never a silent clamp. The
+    // spec carries only these two bounds — the seven posture fields
+    // (compaction policy, replay cap, output cap, timeout, recheck
+    // posture) inherit verbatim, and NO loosen-override fields exist on
+    // the spec: a speculative knob is how a second widening path gets
+    // built. Hooks stay pass_through — posture is config, not hooks.
+    if spec.max_turns > parent_config.max_turns {
+        return Err(LoopError::Harness(format!(
+            "delegation refused: spec max_turns {} would widen the parent's {} \
+             — a child tightens, never widens",
+            spec.max_turns, parent_config.max_turns
+        )));
+    }
+    if let Some(parent_ceiling) = parent_config.token_budget
+        && spec.token_budget > parent_ceiling
+    {
+        return Err(LoopError::Harness(format!(
+            "delegation refused: spec token_budget {} would widen the parent's \
+             {parent_ceiling} ceiling — a child tightens, never widens",
+            spec.token_budget
+        )));
+    }
     let prefix = format!("child:{}:", spec.name);
     let mut child = LoopDriver::new(
         pool.clone(),
@@ -663,7 +692,7 @@ pub(crate) async fn delegate_owned_budgeted(
         LoopConfig {
             max_turns: spec.max_turns,
             token_budget: Some(spec.token_budget),
-            ..LoopConfig::default()
+            ..parent_config.clone()
         },
         &prefix,
         LoopHooks::pass_through(),
@@ -980,6 +1009,7 @@ mod tests {
                 &d.host,
                 &d.env,
                 &[],
+                &LoopConfig::default(),
                 provider.clone(),
                 1,
                 &spec,
@@ -1004,11 +1034,13 @@ mod tests {
             // Exhaust this fixture's four-connection pool before first poll.
             // The owned-admission worker cannot complete until we release it.
             let held: Vec<_> = (0..4).map(|_| d.pool.get().unwrap()).collect();
+            let held_config = LoopConfig::default();
             let mut retry = Box::pin(delegate_owned_budgeted(
                 &d.pool,
                 &d.host,
                 &d.env,
                 &[],
+                &held_config,
                 provider.clone(),
                 1,
                 &spec,
@@ -1137,6 +1169,7 @@ mod tests {
                 &d.host,
                 &d.env,
                 &[],
+                &LoopConfig::default(),
                 provider.clone(),
                 1,
                 &spec,
@@ -1162,6 +1195,7 @@ mod tests {
                 &d.host,
                 &d.env,
                 &[],
+                &LoopConfig::default(),
                 provider.clone(),
                 1,
                 &spec,
@@ -1194,6 +1228,7 @@ mod tests {
             &d.host,
             &d.env,
             &[],
+            &LoopConfig::default(),
             provider,
             1,
             &spec("scout", &[], 1000),
@@ -1223,6 +1258,7 @@ mod tests {
                 &d.host,
                 &d.env,
                 &[],
+                &LoopConfig::default(),
                 provider.clone(),
                 1,
                 &spec("scout", &[], 1000),
@@ -1240,6 +1276,7 @@ mod tests {
                 &d.host,
                 &d.env,
                 &[],
+                &LoopConfig::default(),
                 provider.clone(),
                 1,
                 &spec("scout", &[], 1000),
@@ -1303,6 +1340,7 @@ mod tests {
                 &d.host,
                 &d.env,
                 &[brain_engine_sdk::env::create_read_tool()],
+                &LoopConfig::default(),
                 provider,
                 1,
                 &spec("scout", &["read"], 1000),
@@ -1353,6 +1391,7 @@ mod tests {
             &d.host,
             &d.env,
             &[],
+            &LoopConfig::default(),
             Arc::new(NoEnd),
             1,
             &spec("scout", &[], 900),
@@ -1398,6 +1437,7 @@ mod tests {
                 &d.host,
                 &d.env,
                 &[],
+                &LoopConfig::default(),
                 LoopbackProvider::new("loopback", vec![scripted_text("must not run")]),
                 2,
                 &spec("scout", &[], 900),
@@ -1464,6 +1504,7 @@ mod tests {
                     &d.host,
                     &d.env,
                     &[],
+                    &LoopConfig::default(),
                     Arc::clone(&provider) as Arc<dyn LlmProvider>,
                     1,
                     &spec("scout", &[], 900),
@@ -1649,6 +1690,7 @@ mod tests {
             &d.host,
             &d.env,
             &[],
+            &LoopConfig::default(),
             provider.clone(),
             1,
             &spec("scout", &[], 1000),
@@ -1722,13 +1764,14 @@ mod tests {
         let cancel = CancellationToken::new();
         runtime.block_on(async {
             change_claim(&d.pool, 1, "parent", true).await.unwrap();
-            let first = delegate_owned(&d.pool, &d.host, &d.env, &[], paused, 1, &spec, "first", "parent", &cancel);
+            let paused_config = LoopConfig::default();
+            let first = delegate_owned(&d.pool, &d.host, &d.env, &[], &paused_config, paused, 1, &spec, "first", "parent", &cancel);
             tokio::pin!(first);
             tokio::select! {
                 result = &mut first => panic!("returned before stream pause: {result:?}"),
                 signal = tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()) => signal.unwrap(),
             }
-            assert!(delegate_owned(&d.pool, &d.host, &d.env, &[], other.clone(), 1, &spec, "second", "parent", &cancel).await.is_err());
+            assert!(delegate_owned(&d.pool, &d.host, &d.env, &[], &LoopConfig::default(), other.clone(), 1, &spec, "second", "parent", &cancel).await.is_err());
             assert!(other.requests().is_empty());
             assert!(change_claim(&d.pool, 1, "parent", false).await.is_err());
             cancel.cancel();
@@ -1756,6 +1799,7 @@ mod tests {
                 &d.host,
                 &d.env,
                 &[],
+                &LoopConfig::default(),
                 provider.clone(),
                 1,
                 &spec,
@@ -1770,6 +1814,7 @@ mod tests {
                 &d.host,
                 &d.env,
                 &[],
+                &LoopConfig::default(),
                 provider.clone(),
                 1,
                 &spec,
@@ -1784,6 +1829,7 @@ mod tests {
                 &d.host,
                 &d.env,
                 &[],
+                &LoopConfig::default(),
                 provider.clone(),
                 1,
                 &spec,
@@ -1827,6 +1873,7 @@ mod tests {
                     &d.host,
                     &d.env,
                     &[],
+                    &LoopConfig::default(),
                     provider.clone(),
                     1,
                     &spec("scout", &[], 1000),
@@ -1902,6 +1949,7 @@ mod tests {
                     &d.host,
                     &d.env,
                     &[],
+                    &LoopConfig::default(),
                     provider.clone(),
                     1,
                     &child,
@@ -1949,6 +1997,7 @@ mod tests {
                 &d.host,
                 &d.env,
                 &[brain_engine_sdk::env::create_read_tool()],
+                &LoopConfig::default(),
                 provider.clone(),
                 1,
                 &child,
@@ -2068,6 +2117,7 @@ mod tests {
                     &d.host,
                     &d.env,
                     &[brain_engine_sdk::env::create_read_tool()],
+                    &LoopConfig::default(),
                     child_provider.clone(),
                     1,
                     &child,
@@ -2189,6 +2239,7 @@ mod tests {
                 &d.host,
                 &d.env,
                 &[brain_engine_sdk::env::create_read_tool()],
+                &LoopConfig::default(),
                 child_provider.clone(),
                 1,
                 &child,
@@ -2261,6 +2312,165 @@ mod tests {
         );
     }
 
+    /// F13: a child inherits the parent's posture — observable through the
+    /// session replay cap, because the compaction-quota arm itself is
+    /// structurally unreachable in a delegated child: the child's scoped
+    /// replay sees only its own exchange, and pressure big enough to admit
+    /// always exceeds KEEP_VERBATIM over the all-live tail, so the
+    /// tail-budget law refuses BEFORE any quota check. The replay cap has
+    /// no such wall: a parent posture of cap 2 makes the child's second
+    /// call unrepresentable, and the child FAILS where a default-posture
+    /// (cap 500) child completes.
+    ///
+    /// Anti-vacuity: the same delegation under the DEFAULT parent posture
+    /// completes — the refusal is caused by the inherited cap, not by
+    /// delegation or the tool. The quota field rides the same
+    /// `..parent_config` spread this pin exercises.
+    #[test]
+    fn a_child_inherits_the_parents_posture_not_the_default() {
+        let d = deleg();
+        let runtime = rt();
+        let cancel = CancellationToken::new();
+        let script: Vec<_> = (0..4)
+            .map(|i| scripted_text_then_tool("reading", &format!("t{i}"), "read", "a.txt"))
+            .collect();
+        let provider = LoopbackProvider::new("loopback", script);
+        runtime
+            .block_on(change_claim(&d.pool, 1, "parent", true))
+            .unwrap();
+        // The PARENT's posture: replay cap 2. The child inherits it.
+        let parent_config = LoopConfig {
+            session_replay_cap: 2,
+            ..LoopConfig::default()
+        };
+        let child = spec("scout", &["read"], 1_000);
+        let inherited = runtime.block_on(delegate_owned_budgeted(
+            &d.pool,
+            &d.host,
+            &d.env,
+            &[brain_engine_sdk::env::create_read_tool()],
+            &parent_config,
+            provider.clone(),
+            1,
+            &child,
+            "posture",
+            "parent",
+            &cancel,
+            &ExchangeBudget::new(None),
+        ));
+        let err = match inherited {
+            Ok(outcome) => panic!(
+                "a cap-2 parent must make the child's context unrepresentable, \
+                 got {outcome:?}"
+            ),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("context_"),
+            "the failure is the inherited replay cap's scope refusal: {err:?}"
+        );
+        // Anti-vacuity: under the DEFAULT parent posture the same child
+        // shape completes — the refusal above is the inherited cap at
+        // work, not delegation or the tool. (Fresh fixture: the first
+        // arm's unfinished exchange holds its run's ownership by design.
+        // Plain text turn: a tool-free turn completes a child in one
+        // call, so no second call ever needs the window.)
+        let d2 = deleg();
+        runtime
+            .block_on(change_claim(&d2.pool, 1, "parent", true))
+            .unwrap();
+        let provider2 = LoopbackProvider::new("loopback", vec![scripted_text("done reading")]);
+        let default_driver_config = LoopConfig::default();
+        let child = spec("scout", &["read"], 1_000);
+        let default_posture = runtime.block_on(delegate_owned_budgeted(
+            &d2.pool,
+            &d2.host,
+            &d2.env,
+            &[],
+            &default_driver_config,
+            provider2,
+            1,
+            &child,
+            "posture-default",
+            "parent",
+            &cancel,
+            &ExchangeBudget::new(None),
+        ));
+        drop(d2);
+        assert!(
+            matches!(default_posture, Ok(SubagentOutcome::Completed { .. })),
+            "the default posture completes the same delegation: {default_posture:?}"
+        );
+    }
+
+    /// F13: a child may tighten but never WIDEN a spec'd bound. Both
+    /// widening asks — max_turns above the parent's cap, and a token
+    /// budget above the parent's own ceiling — are DELEGATION REFUSALS
+    /// before any dispatch (no provider call), never silent clamps.
+    #[test]
+    fn a_child_may_tighten_but_never_widen_a_bound() {
+        let d = deleg();
+        let runtime = rt();
+        let cancel = CancellationToken::new();
+        let provider = LoopbackProvider::new("loopback", vec![scripted_text("widened")]);
+        runtime
+            .block_on(change_claim(&d.pool, 1, "parent", true))
+            .unwrap();
+        // max_turns widen: parent cap 4, spec asks 8.
+        let parent_config = LoopConfig {
+            max_turns: 4,
+            ..LoopConfig::default()
+        };
+        let mut child = spec("scout", &[], 1_000);
+        child.max_turns = 8;
+        let result = runtime.block_on(delegate_owned_budgeted(
+            &d.pool,
+            &d.host,
+            &d.env,
+            &[],
+            &parent_config,
+            provider.clone(),
+            1,
+            &child,
+            "widen-turns",
+            "parent",
+            &cancel,
+            &ExchangeBudget::new(None),
+        ));
+        assert!(
+            result.is_err(),
+            "a spec max_turns above the parent's cap must refuse: {result:?}"
+        );
+        // token_budget widen: parent ceiling Some(1_000), spec asks 50_000.
+        let parent_config = LoopConfig {
+            token_budget: Some(1_000),
+            ..LoopConfig::default()
+        };
+        let child = spec("scout", &[], 50_000);
+        let result = runtime.block_on(delegate_owned_budgeted(
+            &d.pool,
+            &d.host,
+            &d.env,
+            &[],
+            &parent_config,
+            provider.clone(),
+            1,
+            &child,
+            "widen-budget",
+            "parent",
+            &cancel,
+            &ExchangeBudget::new(None),
+        ));
+        assert!(
+            result.is_err(),
+            "a spec budget above the parent's ceiling must refuse: {result:?}"
+        );
+        assert!(
+            provider.requests().is_empty(),
+            "a widened delegation refuses BEFORE any dispatch"
+        );
+    }
+
     #[test]
     fn child_completes_a_scoped_task_in_the_parents_chain() {
         let d = deleg();
@@ -2278,6 +2488,7 @@ mod tests {
                     brain_engine_sdk::env::create_read_tool(),
                     brain_engine_sdk::env::create_write_tool(),
                 ],
+                &LoopConfig::default(),
                 provider.clone(),
                 1,
                 &spec("scout", &["read"], 1_000),
@@ -2359,6 +2570,7 @@ mod tests {
                 &d.host,
                 &d.env,
                 &[brain_engine_sdk::env::create_read_tool()],
+                &LoopConfig::default(),
                 provider,
                 1,
                 &spec("scout", &["read"], 1_000),
@@ -2424,6 +2636,7 @@ mod tests {
                     brain_engine_sdk::env::create_read_tool(),
                     brain_engine_sdk::env::create_write_tool(),
                 ],
+                &LoopConfig::default(),
                 provider,
                 1,
                 &s,
@@ -2490,6 +2703,7 @@ mod tests {
                 &d.host,
                 &parent_env,
                 &tools,
+                &LoopConfig::default(),
                 provider,
                 1,
                 &s,
@@ -2562,6 +2776,7 @@ mod tests {
                 &d.host,
                 &parent_env,
                 &tools,
+                &LoopConfig::default(),
                 provider,
                 1,
                 &s,
@@ -2604,6 +2819,7 @@ mod tests {
                 &d.host,
                 &d.env,
                 &[brain_engine_sdk::env::create_read_tool()],
+                &LoopConfig::default(),
                 provider,
                 1,
                 &spec("frugal", &["read"], 10),
@@ -2661,6 +2877,7 @@ mod tests {
                 &d.host,
                 &env,
                 &[brain_engine_sdk::env::create_read_tool()],
+                &LoopConfig::default(),
                 provider,
                 1,
                 &spec("blind", &["read"], 1_000),
