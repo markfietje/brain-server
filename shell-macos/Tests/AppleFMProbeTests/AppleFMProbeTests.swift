@@ -776,3 +776,506 @@ extension AppleFMProbeTests {
     }
 }
 #endif
+// HISTORY PRESSURE — trims, never rewrites.
+//
+// The window is 4,096 combined and the measured conversation budget is 3,728.
+// A chat session passes that in a handful of turns, so this is the failure the
+// shell WILL hit, not a theoretical one.
+//
+// The rule being pinned is Apple's, quoted in `HistoryBudget`: appending
+// preserves the key-value cache, mutation invalidates it, and rewriting can
+// confuse the model. So the budget is spent by trimming a COPY per request
+// (`historyTransform`), and the session's own transcript is append-only.
+//
+// WHY A LENGTH ASSERTION ALONE IS NOT ENOUGH. Both a trimmer and a rewriter
+// make the transcript shorter, so "the transcript got smaller" is satisfied by
+// the implementation the prompt exists to rule out. The discriminator is
+// DIRECTION: a trimmer never changes what the session holds, a rewriter does.
+// So this asserts the session's transcript is monotonically NON-DECREASING
+// across turns that blow the budget, while the turn still succeeds — which is
+// what "trims and continues" actually means.
+@Test("History pressure: the session's own transcript is never rewritten")
+func historyPressureTrimsAndNeverRewrites() async throws {
+    #if canImport(FoundationModels)
+    // 27.0, not 26.4: `historyTransform` is a Dynamic Profile modifier, and
+    // the profile path — not the availability of the model — is what this pin
+    // is about. `LanguageModelSession(model:)` has no transform overload at all.
+    guard #available(macOS 27.0, *) else {
+        print("historyTransform needs macOS 27 — history pressure not driven here")
+        return
+    }
+    let model = SystemLanguageModel.default
+    guard case .available = model.availability else {
+        print("on-device model unavailable — history pressure not driven here")
+        return
+    }
+
+    // The budget is measured, not assumed — same seam the router uses.
+    guard let budget = await ContextBudget.measureOnDeviceDefaults(), budget > 0 else {
+        print("on-device budget not measurable here — history pressure not driven")
+        return
+    }
+    print("")
+    print("── History pressure (budget \(budget) tokens) ──")
+
+    // The transform under test, wired the way the shell will wire it: on the
+    // Dynamic Profile, because `historyTransform` is a PROFILE modifier and
+    // there is no `LanguageModelSession(model:…)` overload that takes one.
+    // (That is the same fact that makes PCC reachable only through a profile.)
+    // Async measurement, synchronous application — the split the framework's
+    // signature forces. The controller re-plans before each turn; the closure
+    // it hands back is what `historyTransform` calls per request, and it only
+    // filters. The pinned property is that `apply` returns a SUBSET and never
+    // mutates: the session keeps everything.
+    let controller = HistoryBudget.Controller(budgetTokens: budget)
+    let session = LanguageModelSession(
+        profile: LanguageModelSession.Profile {
+            Instructions("Reply with one short sentence.")
+        }
+        .model(model)
+        .historyTransform(controller.transform)
+    )
+
+    // Filler sized so the conversation passes the measured budget in a few
+    // turns without needing so many turns that the suite becomes the problem.
+    // Sized so FIVE turns blow the measured 3,728-token budget on their own.
+    // The earlier version sent ~655 tokens in total and printed "budget not
+    // exceeded in this run" — a green test that had demonstrated nothing about
+    // pressure at all, which is worse than a red one because it looks like
+    // coverage. The pressure is now a precondition of the test, asserted below.
+    let filler = String(repeating: "context ", count: 1200)
+    var historyCounts: [Int] = []
+    var transcriptIds: [[Transcript.Entry.ID]] = []
+    var tokensSeen = 0
+    var trimmedCounts: [Int] = []
+    var seenTokens: [Int] = []
+
+    for turn in 1...5 {
+        let prompt = "\(filler)\nTurn \(turn): name one word."
+        // Charge the prompt we are ABOUT to send against the budget before the
+        // turn, not after it fails.
+        let promptCost = try await model.tokenCount(for: prompt)
+        await controller.refresh(
+            Array(session.transcript), incomingTokens: promptCost
+        ) { entry in
+            await AppleFMProbeTests.cost(of: entry, model: model)
+        }
+        let response = try await session.respond(to: prompt)
+        tokensSeen += promptCost
+        historyCounts.append(session.transcript.count)
+        transcriptIds.append(Array(session.transcript).map(\.id))
+        // What the REQUEST saw, as opposed to what the session holds. The two
+        // diverging is the whole point: the model gets less, the session keeps
+        // everything.
+        let plan = controller.currentPlan
+        let seen = plan.apply(Array(session.transcript))
+        trimmedCounts.append(seen.count)
+        seenTokens.append(await AppleFMProbeTests.totalCost(of: seen, model: model))
+
+        // The conversation must SURVIVE the budget. A session that trims badly
+        // does not fail gracefully — it throws `contextSizeExceeded`, and the
+        // user sees a dead chat.
+        #expect(
+            !response.content.isEmpty,
+            "turn \(turn) returned no text — the trim starved the conversation"
+        )
+    }
+
+    // THE DISCRIMINATOR, and it is ids rather than a LENGTH — because the
+    // length check was tried first and it does not work.
+    //
+    // A rewrite drill (mutate `session.transcript` in place to fit the budget)
+    // produced [3, 5, 7, 8, 8]: still monotonically NON-DECREASING, because a
+    // rewrite that drops two entries is immediately followed by the framework
+    // appending the next prompt and response. The count never shrinks, so the
+    // length assertion passed on exactly the implementation this pin exists to
+    // reject. A naive length check is decorative; it was removed.
+    //
+    // The invariant that does distinguish them is APPEND-ONLY ON IDENTITY: every
+    // entry the session has ever held must still be there. A trimmer drops
+    // nothing, so the id set only ever grows. A rewriter drops the OLDEST
+    // entry, and that id never comes back.
+    // IDENTITY, and this is the assertion that has teeth. It rests on a contract
+    // Apple documents for `Identifiable` on transcript entries but does NOT
+    // spell out for THIS type: that an entry's id is stable across requests.
+    // Nothing in the SDK says so. The only stability statement the framework
+    // makes is about `GenerationID` — stable for the duration of a response,
+    // explicitly NOT across responses — which is a caution, not a permission.
+    //
+    // So the trimmer's correctness rests on an undocumented property, and the
+    // honest thing is to PIN it rather than assume it. If ids are not stable,
+    // `dropped` silently misses, the trim does nothing, and the session starts
+    // throwing `contextSizeExceeded` under load — a failure whose cause is two
+    // layers away from its symptom.
+    //
+    // The rewrite drill is caught by the same data: a rewrite drops an entry the
+    // session already recorded, and that id never comes back.
+    var seenIds: Set<Transcript.Entry.ID> = []
+    for (index, count) in historyCounts.enumerated() {
+        let currentIds = Set(transcriptIds[index])
+        let lost = seenIds.subtracting(currentIds)
+        #expect(
+            lost.isEmpty,
+            """
+            turn \(index + 1): \(lost.count) entry id(s) the session had already \
+            recorded are GONE (\(currentIds.count) now, was \
+            \(seenIds.count + lost.count)). Either the transcript was rewritten, \
+            or Transcript.Entry.id is not stable across requests — and the \
+            trimmer's drop-set depends on it being stable.
+            """
+        )
+        seenIds.formUnion(currentIds)
+        #expect(
+            count == currentIds.count,
+            "turn \(index + 1) counted \(count) entries but saw \(currentIds.count) distinct ids — ids are colliding"
+        )
+    }
+    #expect(
+        historyCounts.last ?? 0 > 0,
+        "the session recorded no history at all, so nothing was actually trimmed"
+    )
+    print("  session transcript across turns: \(historyCounts)")
+    print("  what each request saw:          \(trimmedCounts)")
+    print("  tokens the session accumulated: \(tokensSeen) against a \(budget)-token budget")
+    print("  tokens each request actually saw: \(seenTokens)")
+    // Anti-vacuity: a run that never reached the budget has not tested
+    // pressure, so the run is VOID rather than green.
+    #expect(
+        tokensSeen > budget,
+        "the conversation never exceeded the \(budget)-token budget — this run proved nothing about pressure"
+    )
+    #expect(
+        seenTokens.allSatisfy { $0 <= budget },
+        "a request saw more than the budget allows — the trim did not fit"
+    )
+    print("  budget EXCEEDED and the conversation continued")
+    print("──────────────────────────────")
+    #endif
+}
+
+// THE WATERMARK IS A POLICY ASSERTION, and it cannot be pinned behaviourally
+// here — so it is pinned on the pure function instead.
+//
+// Apple's key-value-caching article: *"Defer removing entries from the
+// transcript until the context window is nearly full, then consolidate the
+// context in a single operation rather than trimming incrementally after each
+// turn."* Trimming to the MINIMUM every turn — which the first version of
+// `HistoryBudget` did, and which its own comment called "the point" — changes
+// the kept set on every request and re-prefills the whole history each time.
+//
+// That cost is not observable in this environment: `usage.input.cachedTokenCount`
+// reads 0 on this build even for a plain warm second turn (measured, twice), so
+// there is no cache signal to assert against. Asserting TTFT instead would be
+// measuring the runner.
+//
+// So the property is pinned where it IS decidable — on `plan`, which is a pure
+// function of (entries, costs, budget). The claim is "a trim leaves headroom, so
+// several turns can append onto a stable prefix", and a trim-to-the-minimum
+// implementation violates it while still passing every behavioural pin above.
+// Drilled: setting the watermark to 1.0 leaves all of them green.
+@Test("A trim consolidates ONCE to a watermark, so appends land on a stable prefix")
+func trimConsolidatesOnceRatherThanEveryTurn() {
+    #if canImport(FoundationModels)
+    guard #available(macOS 27.0, *) else { return }
+
+    func promptEntry(_ text: String) -> Transcript.Entry {
+        .prompt(Transcript.Prompt(segments: [.text(Transcript.TextSegment(content: text))]))
+    }
+    func responseEntry(_ text: String) -> Transcript.Entry {
+        .response(Transcript.Response(segments: [.text(Transcript.TextSegment(content: text))]))
+    }
+
+    // Simulated conversation: one exchange costs 220 tokens against a 900-token
+    // budget, and every turn appends one more exchange.
+    let budget = 900
+    let perTurn = 220
+    var entries: [Transcript.Entry] = []
+    var costs: [Int] = []
+    for i in 0..<12 {
+        entries.append(promptEntry("q\(i)")); costs.append(200)
+        entries.append(responseEntry("a\(i)")); costs.append(20)
+    }
+
+    // UNDER budget, nothing is touched at all — "nearly full" means nearly full.
+    let under = HistoryBudget.plan(entries, costs: costs, budgetTokens: budget * 4)
+    #expect(
+        under.droppedTokens == 0,
+        "a conversation inside its window had entries dropped"
+    )
+
+    // THE PROPERTY: consolidation CADENCE.
+    //
+    // Two earlier instruments were tried and both were wrong, which is worth
+    // recording because each looked reasonable:
+    //
+    //  - "how many turns needed a trim" answered 10 of 10. The session
+    //    transcript is APPEND-ONLY and grows without bound, so it is over
+    //    budget on every turn forever. Correct behaviour, wrong instrument.
+    //  - "how many distinct kept-sets" also answered 10. The newest exchange is
+    //    always in the kept set and is always new, so consecutive sets can
+    //    never be equal.
+    //
+    // What Apple actually describes is the RATE of consolidation events:
+    // trimming every turn invalidates the cache every turn, whereas trimming
+    // once to a watermark leaves the prefix alone until it genuinely fills.
+    // So the model is: the request carries `carried` tokens; each turn appends;
+    // when the request WOULD overflow, consolidate once and carry the smaller
+    // number forward.
+    // Small exchanges, so there is room for the watermark to buy several turns
+    // of stability. With 220-token exchanges against a 900-token budget the
+    // headroom is barely one turn and the two policies cannot be told apart.
+    let cadenceTurn = 60
+    var carried = 5 * cadenceTurn
+    var simEntries: [Transcript.Entry] = []
+    var simCosts: [Int] = []
+    for i in 0..<5 {
+        simEntries.append(promptEntry("q\(i)")); simCosts.append(cadenceTurn / 3)
+        simEntries.append(responseEntry("a\(i)")); simCosts.append(cadenceTurn - cadenceTurn / 3)
+    }
+    #expect(carried <= budget, "the fixture must start inside the window")
+
+    var consolidations = 0
+    for turn in 0..<20 {
+        simEntries.append(promptEntry("new q\(turn)")); simCosts.append(cadenceTurn / 3)
+        simEntries.append(responseEntry("new a\(turn)")); simCosts.append(cadenceTurn - cadenceTurn / 3)
+        carried += cadenceTurn
+        guard carried > budget else { continue }
+        let plan = HistoryBudget.plan(simEntries, costs: simCosts, budgetTokens: budget)
+        #expect(plan.keptTokens <= budget, "turn \(turn): consolidation did not fit the budget")
+        carried = plan.keptTokens
+        consolidations += 1
+    }
+    #expect(consolidations > 0, "the fixture never needed consolidation — it proves nothing")
+    #expect(
+        consolidations <= 3,
+        """
+        consolidated \(consolidations) times in 20 turns — that is trimming \
+        incrementally, which is the behaviour Apple says to avoid. Cut to the \
+        watermark so the prefix holds still between consolidations.
+        """
+    )
+
+    // And the suffix after the latest response is never touched, which is what
+    // makes "the floor is the last exchange" real rather than aspirational.
+    let plan = HistoryBudget.plan(entries, costs: costs, budgetTokens: budget)
+    let kept = plan.apply(entries)
+    #expect(kept.count >= HistoryBudget.keepAtLeast, "the trim left fewer entries than the last exchange")
+    #expect(
+        kept.last?.id == entries.last?.id,
+        "the final entry was dropped — the in-flight exchange must survive intact"
+    )
+    #endif
+}
+
+// HISTORY ACROSS A PROFILE SWITCH — the mechanism escalation depends on.
+//
+// Plan 19 §3.1 rests on one claim: a `DynamicProfile` switches model INSIDE one
+// `LanguageModelSession`, preserving conversation history, so the user feels
+// nothing. That claim is UNMEASURED for the real escalation — M1 established
+// that PCC refuses every request on this machine (`ModelManagerError 1046`), so
+// no turn has ever actually switched between AFM and PCC.
+//
+// So this pins the MECHANISM, not the PCC path: a `ConditionalDynamicProfile`
+// that flips between two profile branches inside ONE session, with a
+// fabricated value planted in turn 1 and asked for after the switch. If history
+// did not survive a profile change, the escalation design would be wrong, and
+// the switch here is the same `buildEither` the escalation branch would use.
+//
+// WHAT THIS IS NOT, stated so the next reader does not over-credit it: it does
+// not exercise PCC, does not exercise the 4,096 → 32,768 window change, and
+// proves nothing about cross-tier token accounting. It proves one thing — the
+// transcript survives a profile change — which is the part that has never been
+// observed and is cheapest to break.
+//
+// Cold control, as everywhere: a session that never heard the value must not
+// produce it, or the warm arm is unfalsifiable.
+@Test("History: survives a mid-session profile switch, and a cold session cannot fake it")
+func historySurvivesAProfileSwitch() async throws {
+    #if canImport(FoundationModels)
+    guard #available(macOS 27.0, *) else {
+        print("DynamicProfile needs macOS 27 — profile-switch history not driven here")
+        return
+    }
+    let model = SystemLanguageModel.default
+    guard case .available = model.availability else {
+        print("on-device model unavailable — profile-switch history not driven here")
+        return
+    }
+    let secret = "4147/221"
+
+    // The switch. `escalate` is the stand-in for "the policy decided this turn
+    // earns the big model" — same `buildEither`, same single session, same
+    // transcript.
+    let control = SwitchModifier.Control(escalate: false)
+
+    let session = LanguageModelSession(
+        profile: LanguageModelSession.Profile {
+            Instructions("Reply briefly.")
+        }
+        .model(model)
+        .modifier(SwitchModifier(control: control))
+    )
+
+    func ask(_ text: String) async throws -> String {
+        (try await session.respond(to: text)).content
+    }
+
+    _ = try await ask("Remember this number for later: \(secret). Reply only 'ok'.")
+    // Flip the branch. Everything the session has said so far must survive it.
+    control.escalate = true
+    let after = try await ask("What was the number I asked you to remember? Numbers only.")
+
+    // COLD: a session that never saw the value.
+    let cold = LanguageModelSession(model: model)
+    let coldAnswer = try await (cold.respond(to: "What was the number I asked you to remember? Numbers only.")).content
+
+    let warmHas = after.contains(secret)
+    let coldHas = coldAnswer.contains(secret)
+    print("""
+    ---
+    Profile switch ---
+      after switch : \(after.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+      cold          : \(coldAnswer.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+      warm contains the value: \(warmHas)   cold contains it: \(coldHas)
+    ---
+    """)
+    #expect(
+        !coldHas,
+        "a session that never heard the value produced it — the warm arm is unfalsifiable"
+    )
+    #expect(warmHas, "the transcript did NOT survive the profile switch — escalation would lose the conversation")
+    #endif
+}
+
+/// Swaps the active profile when `escalate` is set. Both branches are the SAME
+/// on-device model with different settings, because the question under test is
+/// whether the TRANSCRIPT survives a branch change, not what the other branch
+/// computes.
+@available(macOS 27.0, *)
+struct SwitchModifier: LanguageModelSession.DynamicProfileModifier {
+    final class Control: @unchecked Sendable {
+        var escalate: Bool
+        init(escalate: Bool) { self.escalate = escalate }
+    }
+    let control: Control
+
+    func body(content: Content) -> some LanguageModelSession.DynamicProfile {
+        if control.escalate {
+            content.temperature(0.2)
+        } else {
+            content.temperature(0.9)
+        }
+    }
+}
+// TRAP 1's compile-time half, held as a pin.
+//
+// `SystemLanguageModel.contextSize` is a plain `var`;
+// `PrivateCloudComputeLanguageModel.contextSize` is `get async throws`. Code
+// that reads the window synchronously compiles against the tier that happens to
+// be in scope and FAILS against the other one — and a Dynamic Profile that
+// swaps tiers is precisely where that surfaces, at a call site that is correct
+// on the branch it was written on.
+//
+// `ChatWindow` exists to make that impossible by routing both reads through one
+// signature. A TYPE pin catches a caller that bypasses it; it cannot catch a new
+// synchronous read added elsewhere in the package, so the source scan below does
+// that, and names the one sanctioned exception.
+//
+// The scan is over SOURCE TEXT, so it is a structural pin and not proof of
+// behaviour. That is stated here because this package's law is that a
+// structural row is a regression lock, never a proof.
+@Test("contextSize is read through ONE path — both tiers, one async read")
+func contextSizeIsReadThroughOnePath() async throws {
+    // The source scan. `ChatWindow` is the only place allowed to touch
+    // `.contextSize`; every other read is a call site that will break the day
+    // the profile swaps to PCC. It runs first and unguarded, because it is a
+    // property of the SOURCE and holds on every host — including hosts where
+    // the framework cannot answer a question at all.
+    let here = URL(fileURLWithPath: #filePath)
+    let sources = here.deletingLastPathComponent()   // Tests/AppleFMProbeTests
+        .deletingLastPathComponent()                  // Tests
+        .deletingLastPathComponent()                  // shell-macos
+        .appendingPathComponent("Sources/AppleFMProbe")
+    let files = try FileManager.default.contentsOfDirectory(
+        at: sources, includingPropertiesForKeys: nil
+    ).filter { $0.pathExtension == "swift" }
+
+    #expect(!files.isEmpty, "the source scan found no files — it is passing vacuously")
+
+    // The ONE sanctioned exemption, and it is bounded rather than ignored.
+    // `AppleFMProbe`'s verbose block prints the raw plain-vs-async difference —
+    // that is the fact it exists to show, and routing it through `ChatWindow`
+    // would delete the evidence. So the exemption is a MARKED REGION, and this
+    // pin fails two ways: a read outside a marked region, or a marked region
+    // whose marker was deleted while the reads remained. Deleting the comment
+    // to "clean up" therefore turns the build red instead of quietly widening
+    // the hole.
+    let begin = "ONE-PATH-EXEMPTION BEGIN"
+    let end = "ONE-PATH-EXEMPTION END"
+
+    var offenders: [String] = []
+    for file in files {
+        // The sanctioned seam: its own file.
+        if file.lastPathComponent == "ChatModelLayer.swift" { continue }
+        let text = try String(contentsOf: file, encoding: .utf8)
+        var exempted = false
+        for (number, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+            if line.contains(begin) { exempted = true; continue }
+            if line.contains(end) { exempted = false; continue }
+            guard line.contains(".contextSize"), !exempted else { continue }
+            offenders.append("\(file.lastPathComponent):\(number + 1)")
+        }
+        // A region opened and never closed would exempt the rest of the file
+        // silently, so an unterminated marker is itself a failure.
+        #expect(
+            !exempted,
+            "\(file.lastPathComponent) opened a ONE-PATH-EXEMPTION and never closed it — the exemption would swallow the rest of the file"
+        )
+    }
+    #expect(
+        offenders.isEmpty,
+        """
+        a direct .contextSize read outside ChatWindow at \
+        \(offenders.joined(separator: ", ")). It compiles against the on-device \
+        model and fails against PCC — read it through ChatWindow instead.
+        """
+    )
+
+    #if canImport(FoundationModels)
+    guard #available(macOS 27.0, *) else {
+        print("both window surfaces need macOS 27 — the type half of this pin is structural only here")
+        return
+    }
+    // Both readers return the SAME type, and the remote one is genuinely async:
+    // that pairing is what a synchronous call site cannot reproduce.
+    let onDevice = ChatWindow.onDevice()
+    let privateCloud = await ChatWindow.privateCloud()
+    // The shared RETURN TYPE is enforced by the compiler, not by a runtime
+    // `type(of:)` comparison — two `type(of:)` expects were removed here
+    // because they asserted something the type system had already guaranteed and
+    // therefore could never fail. A vacuous pin is worse than no pin: it reads
+    // as coverage.
+    //
+    // What IS worth asserting is that both answers are WELL-FORMED, matched by
+    // case. The previous version was
+    //     onDevice.tokens != nil || onDevice == .unreadable(reason: "")
+    // which is FALSE for every real `.unreadable` case: on the `xcode-27` CI
+    // runner the model is `deviceNotEligible`, `onDevice()` returns
+    // `.unreadable(reason: "on-device model unavailable")`, and that whole
+    // expression is false twice over. The suite went red on the runner while
+    // green on a laptop — which is the "a laptop always has the model" defect,
+    // not a missing assertion.
+    switch onDevice {
+    case let .window(n):
+        #expect(n > 0, "a reported window of zero is not a window")
+    case let .unreadable(reason):
+        #expect(!reason.isEmpty, "an unreadable window must say why")
+    }
+    switch privateCloud {
+    case let .window(n):
+        #expect(n > 0, "a reported window of zero is not a window")
+    case let .unreadable(reason):
+        #expect(!reason.isEmpty, "an unreadable window must say why")
+    }
+    #endif
+}

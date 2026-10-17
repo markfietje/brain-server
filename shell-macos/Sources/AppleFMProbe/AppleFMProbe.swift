@@ -65,7 +65,7 @@ public enum AppleFMProbe {
                     capabilities = Self.capabilityNames(model.capabilities)
                 }
                 onDevice = .available(
-                    contextSize: model.contextSize,
+                    contextSize: ChatWindow.onDevice().tokens ?? 0,
                     languages: model.supportedLanguages.count,
                     variant: variant,
                     capabilities: capabilities
@@ -97,12 +97,22 @@ public enum AppleFMProbe {
                 // window is a property of the server-side deployment, not of the
                 // binary). That is itself a fact worth having: the on-device
                 // window is a local constant, PCC's is a remote answer.
+                //
+                // ONE-PATH-EXEMPTION BEGIN — the ONLY reads of `.contextSize`
+                // outside `ChatWindow`, and they are here because routing them
+                // through the seam would erase the very difference this block
+                // exists to print: one is `await`, one is not. `ChatWindow` is
+                // the seam for CALLERS; this is the seam's own test fixture.
+                // `contextSizeIsReadThroughOnePath` scans for reads outside the
+                // exemption and outside `ChatModelLayer.swift`, and fails if
+                // this marker is deleted while the reads remain.
                 print("PCC isAvailable: \(pcc.isAvailable)")
                 Task {
                     let pccSize = try? await pcc.contextSize
                     print("PCC contextSize: " + String(describing: pccSize))
                 }
                 print("on-device contextSize: \(model.contextSize)")
+                // ONE-PATH-EXEMPTION END
             }
 
             return AppleFMCapabilities(
@@ -182,10 +192,18 @@ public struct MemoryRecallTool: Tool {
 
     public init() {
         self.name = "recall_memory"
+        // Shortened, and the MEASUREMENT corrects the expectation: the cut
+        // saved 6 tokens (310 → 304), not the ~250 it looked like it should.
+        // Almost all of a tool's cost is the `@Generable` schema the macro
+        // emits, not the prose — so "shorten the description" is close to a no-op
+        // and anyone budgeting a large tool surface by trimming descriptions is
+        // optimising the wrong term. Kept anyway because it is free and the
+        // guidance that matters ("pass a low-confidence gap through rather than
+        // filling it") survives; the lesson recorded is the 6.
         self.description = """
-            Recall from the user's private memory store. Returns ranked passages \
-            with a confidence value. When confidence is low the store reports it \
-            has no answer — pass that through rather than filling the gap.
+            Recall ranked passages from the user's private memory. Returns \
+            confidence; if confidence is low the store has no answer — pass \
+            that through rather than filling the gap.
             """
     }
 
@@ -239,5 +257,72 @@ public enum ContextBudget {
         }
         #endif
         return Cost(instructions: 0, toolSchemas: 0)
+    }
+
+    /// Tokens held back for the model's REPLY.
+    ///
+    /// Apple's context-window article: the window is a single combined pool —
+    /// *"All input to the model contributes tokens to the context window … and
+    /// the model's responses"* — and `maximumResponseTokens`, when left unset,
+    /// means the model is *"allowed to produce the longest answer its context
+    /// size supports."* Input and output draw from the same 4,096.
+    ///
+    /// So a budget that hands the whole remaining window to history is wrong by
+    /// construction: it fills every input token and leaves nothing for the
+    /// answer, and the failure mode is `contextSizeExceeded` raised MID-GENERATION
+    /// rather than at the start of the turn.
+    ///
+    /// This is a RESERVE, not a cap. Apple is explicit that a tight
+    /// `maximumResponseTokens` is the wrong tool — it *"can cause the model to
+    /// generate incomplete or grammatically incorrect responses, like 'A cat is
+    /// a small.'"* — and that prompt-level constraints ("in three sentences")
+    /// are the better length control. The reserve is the floor that makes any
+    /// answer possible; the cap is a runaway guard set separately and far above
+    /// it (see `responseRunawayCap`).
+    public static let responseReserve = 1024
+
+    /// The runaway guard for `maximumResponseTokens`, deliberately far above the
+    /// reserve. It exists to stop an unbounded generation, not to shape answers
+    /// — a low cap truncates mid-sentence, which is the failure Apple documents.
+    public static let responseRunawayCap = 2048
+
+    /// The conversation budget for the shell's ACTUAL surface — its
+    /// instructions and its one recall tool — rather than for whatever a caller
+    /// happens to pass in.
+    ///
+    /// This exists because `ChatRouter` needs a budget and a budget is only
+    /// meaningful for a real tool set: the number is `contextSize −
+    /// instructions − tools − responseReserve`, and the last three are
+    /// properties of the PRODUCT, not of a caller. A router constructed from an
+    /// arbitrary `Cost` would budget against a tool surface nobody ships.
+    ///
+    /// Returns nil when the measurement cannot be taken — an unavailable model,
+    /// or the entitlement throw the tool-schema test already documents. The
+    /// router treats nil as "unknown" and fails closed rather than reading it
+    /// as unlimited room.
+    @available(macOS 26.0, *)
+    public static func measureOnDeviceDefaults() async -> Int? {
+        #if canImport(FoundationModels)
+        if #available(macOS 26.4, *) {
+            guard case .available = SystemLanguageModel.default.availability else {
+                return nil
+            }
+            do {
+                let cost = try await measure(
+                    instructions: Instructions(
+                        "You are the memory assistant for a private knowledge kernel."
+                    ),
+                    tools: [MemoryRecallTool()]
+                )
+                guard let window = cost.remaining, window > responseReserve else {
+                    return nil
+                }
+                return window - responseReserve
+            } catch {
+                return nil
+            }
+        }
+        #endif
+        return nil
     }
 }
