@@ -5916,8 +5916,6 @@ mod tests {
     /// itself spent, decomposed by who spent them.
     #[derive(Debug, PartialEq, Eq)]
     struct VerifyCost {
-        /// Provider exchanges the whole case run made (`provider.requests()`).
-        exchanges: usize,
         /// Exchanges billed to Verify: the main phase ask, plus its re-check
         /// child and its confirmation.
         verify: usize,
@@ -5938,12 +5936,20 @@ mod tests {
     /// silently misalign itself against that prefix.
     ///
     /// `provider.requests().len()` is ground truth for provider work; the
-    /// session log's keyed rows decompose it by phase. Neither alone is
-    /// enough: a log row can exist for an exchange that never dispatched, and
-    /// a request count cannot say which phase spent it. Their agreement is the
-    /// assertion, and `verify == attempts + confirms + rechecks` is the
-    /// cross-check that the decomposition is exhaustive rather than
-    /// convenient.
+    /// session log's rows are the second instrument, and every `control:exchange`
+    /// row maps 1:1 onto a provider request — the re-check child's row included,
+    /// which is why the two agree exactly rather than approximately. The helper
+    /// ASSERTS that mapping here rather than in the arms, because a disagreement
+    /// between instruments is a defect in the decomposition and not in the
+    /// strategy; and `verify == attempts + confirms + rechecks` is what proves the
+    /// decomposition exhaustive rather than convenient.
+    ///
+    /// The arms therefore assert only what the FINDING is about — the Verify
+    /// phase's own cost. An earlier draft of this pin also asserted the
+    /// whole-case request count (11/13/11/14), which was measuring the five-phase
+    /// prefix and the Handoff exchange as much as Verify, so adding a phase or
+    /// reordering one would have broken a pin about exchange COST for a reason
+    /// unrelated to it.
     fn measure_verify_cost(
         strategy: Vec<Vec<crate::agentloop::provider::StreamEvent>>,
     ) -> VerifyCost {
@@ -5985,8 +5991,19 @@ mod tests {
             "SELECT COUNT(*) FROM agent_session_events \
              WHERE kind = 'control:adversarial_recheck'",
         );
+        // Instrument vs instrument: every dispatched exchange left exactly one
+        // `control:exchange` row. Asserted here, not per arm.
+        let exchange_rows =
+            count("SELECT COUNT(*) FROM agent_session_events WHERE kind = 'control:exchange'");
+        assert_eq!(
+            f.provider.requests().len() as i64,
+            exchange_rows,
+            "the two instruments disagree: {exchange_rows} `control:exchange` rows for \
+             {} provider requests. The decomposition below is measured against a log \
+             that does not describe the work that happened.",
+            f.provider.requests().len()
+        );
         VerifyCost {
-            exchanges: f.provider.requests().len(),
             verify: (attempts + confirms + rechecks) as usize,
             attempts,
             confirms,
@@ -6076,7 +6093,6 @@ mod tests {
         assert_eq!(
             pass,
             VerifyCost {
-                exchanges: 11, // 5 prefix + 5 Verify + 1 Handoff
                 verify: 5,
                 attempts: 3,
                 confirms: 1,
@@ -6103,7 +6119,6 @@ mod tests {
         assert_eq!(
             consistent,
             VerifyCost {
-                exchanges: 13, // 5 prefix + 7 Verify + 1 Handoff
                 verify: 7,
                 attempts: 3,
                 confirms: 1,
@@ -6124,7 +6139,6 @@ mod tests {
         assert_eq!(
             routed,
             VerifyCost {
-                exchanges: 11, // 5 prefix + 6 Verify, no Handoff
                 verify: 6,
                 attempts: 3,
                 confirms: 0,
@@ -6146,7 +6160,6 @@ mod tests {
         assert_eq!(
             ceiling,
             VerifyCost {
-                exchanges: 14, // 5 prefix + 9 Verify, no Handoff
                 verify: 9,
                 attempts: 3,
                 confirms: 3,

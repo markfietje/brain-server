@@ -37,8 +37,8 @@ that applies them, not in prose that can drift from it.
 
 | Class | Tests | Share |
 |---|---:|---:|
-| `behavioral_pin` | 2978 | 86.4% |
-| `structural` | 340 | 9.9% |
+| `behavioral_pin` | 2979 | 86.4% |
+| `structural` | 339 | 9.8% |
 | `control` | 58 | 1.7% |
 | `residual_documentation` | 61 | 1.8% |
 | `unclassified` | 9 | 0.3% |
@@ -85,8 +85,8 @@ have no call in it.
 | `src/trace.rs:47` `trace_traversal_caps_are_bounded` |
 | `src/workflow/decide/router.rs:351` `alias_checkpoints_table_is_the_three_names` |
 | `src/workflow/decide/router.rs:361` `alias_bundle_repo_is_the_english_root` |
-| `src/workflow/gdl.rs:6270` `adversarial_task_bound_is_pinned_by_value` |
-| `src/workflow/gdl.rs:6281` `artifact_bounds_are_pinned_by_value` |
+| `src/workflow/gdl.rs:6283` `adversarial_task_bound_is_pinned_by_value` |
+| `src/workflow/gdl.rs:6294` `artifact_bounds_are_pinned_by_value` |
 | `src/workflow/session_log.rs:1161` `scope_caps_are_pinned_by_value` |
 
 ## What this census does NOT police

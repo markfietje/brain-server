@@ -11,6 +11,31 @@ mod pins {
             .unwrap_or_else(|e| panic!("{rel} must exist and be readable: {e}"))
     }
 
+    /// A document's SECTION, whitespace-collapsed.
+    ///
+    /// Two reasons this is one helper rather than three copies. **Whitespace:**
+    /// every phrase check here must run on collapsed text, because markdown
+    /// wraps sentences mid-phrase — the F15 pin's first draft matched "three asks
+    /// in total per phase" against raw text, where the doc wraps it as
+    /// `**three\nasks in total`, and so passed on the very lie it was written to
+    /// catch. **Scope:** a pin about the delegation section must not be
+    /// satisfiable by a symbol named in an unrelated one, which is what reading
+    /// the whole document allows.
+    fn flat_section(rel: &str, heading: &str) -> String {
+        let text = doc(rel);
+        let after = text
+            .split(heading)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{rel} must keep its `{heading}` section"));
+        let end = after
+            .find("\n#")
+            .unwrap_or_else(|| panic!("the `{heading}` section must have an end"));
+        after[..end]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     /// Every README badge that states a version, a count, or a file path, plus
     /// the OpenAPI version pair — each DERIVED from its source, never from a
     /// constant written in this test.
@@ -966,29 +991,10 @@ mod pins {
             VERIFY_PHASE_EXCHANGE_COSTS,
         };
 
-        let arch = doc("docs/architecture.md");
-
-        // The claim's own neighbourhood: the paragraph that carries the
-        // per-phase arithmetic. Scoped to the section so a number elsewhere in
-        // a 1,100-line document cannot satisfy this pin.
-        let section = arch
-            .split("## The GDL case machine")
-            .nth(1)
-            .unwrap_or_else(|| {
-                panic!("docs/architecture.md must keep its GDL case-machine section")
-            })
-            .split("\n## ")
-            .next()
-            .expect("the section has an end");
-
-        // Collapse whitespace before matching ANY of this. The first draft of
-        // this pin matched the phrase "three asks in total per phase" against
-        // the raw text — and the doc wraps it as `**three\nasks in total per
-        // phase`, so the check silently passed on the lie it was written to
-        // catch, and the pin failed three assertions later on a weaker
-        // complaint. A phrase check against wrapped markdown is a check that
-        // reports green exactly when the prose is reflowed.
-        let flat = section.split_whitespace().collect::<Vec<_>>().join(" ");
+        // The claim's own neighbourhood, scoped so a number elsewhere in a
+        // 1,100-line document cannot satisfy this pin, and collapsed so a
+        // phrase check cannot pass on the reflow of a lie.
+        let flat = flat_section("docs/architecture.md", "## The GDL case machine");
 
         assert!(
             !flat.contains("three asks in total per phase"),
@@ -1088,8 +1094,10 @@ mod pins {
     #[test]
     fn the_delegation_depth_bound_is_described_as_the_check_it_is() {
         let src = doc("src/agentloop/subagents.rs");
-        let arch = doc("docs/architecture.md");
-        let flat = arch.split_whitespace().collect::<Vec<_>>().join(" ");
+        let flat = flat_section(
+            "docs/architecture.md",
+            "### Delegation is bounded structurally, not by policy",
+        );
 
         // What the source really does, derived — not asserted. The second
         // element is what the DOCUMENT must be able to name: each is a symbol
@@ -1156,8 +1164,10 @@ mod pins {
     /// and each is a refusal or a narrowing a reader sizing posture gets wrong.
     #[test]
     fn the_delegation_table_names_posture_inheritance_and_tighten_only_bounds() {
-        let arch = doc("docs/architecture.md");
-        let flat = arch.split_whitespace().collect::<Vec<_>>().join(" ");
+        let flat = flat_section(
+            "docs/architecture.md",
+            "### Delegation is bounded structurally, not by policy",
+        );
 
         for (row, what) in [
             (
