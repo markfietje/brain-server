@@ -235,6 +235,27 @@ public struct RoutingDecision: Sendable, Equatable {
 /// declared deployment target.
 @available(macOS 26.0, *)
 public struct ChatRouter: Sendable {
+    /// ## `.deep` IS NOMINAL, and that is stated rather than implied
+    ///
+    /// No code in this package constructs a `.deep` profile, and
+    /// `reasoningLevel` — the only thing that would make the tier "deep" at
+    /// all — is never set. So `.deep` is currently a DECISION, not a session.
+    /// M1 is why: every PCC request on this machine is refused with
+    /// `ModelManagerError 1046`, so a profile built for it could not run here
+    /// even if one existed. It is recorded as a decision because the routing
+    /// logic is real and testable; it is NOT recorded as a capability.
+    ///
+    /// Two costs attach to building one later, both from Apple's caching article
+    /// (<https://developer.apple.com/documentation/foundationmodels/optimizing-key-value-caching-in-language-model-sessions>):
+    ///
+    ///   - "Switching from one profile to another typically changes the entire
+    ///     prefix — which invalidates the cache for the full transcript — so
+    ///     treat it as a deliberate reset." Escalation is therefore NOT a
+    ///     transparent tier swap; it discards the whole KV cache on the turn it
+    ///     fires, on top of whatever latency the remote tier costs.
+    ///   - The tier also refuses every request here, so the honest first
+    ///     integration step is an entitled machine, not a profile.
+    ///
     /// Whether a `.deep` turn may be attempted.
     ///
     /// This is deliberately NOT `PrivateCloudComputeLanguageModel().isAvailable`
@@ -322,6 +343,48 @@ public struct ChatRouter: Sendable {
         return .onDevice()
     }
 }
+// MARK: - Named omissions
+
+/// Things Apple's documentation recommends and this package does NOT do.
+///
+/// Listed rather than omitted, because an omission nobody can see is the same
+/// failure as an omission nobody recorded — and every entry here has a
+/// measurement or a citation behind it, so the next reader can judge whether it
+/// still holds rather than re-deriving it.
+///
+/// Source for both: <https://developer.apple.com/documentation/foundationmodels/optimizing-key-value-caching-in-language-model-sessions>
+///
+/// ## 1. `prewarm` is never called
+///
+/// Apple: *"Prewarm the model when you know usage is at least one or two
+/// seconds in the future."* The SDK has
+/// `LanguageModelSession.prewarm(promptPrefix:)`.
+///
+/// It is not called because nothing here owns a product cadence — prewarming
+/// well means the caller already knows a request is 1–2s away, and this package
+/// is a probe with no request source. The measurement that makes it worth
+/// revisiting: cold first token is **~2.0 s** on this machine against **~0.7 s**
+/// warm (`Latency: cold first token, warm turn, sustained decode`), so the
+/// cold path is roughly three times the warm one and is the whole of what the
+/// "never escalate on turn 1" rule is protecting.
+///
+/// ## 2. `maximumResponseTokens` is never set
+///
+/// Apple says the property exists to *"protect against unexpectedly verbose
+/// responses and runaway generations"*, and separately that it should be used
+/// only for that — *"Limiting tokens can cause the model to generate incomplete
+/// or grammatically incorrect responses, like “A cat is a small.”*
+///
+/// A `responseRunawayCap` constant previously sat here documented as that
+/// guard. It was DEAD — `maximumResponseTokens` is not set anywhere in this
+/// package, so the cap guarded nothing while reading as protection. It is
+/// deleted rather than wired, because `responseReserve` is the mechanism that
+/// actually guarantees a reply can be generated, and a second, unused limit
+/// would be a number a future reader trusted.
+///
+/// Source for this one:
+/// <https://developer.apple.com/documentation/foundationmodels/generationoptions/maximumresponsetokens>
+
 // MARK: - Where the trim and the route meet
 
 /// A turn that cannot be sent.
@@ -331,11 +394,11 @@ public struct ChatRouter: Sendable {
 /// `LanguageModelError.contextSizeExceeded` raised MID-GENERATION — is the
 /// failure this whole layer was built to avoid, and it ends the conversation:
 ///
-/// > *"the framework throws a `LanguageModelError.contextSizeExceeded(_:)`
+/// > *"the framework throws an LanguageModelError.contextSizeExceeded(_:)
 /// > error and the session stops responding"*
 ///
-/// > *"The session stops responding after this error, so create a new session
-/// > in the catch block"*
+/// > *"When this occurs, create a new session and evaluate your user experience
+/// > so people understand what happened."*
 ///
 /// Source: <https://developer.apple.com/documentation/foundationmodels/managing-the-context-window>
 ///
@@ -437,7 +500,7 @@ public struct ChatTurnPlanner: Sendable {
 /// very mechanism meant to avoid it.
 ///
 /// What `historyTransform` preserves is the TRANSCRIPT, not the cache. Apple:
-/// a history transform *"doesn't affect the global state of the transcript."*
+/// a history transform *"doesn’t affect the global state of the transcript, so you’re not losing existing transcript context."*
 /// An earlier version of this comment claimed it "preserves the prefix cache";
 /// that is a different claim and it is not this one.
 @available(macOS 26.0, *)
@@ -463,11 +526,11 @@ public enum HistoryBudget {
         /// `LanguageModelError.contextSizeExceeded` raised MID-GENERATION. Apple is
         /// explicit about what that costs:
         ///
-        /// > *"the framework throws a `LanguageModelError.contextSizeExceeded(_:)`
+        /// > *"the framework throws an LanguageModelError.contextSizeExceeded(_:)
         /// > error and the session stops responding"*
         ///
-        /// > *"The session stops responding after this error, so create a new
-        /// > session in the catch block"*
+        /// > *"When this occurs, create a new session and evaluate your user
+        /// > experience so people understand what happened."*
         ///
         /// Source: <https://developer.apple.com/documentation/foundationmodels/managing-the-context-window>
         ///
@@ -511,7 +574,7 @@ public enum HistoryBudget {
         /// Apple names the recovery: *"consider summarizing the conversation and
         /// starting a fresh session with that summary as context"*, and again in
         /// the caching article — *"If you need to remove older entries, consider
-        /// summarizing the conversation and starting a fresh session."*
+        /// summarizing the conversation and starting a fresh session with that summary as context."*
         ///
         /// Source: <https://developer.apple.com/documentation/foundationmodels/optimizing-key-value-caching-in-language-model-sessions>
         ///
@@ -690,6 +753,44 @@ public enum HistoryBudget {
         // with everything up to the next prompt (its response, and any tool
         // traffic the pair walk above left in place), dropped as one unit with
         // the budget checked between units.
+        //
+        // ## THIS DIRECTION IS THE EXPENSIVE ONE, and that is a product choice
+        //
+        // Apple is explicit about which end is cheap:
+        //
+        //   "When you do trim, removing only the MOST RECENT entries is cheaper
+        //    than modifying earlier ones because it invalidates fewer cached
+        //    values."
+        //
+        // The reason is structural: "Each cached value in the sequence depends
+        // on every token that precedes it." Drop entries from the BACK and the
+        // survivors keep identical positions and identical prefixes, so their
+        // cached values stay valid. Drop entries from the FRONT — which is what
+        // this does — and every survivor's inputs changed, so the whole
+        // retained history is recomputed.
+        //
+        // So the direction is chosen, not derived, and it is chosen because the
+        // alternative is worse for the product: truncating to recent history
+        // means the model cannot see what the user just said. Apple names the
+        // compensation for this direction and we do NOT implement it:
+        //
+        //   "If you need to remove older entries, consider summarizing the
+        //    conversation and starting a fresh session with that summary as
+        //    context."
+        //
+        // That is the owed work, and until it lands this policy pays the
+        // full-recompute cost on every consolidation. Two further caveats, both
+        // Apple's, that bound how much any of this can be claimed:
+        //
+        //   - The watermark reduces the FREQUENCY of that cost. It does not
+        //     reduce its MAGNITUDE, and nothing in this package measures the
+        //     magnitude: `cachedTokenCount` has been observed at both 0 and
+        //     132/164 on this build, so there is no reliable signal to pin.
+        //   - "it's up to the model provider to determine how they manage the
+        //     cache." The cadence policy is therefore advice to the runtime,
+        //     not a guaranteed saving, and Apple says so in the same article.
+        //
+        // Source: <https://developer.apple.com/documentation/foundationmodels/optimizing-key-value-caching-in-language-model-sessions>
         //
         // The unit matters as much as the direction. Dropping entries one at a
         // time stops the moment the budget fits, and that moment lands between

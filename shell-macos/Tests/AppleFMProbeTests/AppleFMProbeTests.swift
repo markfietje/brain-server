@@ -1126,6 +1126,26 @@ func trimConsolidatesOnceRatherThanEveryTurn() {
 // protecting from the last `.response` rather than the last `.prompt` yields
 // `a4 q5 a5`, which satisfies every suffix assertion while orphaning `a4`.
 //
+// ## WHAT THIS PIN DOES NOT CLAIM
+//
+// It pins the direction, and the direction is a PRODUCT CHOICE, not an
+// Apple-recommended one. Apple says the opposite end is cheaper — "removing
+// only the most recent entries is cheaper than modifying earlier ones because
+// it invalidates fewer cached values" — because "each cached value in the
+// sequence depends on every token that precedes it", so dropping from the front
+// invalidates the whole retained history while dropping from the back does not.
+//
+// Keeping recent turns is right for a conversation and wrong for the cache, and
+// Apple pairs that direction with a compensation this package has NOT built:
+// "If you need to remove older entries, consider summarizing the conversation
+// and starting a fresh session with that summary as context."
+//
+// So this pin guarantees the trimmer keeps a coherent, non-orphaned SUFFIX of
+// the conversation. It does not make that cheap, it does not measure the cost —
+// `cachedTokenCount` is unreliable on this build — and it must not be read as
+// Apple endorsing the direction. Source:
+// <https://developer.apple.com/documentation/foundationmodels/optimizing-key-value-caching-in-language-model-sessions>
+//
 // A THIRD gap remained after both, and the committed exchange-wise fix closed
 // it: the fixture below ends in a response, so the in-flight pair is protected
 // by construction, and the orphan rule only ever saw cuts that landed on
@@ -1767,8 +1787,6 @@ func chatTurnPlannerRefusesAConversationThatCannotFit() async throws {
     func response(_ t: String) -> Transcript.Entry {
         .response(Transcript.Response(segments: [.text(Transcript.TextSegment(content: t))]))
     }
-    // Every entry costs 100, so the arithmetic is checkable by eye.
-    let costs: [Int] = Array(repeating: 100, count: 12)
 
     // A transcript whose LAST EXCHANGE alone is larger than the budget: the
     // floor binds, dropping cannot help, and the request would overflow.
@@ -1913,27 +1931,49 @@ func chatTurnPlannerRefusesAConversationThatCannotFit() async throws {
 // The rule is GENERAL rather than a phrase list: any block quote attributed to
 // Apple must sit in a file that links Apple's documentation. That catches the
 // next paraphrase, which no phrase list would.
-@Test("Any quote attributed to Apple cites Apple, in the same comment block")
-func quotesAttributedToAppleCiteApple() throws {
-    // The FIRST version of this pin had three defects, all of which made it
-    // pass while the thing it polices was still true:
+@Test("Every Apple-attributed quote is VERBATIM on a cited Apple page")
+func appleQuotesAreVerifiedVerbatim() throws {
+    // THIS PIN HAS ALREADY FAILED TO DO ITS JOB ONCE, and the way it failed is
+    // the reason it is written this way.
     //
-    //  1. It scanned only `Sources/AppleFMProbe` — but the fabricated quote was
-    //     ALSO restated in this test file, so the pin could not see the one
-    //     place it had already reproduced the failure.
-    //  2. It matched only the `> "` block-quote form. The Apple quotation in
-    //     this file is an inline `*"…"` inside a `//` comment, which it never
-    //     matched at all.
-    //  3. It required `developer.apple.com` to appear ANYWHERE in the file —
-    //     and the pin's own source contains that literal. IT CERTIFIED ITSELF.
+    // v1 required a `developer.apple.com` link in the same comment block as a
+    // quote. It verified a citation was PRESENT, not that the quote was ON THE
+    // PAGE — and a confident fabrication beside a real URL sailed through:
     //
-    // Hence three properties now: both directories, both quote forms, and the
-    // citation must be in the SAME COMMENT BLOCK as the quote. The pin's own
-    // code is not a comment, so it cannot vouch for anything.
+    //   "The session stops responding after this error, so create a new session
+    //    in the catch block"
+    //
+    // That sentence is in NO Apple document. It is a conflation of two real
+    // ones, it shipped in c98cbbb3, and v1 of this pin certified it.
+    //
+    // v2 also scanned only `Sources/`, and matched only the `> "` block-quote
+    // form, so it never saw the inline `*"…"` quotations in this file. Both
+    // corrected, and both corrections found real uncited quotes on first run.
+    //
+    // v3 (this one) checks the QUOTE TEXT. Every Apple-attributed sentence must
+    // appear verbatim in `apple-verified-quotes.txt`, a committed corpus of
+    // sentences fetched from Apple's pages with their URLs and the date read.
+    // That is offline, deterministic, and it fails on exactly the thing v1 and
+    // v2 could not see: an invented sentence with a real citation attached.
+    // Adding a sentence to the corpus means someone went and fetched the page.
     let packageRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
         .deletingLastPathComponent()
+    let corpusURL = packageRoot
+        .appendingPathComponent("Tests/AppleFMProbeTests/apple-verified-quotes.txt")
+    let corpusRaw = try String(contentsOf: corpusURL, encoding: .utf8)
+    // Strip the comment scaffolding, then collapse whitespace so a sentence
+    // wrapped across lines still matches.
+    let corpus = corpusRaw
+        .split(separator: "\n")
+        .filter { !$0.hasPrefix("#") }
+        .joined(separator: " ")
+        .split(whereSeparator: { $0.isWhitespace })
+        .joined(separator: " ")
+
+    #expect(corpus.count > 1_000, "the verified-quote corpus looks empty — the check below is vacuous")
+
     var files: [URL] = []
     for dir in ["Sources/AppleFMProbe", "Tests/AppleFMProbeTests"] {
         files += try FileManager.default.contentsOfDirectory(
@@ -1943,43 +1983,96 @@ func quotesAttributedToAppleCiteApple() throws {
     }
     #expect(files.count >= 3, "the scan found \(files.count) files — it is passing vacuously")
 
+    /// Pull every Apple-attributed quotation out of one comment block.
+    func quotes(in block: [String]) -> [String] {
+        let flat = block.joined(separator: " ")
+        // Case-INSENSITIVE, and this is a hole that was found by drilling: the
+        // gate was `contains("Apple")`, and re-planting the EXACT quote that
+        // shipped in c98cbbb3 passed the v3 pin — because the block holding it
+        // contains only `developer.apple.com`, lowercase, and was skipped
+        // whole. The strongest pin in the file had a gate that let the known
+        // fabrication walk past it. Any apple.com citation or the word "apple"
+        // in any case makes the block attributable.
+        guard flat.lowercased().contains("apple") else { return [] }
+        var found: [String] = []
+        let markers = ["> *\"", "*\""]
+        for marker in markers {
+            var rest = flat[flat.startIndex...]
+            while let open = rest.range(of: marker) {
+                let after = rest[open.upperBound...]
+                // The OPENING delimiter is `*"` and the CLOSING is `"*`. Matching
+                // the close with `*"` never fires — it matches across the next
+                // quote's own opening — so every extracted "quote" ran on into
+                // the following sentence and failed the corpus check for a
+                // reason that had nothing to do with accuracy.
+                guard let close = after.range(of: "\"*") else { break }
+                // Block quotes wrap across lines with a leading "> " on each
+                // continuation, and the block was joined with spaces, so the
+                // marker lands INSIDE the extracted text. Apple sentences do not
+                // contain "> ", so it is stripped rather than special-cased.
+                let raw = String(after[after.startIndex..<close.lowerBound])
+                let text = raw.replacingOccurrences(of: "> ", with: "")
+                // A real quotation, not an inline fragment on a code sample.
+                if text.count > 30, text.contains(" ") { found.append(text) }
+                rest = after[close.upperBound...]
+            }
+        }
+        return found
+    }
+
+    var checked = 0
     var offenders: [String] = []
-    var checkedBlocks = 0
     for file in files {
         let text = try String(contentsOf: file, encoding: .utf8)
         var block: [String] = []
         func flush() {
             defer { block = [] }
-            guard !block.isEmpty else { return }
-            // Whitespace-collapsed: a citation split across lines is still a
-            // citation, and a per-line scan misses both directions.
-            let flat = block.joined(separator: " ")
-            guard (flat.contains("> \"") || flat.contains("*\"")), flat.contains("Apple")
-            else { return }
-            checkedBlocks += 1
-            if !flat.contains("developer.apple.com") {
-                offenders.append(file.lastPathComponent)
+            for quote in quotes(in: block) {
+                // An elided quote ("… and the rest") is checked fragment by
+                // fragment, because the corpus has no elided form of anything.
+                let fragments = quote
+                    .split(separator: "\u{2026}")
+                    .map { $0.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ") }
+                    .filter { $0.count > 30 }
+                for fragment in fragments {
+                    checked += 1
+                    if !corpus.contains(fragment) {
+                        offenders.append(
+                            "\(file.lastPathComponent): \"\(fragment.prefix(70))\"\u{2026}\""
+                        )
+                    }
+                }
             }
         }
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("//") {
-                block.append(String(trimmed.dropFirst(2)))
+                // Drop ALL the slashes, not two: a doc comment has three, and
+                // leaving one behind injected a "/" into the middle of every
+                // quoted sentence — which the corpus then (correctly) refused.
+                block.append(String(trimmed.drop(while: { $0 == "/" })))
             } else {
                 flush()
             }
         }
         flush()
     }
+
     #expect(
-        checkedBlocks > 0,
-        "no Apple-attributed quote was found anywhere — the detector matches nothing and is passing vacuously"
+        checked > 0,
+        "no Apple-attributed quote was found — the extractor matches nothing and is passing vacuously"
     )
     #expect(
         offenders.isEmpty,
-        "a quote attributed to Apple with no citation in the same comment block, in: \(offenders.joined(separator: ", ")). Cite the page, or stop attributing the words to Apple."
+        """
+        \(offenders.count) Apple-attributed sentence(s) not found verbatim in \
+        apple-verified-quotes.txt: \(offenders.joined(separator: " | ")). Either it is a \
+        paraphrase, or it was invented. Fetch the page, copy the sentence exactly, \
+        and record the URL — do not make it true by editing the corpus to match.
+        """
     )
 }
+
 // TRAP 4 — the false claim cannot come back.
 //
 // `shell-macos-mlx/Package.swift` asserted that the MLX adapter gives "the same

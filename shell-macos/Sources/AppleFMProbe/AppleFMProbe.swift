@@ -261,26 +261,36 @@ public enum ContextBudget {
 
     /// Tokens held back for the model's REPLY.
     ///
-    /// Apple's context-window article: the window is a single combined pool —
-    /// *"All input to the model contributes tokens to the context window … and
-    /// the model's responses"* — and `maximumResponseTokens`, when left unset,
-    /// means the model is *"allowed to produce the longest answer its context
-    /// size supports."* Input and output draw from the same 4,096.
+    /// The window is a single combined pool. Apple:
     ///
-    /// Source: <https://developer.apple.com/documentation/foundationmodels/managing-the-context-window>
+    /// > *"every session interaction with the model consumes input and output
+    /// > tokens from this window"*
+    ///
+    /// > *"This includes all prompts, instructions, tool definitions and their
+    /// > input and output, generable type schemas, and all of the model’s
+    /// > responses."*
+    ///
+    /// and, separately, that `maximumResponseTokens`, when unset, means:
+    ///
+    /// > *"If no value is specified, then the model is allowed to produce the
+    /// > longest answer its context size supports."*
+    ///
+    /// Sources:
+    /// <https://developer.apple.com/documentation/foundationmodels/managing-the-context-window>
+    /// and
+    /// <https://developer.apple.com/documentation/foundationmodels/generationoptions/maximumresponsetokens>
     ///
     /// So a budget that hands the whole remaining window to history is wrong by
     /// construction: it fills every input token and leaves nothing for the
     /// answer, and the failure mode is `contextSizeExceeded` raised MID-GENERATION
     /// rather than at the start of the turn.
     ///
-    /// This is a RESERVE, not a cap. Apple is explicit that a tight
-    /// `maximumResponseTokens` is the wrong tool — it *"can cause the model to
-    /// generate incomplete or grammatically incorrect responses, like 'A cat is
-    /// a small.'"* — and that prompt-level constraints ("in three sentences")
-    /// are the better length control. The reserve is the floor that makes any
-    /// answer possible; the cap is a runaway guard set separately and far above
-    /// it (see `responseRunawayCap`).
+    /// This is a RESERVE. Apple is explicit that a tight `maximumResponseTokens`
+    /// is the wrong tool — *"Limiting tokens can cause the model to generate
+    /// incomplete or grammatically incorrect responses, like “A cat is a
+    /// small.”"* — and that prompt-level constraints ("in three sentences") are
+    /// the better length control. The reserve is the floor that makes any answer
+    /// possible.
     ///
     /// ## THE ARITHMETIC, so the budget cannot be quoted without it
     ///
@@ -299,10 +309,6 @@ public enum ContextBudget {
     /// derivation above can be re-checked against a run rather than trusted.
     public static let responseReserve = 1024
 
-    /// The runaway guard for `maximumResponseTokens`, deliberately far above the
-    /// reserve. It exists to stop an unbounded generation, not to shape answers
-    /// — a low cap truncates mid-sentence, which is the failure Apple documents.
-    public static let responseRunawayCap = 2048
 
     /// The conversation budget for the shell's ACTUAL surface — its
     /// instructions and its one recall tool — rather than for whatever a caller

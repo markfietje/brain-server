@@ -29,6 +29,13 @@ let package = Package(
         .testTarget(
             name: "AppleFMProbeTests",
             dependencies: ["AppleFMProbe"],
+            // `apple-verified-quotes.txt` is read from the SOURCE tree at
+            // `#filePath` rather than bundled: it is corpus data the pin
+            // compares against, and a reviewer reading the test needs to read
+            // it next to the test. Declaring it a resource would copy it into
+            // the bundle and make the reviewed copy and the compared copy
+            // different artifacts.
+            exclude: ["apple-verified-quotes.txt"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]

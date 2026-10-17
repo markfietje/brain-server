@@ -1,0 +1,62 @@
+# Apple-sentences-verified — the corpus every Apple-attributed quote in this
+# package is checked against.
+#
+# WHY THIS FILE EXISTS. The pin `quotesAttributedToAppleCiteApple` originally
+# required a `developer.apple.com` link in the same comment block as a quote,
+# and that was not enough: it verified a citation was PRESENT, not that the
+# quote was ON THE PAGE. A confident fabrication sitting next to a real URL
+# passed it. One did —
+#
+#   "The session stops responding after this error, so create a new session
+#    in the catch block"
+#
+# — which appears NOWHERE in Apple's FoundationModels documentation. It is a
+# conflation of two real sentences, and it shipped.
+#
+# The rule is now stronger and offline. Every Apple-attributed sentence in this
+# package must appear VERBATIM below. A quote that is not on this list fails,
+# however authoritative it sounds and however real the URL beside it is.
+#
+# TO ADD A SENTENCE: fetch the cited page, copy the sentence EXACTLY including
+# its punctuation and capitalisation, and record the URL and the date you read
+# it. That is the whole discipline — adding a line here means someone went and
+# looked. Do not add a line to make a failing build pass.
+#
+# Retrieved 2026-10-18 from developer.apple.com/documentation/foundationmodels.
+
+## managing-the-context-window
+# https://developer.apple.com/documentation/foundationmodels/managing-the-context-window
+every session interaction with the model consumes input and output tokens from this window.
+This includes all prompts, instructions, tool definitions and their input and output, generable type schemas, and all of the model’s responses.
+the framework throws an LanguageModelError.contextSizeExceeded(_:) error and the session stops responding
+When this occurs, create a new session and evaluate your user experience so people understand what happened.
+After reaching the context size, the session can no longer process additional requests and throws an LanguageModelError.contextSizeExceeded(_:) error.
+Limiting tokens can cause the model to generate incomplete or grammatically incorrect responses, like “A cat is a small.”
+Limit tool descriptions and @Guide annotations to short phrases.
+Provide no more than three to five tools per request.
+To preserve context, either summarize the original session’s transcript and use that summary to initialize the new session, or extract key entries from the original transcript and use them to seed the new session.
+The first transcript entry often contains important instructions and the last entry contains the most recent context.
+Even with careful optimization, you may exceed the context window limit.
+
+## optimizing-key-value-caching-in-language-model-sessions
+# https://developer.apple.com/documentation/foundationmodels/optimizing-key-value-caching-in-language-model-sessions
+Each cached value in the sequence depends on every token that precedes it.
+it’s up to the model provider to determine how they manage the cache
+A stateless transform that drops entries, like truncating to recent history, invalidates parts of the cache for the entries it removes.
+Prefer stateless transforms over stateful ones because they don’t modify the global transcript, so they’re easier to understand with respect to cache consistency.
+Defer removing entries from the transcript until the context window is nearly full, then consolidate the context in a single operation rather than trimming incrementally after each turn.
+When you do trim, removing only the most recent entries is cheaper than modifying earlier ones because it invalidates fewer cached values.
+If you need to remove older entries, consider summarizing the conversation and starting a fresh session with that summary as context.
+Modifying the transcript impacts model accuracy because there’s no reliable way for the model to distinguish between information that never existed and information that did exist but was removed from the context.
+Switching from one profile to another typically changes the entire prefix — which invalidates the cache for the full transcript — so treat it as a deliberate reset.
+Prewarm the model when you know usage is at least one or two seconds in the future.
+
+## composing-dynamic-sessions-with-instructions-and-profiles
+# https://developer.apple.com/documentation/foundationmodels/composing-dynamic-sessions-with-instructions-and-profiles
+This transform doesn’t affect the global state of the transcript, so you’re not losing existing transcript context.
+One profile compresses the history for a small on-device model, and a profile that uses a server model — with a much larger context size — gets the full history.
+
+## generationoptions/maximumresponsetokens
+# https://developer.apple.com/documentation/foundationmodels/generationoptions/maximumresponsetokens
+Use this property to protect against unexpectedly verbose responses and runaway generations.
+If no value is specified, then the model is allowed to produce the longest answer its context size supports.
