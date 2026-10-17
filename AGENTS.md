@@ -234,6 +234,64 @@
 > backed `Capped`, never the unvalidatable `Routed` it was mapped to before
 > (found because the budget path made it reachable).
 
+> **R126 "Tally II" (Phase F, 2026-10-17): the doc claims, measured — and the
+> measurement came out the OTHER way.** F15/F16/F18 closed: the agent-loop's
+> phase-exchange cost, the delegation-depth wording, and the register rows the
+> context path never had. Three commits, `1c6a3fe9` / `d687889a` / `3d6b959d`.
+>
+> 1. **The per-phase exchange cost is 5 / 7 / 6 / 9, not three — and the first
+>    derivation of that was wrong in the opposite direction.** The doc said
+>    "three asks in total per phase". Asks are not exchanges: a Verify attempt
+>    spends 1 (gate rejection), 2 (contradicting re-check — no confirmation is
+>    ever asked) or 3 (consistent re-check + disagreeing confirmation). The
+>    round's own prompt held that plan 17's "up to 9" was an overclaim, on the
+>    reasoning that three *passing* attempts cannot happen — true, and beside
+>    the point: **the maximum-cost attempt is a FAILING one, and the failing
+>    attempt is exactly the kind that repeats.** Three A6 disagreements spend
+>    3+3+3. That arm was already driven in-tree for its own law; measuring it
+>    is what disproved the prompt. Following the prompt would have measured 7
+>    and closed F15 on a sentence wrong the other way. The non-Verify ladder
+>    (3) is measured too, because the doc states it — a derived number is a
+>    number nothing checks, and the doc pin rejected a *correct* sentence until
+>    that arm existed.
+> 2. **The depth bound is a runtime check, and depth 2 is load-bearing.** The
+>    doc claimed a "type invariant" and "not a check that could be forgotten";
+>    `depth` is a private `u8` behind one `if`. The property holds and is
+>    pinned (`b6_structural_depth_and_generation_overflow_refuse`). The
+>    typestate that would make the old sentence true was **DECLINED** with a
+>    measured blast radius (four production signatures + fixtures, in a file
+>    F13 had just stabilized) — and depth 2 is documented as the adversarial
+>    re-check child's OWN exchange, because the next reader proposes exactly
+>    the refactor that deletes the falsifier.
+> 3. **The register's context-path rows name THREE guards, not two.** The
+>    prompt's row named `every_replayed_source_is_fenced`, which exists
+>    nowhere in the tree; the live defect was two bare pins and zero rows.
+>    Running the red-proof (revert the arm's `wrap_fenced`) turned **three**
+>    pins red — the third, `plain_user_prefixes_are_not_envelopes_and_escaped_
+>    content_is_checked`, was not in the plan. Running the drill instead of
+>    asserting it is what found it, and naming only the two the plan knew
+>    would have left a load-bearing guard unrecorded: this round's own defect,
+>    reproduced inside the round that closes it.
+>
+> **Two pins caught their own author, and both fixes are recorded in the
+> register.** The architecture pin's phrase check matched "three asks in total
+> per phase" against RAW markdown, where the doc wraps it `**three\nasks in
+> total` — green on the very lie it was written to catch; every phrase check
+> now runs on whitespace-collapsed text. The depth pin's first drill restored
+> only "type invariant" and left it green, because it refused the two long
+> overclaim phrasings rather than the claim — the shortest form of a lie is
+> the one that must be refused. The F15 doc pin's drill is the one worth
+> keeping: dropping the ceiling 9→7 leaves every individual number still
+> MEASURED, so only the ceiling arm fires (`It asserted [3, 5, 7, 6, 7]`).
+>
+> **ponytail:** one measured const set the prose is held to, two doc pins, one
+> anti-rot name list, three register rows, three red-proofs RUN and recorded;
+> no behaviour change, no schema, no wire, no new dependency, no new error
+> type, no new test file, no floor written before its population was
+> measured — and the round's exit criterion was that every claim reads TRUE at
+> the commit that changes it, which is why the one commit whose measurement
+> contradicted its own prompt is the interesting one.
+
 ## Retired rounds — where the older log went
 
 **R117 "Console" (2026-10-12) and everything older** — R116→R68 and the
