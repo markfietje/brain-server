@@ -48,6 +48,29 @@
 //!   cargo test --features rerank-tier --test rerank_ranking_probe -- --nocapture
 //! ```
 
+// GATED ON ITS OWN FEATURE, and this is a fix rather than a style choice.
+//
+// `cargo test` compiles EVERY auto-discovered test target, so this file's
+// unconditional `use brain_server::search::rerank::maybe_rerank` was enough to
+// break the WHOLE suite whenever `rerank-tier` was off — which is the default,
+// and which is what `cargo test --features bench` (the documented primary gate)
+// resolves to. One ungated import in one probe file took down `brain-server`'s
+// primary test command from 00:29 on 2026-10-18, and it stayed red and unnoticed
+// because the AFM rounds only ran the Swift lane.
+//
+// The module is `#[cfg(feature = "rerank-tier")] pub mod rerank;` in
+// `search/mod.rs`, so the import has to carry the same gate. `#![cfg]` at the
+// crate root empties the whole integration test when the feature is off, rather
+// than cfg-ing out each item — so there is no way to add an ungated `use` here
+// later and reintroduce the same break.
+//
+// The consequence is honest rather than silent: with the feature OFF this
+// target contributes NOTHING, and the probe runs only in the `rerank-tier`
+// lane, which CI exercises on its own. It is not hidden from the default gate —
+// it was never buildable in the default gate, and saying so is what this
+// comment is for.
+#![cfg(feature = "rerank-tier")]
+
 use brain_server::search::rerank::maybe_rerank;
 use brain_server::search::{SearchResult, SearchTelemetry};
 
@@ -104,7 +127,12 @@ fn reranker_reorders_the_real_candidates_for_a_conversational_query() {
     let before = candidates();
     println!("\n--- BEFORE (RRF order, as the server emitted it) ---");
     for (i, r) in before.iter().enumerate() {
-        println!("  {}. {}  [score {:.8}]", i + 1, r.title.as_deref().unwrap_or(""), r.score);
+        println!(
+            "  {}. {}  [score {:.8}]",
+            i + 1,
+            r.title.as_deref().unwrap_or(""),
+            r.score
+        );
     }
 
     let mut after = before.clone();
@@ -112,7 +140,12 @@ fn reranker_reorders_the_real_candidates_for_a_conversational_query() {
     maybe_rerank(QUERY, &mut after, &mut tel);
     println!("--- AFTER (reranked) ---  rerank_ms = {:.1}", tel.rerank_ms);
     for (i, r) in after.iter().enumerate() {
-        println!("  {}. {}  [score {:.8}]", i + 1, r.title.as_deref().unwrap_or(""), r.score);
+        println!(
+            "  {}. {}  [score {:.8}]",
+            i + 1,
+            r.title.as_deref().unwrap_or(""),
+            r.score
+        );
     }
 
     // Whether the reranker ran is decided by the ORDER CHANGING, not by
@@ -122,10 +155,7 @@ fn reranker_reorders_the_real_candidates_for_a_conversational_query() {
     // `rerank_ms` into telemetry either way", which is false of the function
     // itself; a probe that trusted that claim would have reported a working
     // reranker as not running. The order is the ground truth.
-    let order_changed = before
-        .iter()
-        .map(|r| r.id)
-        .ne(after.iter().map(|r| r.id));
+    let order_changed = before.iter().map(|r| r.id).ne(after.iter().map(|r| r.id));
 
     if !order_changed {
         println!(
@@ -151,21 +181,35 @@ fn reranker_reorders_the_real_candidates_for_a_conversational_query() {
             .count()
     };
     let (before_green, after_green) = (green_tea_docs(&before), green_tea_docs(&after));
-    let top_before = before.first().and_then(|r| r.title.clone()).unwrap_or_default();
-    let top_after = after.first().and_then(|r| r.title.clone()).unwrap_or_default();
+    let top_before = before
+        .first()
+        .and_then(|r| r.title.clone())
+        .unwrap_or_default();
+    let top_after = after
+        .first()
+        .and_then(|r| r.title.clone())
+        .unwrap_or_default();
     println!(
         "\non-topic documents in the top TWO:  before {}  after {}",
         before
             .iter()
             .take(2)
-            .filter(|r| format!("{:?}", r.title).to_lowercase().contains("green tea")
-                || format!("{:?}", r.content).to_lowercase().contains("green tea"))
+            .filter(|r| format!("{:?}", r.title)
+                .to_lowercase()
+                .contains("green tea")
+                || format!("{:?}", r.content)
+                    .to_lowercase()
+                    .contains("green tea"))
             .count(),
         after
             .iter()
             .take(2)
-            .filter(|r| format!("{:?}", r.title).to_lowercase().contains("green tea")
-                || format!("{:?}", r.content).to_lowercase().contains("green tea"))
+            .filter(|r| format!("{:?}", r.title)
+                .to_lowercase()
+                .contains("green tea")
+                || format!("{:?}", r.content)
+                    .to_lowercase()
+                    .contains("green tea"))
             .count()
     );
     println!("top hit:  before = {top_before}\n           after  = {top_after}");
