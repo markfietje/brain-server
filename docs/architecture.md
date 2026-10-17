@@ -935,11 +935,41 @@ than its parent's:
 | Explicit budget | `Some(spec.token_budget)` — never the `None` uncapped default | spend is bounded **before** dispatch |
 | Turn cap | `spec.max_turns` | a runaway child stops at the cap, loudly |
 | Namespacing | `child:<name>:` prefix | child output is never mistaken for the parent's |
+| Posture inheritance | the child `LoopConfig` starts from the **parent's**, never `LoopConfig::default()` | the child **inherits the parent's posture** verbatim — compaction policy, replay cap, output cap, tool timeout and re-check posture — and no loosen-override field exists on the spec |
+| Tighten-only bounds | `spec.max_turns > parent.max_turns` or `spec.token_budget > parent ceiling` | a widening ask is a **refusal before dispatch** — `LoopError::Harness("delegation refused: … — a child tightens, never widens")` — never a silent clamp |
+| Ask tightens to the case | the one production spec site asks `min(ADVERSARIAL_RECHECK_TOKEN_BUDGET, case ceiling)` | an operator budget below 2,000 does not strip the case of its falsifier; the reservation clamps the child's spend to the case's remaining headroom regardless |
 
-**The depth bound is a type invariant.** `ExchangeBudget` carries a `depth`; a root
-authority is 0, an exchange view or child reservation is 1, and `reserve_child` returns
-`AccountingRefusal::Invalid` when `depth != 0`. **A child structurally cannot delegate
-again** — the bound is in the type, not in a check that could be forgotten.
+**The depth bound is a runtime check, and the property it enforces is real.**
+`ExchangeBudget` carries a private `depth: u8`: a root authority is 0, and the
+two constructors that move it are `fresh_exchange` (an exchange view) and
+`reserve_child` (a child reservation), each incrementing by one. `reserve_child`
+returns `AccountingRefusal::Invalid` when `depth != 0`. **A child therefore
+cannot delegate again** — the bound is one `if` over a private field, and its
+soundness rests on every depth transition passing through those four sites
+rather than on any guarantee the type system makes.
+
+> **The typestate was considered and DECLINED (this round), with its blast
+> radius measured rather than guessed.** A generic depth — `ExchangeBudget<Root>`
+> against `ExchangeBudget<NonRoot>`, with `reserve_child` defined only on `Root` —
+> would make the paragraph's old sentence true *without* the break described
+> below, because a leaf view stays constructible and only delegating-again stops
+> compiling. It is declined because the type would have to travel through
+> `LoopConfig::budget_accounting` (`run_loop.rs:77`), `GdlDriver::case_budget`
+> (`gdl.rs:2819`), the `AgentsSvc` budget resolution (`services.rs:632`) and
+> `delegate_owned_budgeted`'s parameter (`subagents.rs:633`), plus the test
+> fixtures that construct budgets by hand — in a file F13 had just stabilized,
+> to harden a property that is already enforced and already pinned
+> (`b6_structural_depth_and_generation_overflow_refuse`). Revisit at the second
+> production `reserve_child` caller, not before.
+
+> **Depth 2 is load-bearing, not slack.** A depth-2 view is not an escape hatch
+> left by a loose bound — it is the **adversarial re-check child's own
+> exchange**: `reserve_child` mints its depth-1 reservation and the child's loop
+> takes a `fresh_exchange` view of it. Deleting depth-2 constructibility to make
+> the bound structural would delete the re-check, the second verification, and
+> the budget accounting that reads the child's spend off the case ledger. The
+> refactor that would make the doc's old sentence true is the refactor that
+> removes the machine's falsifier.
 
 > **Why depth 2, stated rather than assumed.** A hard nesting bound is a *safety*
 > decision, and the recent literature on skill abstraction is what makes it defensible

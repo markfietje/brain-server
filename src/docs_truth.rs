@@ -1058,9 +1058,132 @@ mod pins {
         // cumulative ceiling is what an operator sizes against, and it was
         // absent entirely.
         assert!(
-            section.contains("BRAIN_GDL_CASE_TOKEN_BUDGET"),
+            flat.contains("BRAIN_GDL_CASE_TOKEN_BUDGET"),
             "the phase section must name the case's cumulative token budget — an \
              operator reading it for cost currently sees no ceiling on the case"
         );
+    }
+
+    /// F16: the delegation bound is a RUNTIME CHECK, and the document says so.
+    ///
+    /// The doc read *"The depth bound is a type invariant … a child structurally
+    /// cannot delegate again — the bound is in the type, not in a check that
+    /// could be forgotten."* The **property** holds: `reserve_child` refuses
+    /// whenever `depth != 0`, so a child never delegates again. The **wording**
+    /// was false twice — `depth` is a plain `u8` checked by an `if`, and
+    /// "not a check that could be forgotten" describes a guarantee the code does
+    /// not make.
+    ///
+    /// The pin binds the paragraph to the mechanisms THE SOURCE ACTUALLY
+    /// CONTAINS, which is the only way the claim can stay true across a
+    /// refactor: it derives the mechanism set from `subagents.rs` and requires
+    /// the doc to name each one. A future round that converts this to a
+    /// typestate changes the derived set, and the doc is then required to
+    /// change with it — rather than this pin demanding a runtime check that no
+    /// longer exists.
+    ///
+    /// It also pins the **leaf's legitimacy**, because that is what the next
+    /// reader proposes to delete: depth 2 is not slack, it is the adversarial
+    /// re-check child's own exchange view.
+    #[test]
+    fn the_delegation_depth_bound_is_described_as_the_check_it_is() {
+        let src = doc("src/agentloop/subagents.rs");
+        let arch = doc("docs/architecture.md");
+        let flat = arch.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        // What the source really does, derived — not asserted. The second
+        // element is what the DOCUMENT must be able to name: each is a symbol
+        // or expression a reader can look up, never a paraphrase of one.
+        let mut mechanisms: Vec<(&str, &str)> = Vec::new();
+        for (needle, named) in [
+            ("depth: u8", "depth: u8"),
+            ("if self.depth != 0", "depth != 0"),
+            ("fn fresh_exchange", "fresh_exchange"),
+            ("fn reserve_child", "reserve_child"),
+            ("AccountingRefusal::Invalid", "AccountingRefusal::Invalid"),
+        ] {
+            assert!(
+                src.contains(needle),
+                "src/agentloop/subagents.rs no longer contains `{needle}` — the depth \
+                 bound's mechanism set changed, so re-derive this pin and the doc \
+                 paragraph it holds. Do not relax the assertion to make it pass."
+            );
+            mechanisms.push((named, needle));
+        }
+        for (named, _) in &mechanisms {
+            assert!(
+                flat.contains(named),
+                "the delegation paragraph must name `{named}` — the doc may not describe a \
+                 mechanism the source does not contain, nor omit one it does"
+            );
+        }
+
+        // The overclaims, refused by name. "type invariant" is in this list
+        // because a drill that reverted ONLY the paragraph's opening sentence
+        // to it left the pin green: the two long phrases below had been removed
+        // with the rest of the sentence, so the pin was checking for wording
+        // rather than for the claim. The shortest form of the lie is the one
+        // that has to be refused.
+        for overclaim in [
+            "type invariant",
+            "the bound is in the type",
+            "structurally cannot delegate again",
+        ] {
+            assert!(
+                !flat.contains(overclaim),
+                "`{overclaim}` is not what the code does: `depth` is a private `u8` whose \
+                 soundness rests on every transition passing through the four sites this pin \
+                 names. The PROPERTY (a child cannot delegate again) is true and may be \
+                 stated; `{overclaim}` is not."
+            );
+        }
+
+        // The leaf is load-bearing — say so, or the next reader proposes the
+        // refactor that deletes the re-check.
+        assert!(
+            flat.contains("depth 2") && flat.contains("adversarial"),
+            "the paragraph must state that depth 2 is LOAD-BEARING — the adversarial \
+             re-check child's own exchange view (`reserve_child` mints depth 1, the child's \
+             loop takes a `fresh_exchange` view of it). Making depth 2 unconstructible \
+             deletes the re-check, the second verification, and the budget accounting that \
+             reads the child's spend off the case ledger."
+        );
+    }
+
+    /// F16, second half: the delegation table's rows must name what the code
+    /// does now — inherited posture, tighten-only bounds, and the production
+    /// ask's tightening to the case ceiling. Each of the three was missing,
+    /// and each is a refusal or a narrowing a reader sizing posture gets wrong.
+    #[test]
+    fn the_delegation_table_names_posture_inheritance_and_tighten_only_bounds() {
+        let arch = doc("docs/architecture.md");
+        let flat = arch.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        for (row, what) in [
+            (
+                "inherits the parent's posture",
+                "posture inheritance — the child starts from the parent's `LoopConfig`, not \
+                 from `LoopConfig::default()`, so compaction policy, replay cap, output cap, \
+                 timeout and re-check posture all carry down",
+            ),
+            (
+                "delegation refused",
+                "the tighten-only refusal — a spec bound above the parent's is a refusal \
+                 BEFORE dispatch (`LoopError::Harness(\"delegation refused: … — a child \
+                 tightens, never widens\")`), never a silent clamp",
+            ),
+            (
+                "case ceiling",
+                "the production ask's tightening — the GDL re-check asks \
+                 `min(ADVERSARIAL_RECHECK_TOKEN_BUDGET, case ceiling)`, so an operator budget \
+                 below 2,000 does not strip the case of its falsifier",
+            ),
+        ] {
+            assert!(
+                flat.contains(row),
+                "the delegation table must carry a row naming `{row}`: {what}. All three \
+                 were absent, and each is a place a reader sizing a child gets it wrong."
+            );
+        }
     }
 }
