@@ -1061,11 +1061,24 @@ impl LoopDriver {
         // episode that already committed its quota of compaction events
         // refuses the cycle with a named session-log row and stops loudly
         // (the caller maps this onto the budget-exhausted terminal).
-        let committed = events
-            .iter()
-            .filter(|event| event.row.kind == self.kind("compaction"))
-            .count();
+        //
+        // F14: the count is over the DURABLE LOG, not the replay window —
+        // compaction rows outside the session_replay_cap window are
+        // invisible to a windowed count, and under-firing is the expensive
+        // direction. The aggregate is capped at ceiling+1 in a subselect
+        // (COUNT ignores LIMIT), and the kind string is the same
+        // session-prefixed one the window count used — a hardcoded
+        // 'compaction' would recount wrong for child-prefixed drivers.
+        let quota_kind = self.kind("compaction");
         let ceiling = self.config.compaction.max_events_per_episode;
+        let count_pool = self.pool.clone();
+        let committed = tokio::task::spawn_blocking(move || {
+            let conn = count_pool.get().map_err(persist)?;
+            session_log::count_kind_capped(&conn, run_id, &quota_kind, ceiling as usize + 1)
+                .map_err(persist)
+        })
+        .await
+        .map_err(persist)??;
         if committed >= ceiling as usize {
             let pool = self.pool.clone();
             let owner = exchange.owner.to_string();
@@ -4865,6 +4878,157 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(probes, 0, "no probe/degraded row from a refused drive");
+        });
+    }
+
+    /// F14: the compaction quota counts the LOG, not the replay window.
+    /// Four committed compaction rows sit in the log; the 40-row replay
+    /// window (which must, by the boundary law, keep the newest compaction
+    /// and the live input visible — that guard is not on trial here) holds
+    /// exactly ONE of them. The windowed counter sees 1 while the durable
+    /// log holds 4 (ceiling 2): the quota must fire anyway — under-counting
+    /// is the expensive direction (more provider spend).
+    ///
+    /// Anti-vacuity, both arms required (a quota that fired on window-
+    /// visible rows proves nothing about this finding): the refusal is the
+    /// quota's OWN `control:compaction_quota_exhausted` row carrying
+    /// committed=4, AND the rows are demonstrably outside the window — the
+    /// last-40 slice the gate consults holds exactly 1 compaction row
+    /// while the table holds 4.
+    ///
+    /// Census note: names the row kind it lands, so files as `control`
+    /// under test-census.py's documented marker rule; the class here is
+    /// behavioral (drives the real `maybe_compact` path).
+    #[test]
+    fn compaction_quota_counts_events_outside_the_replay_window() {
+        rt().block_on(async {
+            let mut config = LoopConfig::default();
+            config.compaction.max_events_per_episode = 2;
+            config.session_replay_cap = 40;
+            let f = fixture_with(vec![scripted_text("brief"), scripted_text("done")], config);
+            // Three OLD compaction rows, then 45 heavy user rows.
+            for i in 0..3 {
+                let mut conn = f.pool.get().unwrap();
+                let mut tx = WorkflowTx::begin(&mut conn).unwrap();
+                session_log::append(
+                    tx.tx(),
+                    1,
+                    "compaction",
+                    r#"{"version":2,"summary":"old","compacted_through_seq":1,"tail_from_seq":2,"supersedes_seq":null,"tail_seqs":[2]}"#,
+                    &format!("seed:comp:{i}"),
+                    1,
+                )
+                .unwrap();
+                tx.commit().unwrap();
+            }
+            seed_compaction_pressure(&f, 45, 4_000, "f14-pressure");
+            // The FRESH compaction row, well-formed over the heavy rows it
+            // bounds (reconstruct validates the manifest), so the boundary
+            // and live-input laws stay satisfied and the ONLY defect in
+            // play is the windowed quota count.
+            let (h_min, h_max): (i64, i64) = f
+                .pool
+                .get()
+                .unwrap()
+                .query_row(
+                    "SELECT MIN(seq), MAX(seq) FROM agent_session_events \
+                     WHERE idempotency_key LIKE 'f14-pressure:%'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            let through = h_min + 13;
+            let from = through + 1;
+            let tail_seqs: Vec<String> = (from..=h_max).map(|s| s.to_string()).collect();
+            {
+                let mut conn = f.pool.get().unwrap();
+                let mut tx = WorkflowTx::begin(&mut conn).unwrap();
+                session_log::append(
+                    tx.tx(),
+                    1,
+                    "compaction",
+                    &format!(
+                        r#"{{"version":2,"summary":"fresh","compacted_through_seq":{through},"tail_from_seq":{from},"supersedes_seq":null,"tail_seqs":[{}]}}"#,
+                        tail_seqs.join(",")
+                    ),
+                    "seed:comp:fresh",
+                    1,
+                )
+                .unwrap();
+                tx.commit().unwrap();
+            }
+            // A real exchange LAST, so its live user input sits inside the
+            // window (the replay's tail-budget law), claim released at the
+            // receipt.
+            let receipt = f
+                .driver
+                .run_turns_keyed(1, "first", "current", &CancellationToken::new())
+                .await
+                .unwrap();
+            // Re-acquire the claim the receipt released, then drive the real
+            // quota arm as that owner.
+            {
+                let mut conn = f.pool.get().unwrap();
+                let mut tx = WorkflowTx::begin(&mut conn).unwrap();
+                session_log::acquire(tx.tx(), 1, "quota-driver").unwrap();
+                tx.commit().unwrap();
+            }
+            let exchange = Exchange {
+                id: receipt.exchange_id,
+                owner: "quota-driver",
+                invocation: "f14",
+            };
+            let outcome = f
+                .driver
+                .maybe_compact(1, &exchange, 1, &CancellationToken::new(), &ExchangeBudget::new(None))
+                .await
+                .unwrap();
+            assert!(
+                matches!(outcome, Compacted::QuotaExhausted),
+                "the durable log holds 4 compactions (ceiling 2); the windowed \
+                 counter sees 1 — quota did not fire"
+            );
+            let conn = f.pool.get().unwrap();
+            let (quota_row, payload): (i64, String) = conn
+                .query_row(
+                    "SELECT COUNT(*), COALESCE(MAX(payload_json), '') FROM agent_session_events \
+                     WHERE run_id = 1 AND kind = 'control:compaction_quota_exhausted'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(quota_row, 1, "the quota stop is named once");
+            // The capped aggregate saturates at ceiling+1 (=3): the count
+            // is capped by design, and 3 ≥ 2 is all the comparison needs.
+            assert!(
+                payload.contains(r#""committed":3"#),
+                "the row counts the DURABLE log, not the window: {payload}"
+            );
+            // Anti-vacuity: the window this gate consulted held exactly ONE
+            // compaction row while the table holds four — three were outside.
+            let window_compactions: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM (SELECT kind FROM agent_session_events \
+                     WHERE run_id = 1 ORDER BY seq DESC LIMIT 40) WHERE kind = 'compaction'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let total_compactions: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_session_events \
+                     WHERE run_id = 1 AND kind = 'compaction'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(window_compactions, 1, "the window holds only the newest");
+            assert_eq!(total_compactions, 4, "the log holds all four");
+            assert!(
+                total_compactions - window_compactions >= 2,
+                "at least two compaction rows sat outside the window the \
+                 windowed counter consulted"
+            );
         });
     }
 

@@ -688,6 +688,31 @@ pub(crate) fn verify_owner(conn: &Connection, run_id: i64, owner: &str) -> rusql
     }
 }
 
+/// The durable count of one event kind for a run, CAPPED (F14: the compaction
+/// quota counts the log, not the replay window). COUNT ignores LIMIT, so the
+/// cap rides a subselect — callers pass ceiling+1, which is all a quota
+/// comparison needs. The walk rides the existing `(run_id, seq)` index
+/// discipline, bounded by the same lookup ceiling as the scope scan.
+/// The capped aggregate shape (F14): COUNT ignores LIMIT, so the cap rides
+/// the subselect. A const so the EXPLAIN pin reads the SQL the fn really runs.
+const COUNT_KIND_SQL: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM agent_session_events \
+     WHERE run_id = ?1 AND kind = ?2 LIMIT ?3)";
+
+pub(crate) fn count_kind_capped(
+    conn: &Connection,
+    run_id: i64,
+    kind: &str,
+    limit: usize,
+) -> rusqlite::Result<usize> {
+    if run_id <= 0 || limit == 0 || limit > SCOPE_LOOKUP_CAP || kind.len() > SCOPE_KIND_BYTES {
+        return Err(refusal("count_kind_bounds"));
+    }
+    conn.query_row(COUNT_KIND_SQL, params![run_id, kind, limit as i64], |r| {
+        r.get::<_, i64>(0)
+    })
+    .map(|n| n as usize)
+}
+
 /// Unsettled synchronous tool work survives waiter cancellation and blocks
 /// release/admission until explicit operator recovery (there is no auto-repair).
 pub(crate) fn tools_quiescent(conn: &Connection, run_id: i64) -> rusqlite::Result<bool> {
@@ -1404,6 +1429,59 @@ mod tests {
                 "{plan}"
             );
         }
+    }
+
+    /// F14: the capped kind aggregate rides the existing `(run_id, seq)`
+    /// index discipline — SEARCH, not a table walk. The query sits inside
+    /// the compaction decision path (per cycle), so an unbounded scan here
+    /// would be the loop's first table walk.
+    #[test]
+    fn count_kind_capped_query_uses_the_run_index() {
+        let conn = db();
+        let mut stmt = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {COUNT_KIND_SQL}"))
+            .unwrap();
+        let plan = stmt
+            .query_map(params![1, "compaction", 3_i64], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+            .join("\n");
+        assert!(plan.contains("SEARCH agent_session_events USING"), "{plan}");
+        assert!(plan.contains("run_id=?"), "{plan}");
+        // The outer CO-ROUTINE scans the capped subquery (≤ limit rows) —
+        // unavoidable with the subselect shape and bounded by it. What must
+        // never appear is a scan of the TABLE itself.
+        assert!(
+            !plan.contains("SCAN agent_session_events") && !plan.contains("TEMP B-TREE"),
+            "{plan}"
+        );
+    }
+
+    /// F14 companion: the cap is real — counting a kind with more rows than
+    /// the cap returns exactly the cap, and the bounds refuse garbage.
+    #[test]
+    fn count_kind_capped_saturates_and_refuses_out_of_bounds() {
+        let mut conn = db();
+        let mut tx = WorkflowTx::begin(&mut conn).unwrap();
+        for i in 0..5 {
+            append(
+                tx.tx(),
+                1,
+                "compaction",
+                &format!(r#"{{"n":{i}}}"#),
+                &format!("count-cap:{i}"),
+                1,
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        assert_eq!(count_kind_capped(&conn, 1, "compaction", 3).unwrap(), 3);
+        assert_eq!(count_kind_capped(&conn, 1, "compaction", 10).unwrap(), 5);
+        assert_eq!(count_kind_capped(&conn, 1, "assistant", 3).unwrap(), 0);
+        assert!(count_kind_capped(&conn, 0, "compaction", 3).is_err());
+        assert!(count_kind_capped(&conn, 1, "compaction", 0).is_err());
+        assert!(count_kind_capped(&conn, 1, "compaction", SCOPE_LOOKUP_CAP + 1).is_err());
     }
 
     #[test]
