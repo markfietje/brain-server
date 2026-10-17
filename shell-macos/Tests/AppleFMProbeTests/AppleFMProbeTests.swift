@@ -270,3 +270,53 @@ extension AppleFMProbeTests {
     }
 }
 #endif
+// MULTI-TURN MEMORY ON AFM — the question plan 02 depends on.
+//
+// The window is 4096 tokens COMBINED, and the tool schema already spends 368
+// (instructions 58 + tools 310), leaving 3728 for the conversation. So multi-turn
+// is not merely a template question here: it is a BUDGET question. A chat that
+// keeps history has ~3.7k tokens to work with, which is roughly 3-5 exchanges
+// before something has to be dropped or summarized.
+//
+// The measurement that matters is not "did it not throw" — it is whether the
+// value told to it in turn 1 SURVIVES to turn 2 while a COLD session, which
+// never saw it, fails to produce it. A warm answer with a cold positive proves
+// nothing; the model would be inventing to be agreeable.
+@Test("Multi-turn: AFM carries a turn-1 value to turn 2, and a cold session cannot")
+func multiTurnMemoryIsMeasuredNotAssumed() async throws {
+    #if canImport(FoundationModels)
+    guard #available(macOS 26.0, *) else { return }
+    let secret = "184/97"
+
+    // Same surface the latency test above already drives successfully, which is
+    // itself evidence that SESSION REUSE works on AFM: it measures a cold and a
+    // warm turn on one `LanguageModelSession`.
+    func ask(_ session: LanguageModelSession, _ p: String) async throws -> String {
+        let r = try await session.respond(to: p)
+        return r.content.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    let warm = LanguageModelSession(model: SystemLanguageModel.default)
+    let t1 = try await ask(warm, "Remember this number for later: \(secret). Reply only 'ok'.")
+    let t2 = try await ask(warm, "What was the number I asked you to remember? Numbers only.")
+
+    // CONTROL: a fresh model instance that was never told the number. If it can
+    // produce the value on its own, the warm arm proves nothing.
+    let cold = LanguageModelSession(model: SystemLanguageModel.default)
+    let c = try await ask(cold, "What was the number I asked you to remember? Numbers only.")
+
+    let warmHas = t2.contains(secret)
+    let coldHas = c.contains(secret)
+    print("""
+    ---
+    AFM multi-turn ---
+      turn 1: \(t1.prefix(80))
+      turn 2: \(t2.prefix(80))
+      cold  : \(c.prefix(80))
+      warm contains the value: \(warmHas)   cold contains it: \(coldHas)
+    ---
+    """)
+    #expect(!coldHas, "a session that was never told the value must not produce it — otherwise the warm arm is unfalsifiable")
+    #expect(warmHas, "AFM did not carry the turn-1 value into turn 2")
+    #endif
+}
