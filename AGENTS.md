@@ -218,6 +218,22 @@
 > required — the schema enumerates the envelope loosely, the field is
 > additive JSON).
 
+> **R125 "Bounds" (Phase E, 2026-10-16): the measured GDL case budget.**
+> `BRAIN_GDL_CASE_TOKEN_BUDGET` / `config::gdl_case_token_budget()` — the
+> default is MEASURED, not chosen: 112 tokens/case p99 over the 12 judged
+> `eval_run1` seeds (79 `gdl_gate` usage rows; the row now carries the
+> exchange's usage, additive), × MAX_PHASE_ATTEMPTS (3) = **336** — the
+> happy-path measurement with full headroom for the bounded retry ladder.
+> `the_default_case_budget_is_the_measured_p99` re-runs the seeds and holds
+> the const to the measurement. **Scale caveat:** 14 tokens/exchange is the
+> loopback provider's own accounting, not a frontier model's — operators on
+> real providers set the env var to their own measured ceiling. The budget
+> is the CASE's cumulative authority (phases draw it as `fresh_exchange`
+> views — the deliberate reversal of F11's per-phase isolation, recorded in
+> the `case_budget` doc), and a confirm-exchange interrupt is a receipt-
+> backed `Capped`, never the unvalidatable `Routed` it was mapped to before
+> (found because the budget path made it reachable).
+
 ## Retired rounds — where the older log went
 
 **R117 "Console" (2026-10-12) and everything older** — R116→R68 and the

@@ -3060,6 +3060,16 @@ impl GdlDriver {
             return AdversarialFinding::Unavailable("no delegation seam".into());
         };
         let task = Self::build_adversarial_task(case);
+        // The ask tightens to the case ceiling, never widens it (F13's
+        // law, applied at the one production spec site): an operator
+        // budget below 2_000 must not kill the falsifier — the
+        // reservation already clamps the child's spend to the case's
+        // remaining headroom, so asking for less is honest, and refusing
+        // would silently strip the case of its second verification.
+        let token_ask = match deps.config.token_budget {
+            Some(case_ceiling) => ADVERSARIAL_RECHECK_TOKEN_BUDGET.min(case_ceiling),
+            None => ADVERSARIAL_RECHECK_TOKEN_BUDGET,
+        };
         let spec = SubagentSpec {
             name: "adversarial-recheck".into(),
             system_prompt: ADVERSARIAL_RECHECK_PROMPT.into(),
@@ -3073,7 +3083,7 @@ impl GdlDriver {
                 commands: vec![],
             },
             max_turns: ADVERSARIAL_RECHECK_MAX_TURNS,
-            token_budget: ADVERSARIAL_RECHECK_TOKEN_BUDGET,
+            token_budget: token_ask,
         };
         let invocation_key = format!("gdl:{episode}:phase:verify:attempt:{attempt}:recheck");
         // The recheck reserves against the CASE budget, not a throwaway
@@ -3269,6 +3279,7 @@ impl GdlDriver {
                 artifact: None,
                 exchange: None,
                 terminal: None,
+                usage: None,
             };
             // The adversarial re-check finding for THIS pass, if it runs one.
             // Carried to the advance rather than written on the spot, so the
@@ -3336,6 +3347,15 @@ impl GdlDriver {
                     )
                     .await?;
                 change.exchange = Some(receipt.exchange_id);
+                // F12b: the exchange's own usage rides the gate row.
+                change.usage = match &receipt.outcome {
+                    RunOutcome::Completed { usage, .. }
+                    | RunOutcome::TurnCapReached { usage, .. }
+                    | RunOutcome::BudgetExceeded { usage, .. } => {
+                        Some((usage.input_tokens, usage.output_tokens))
+                    }
+                    _ => None,
+                };
                 change.terminal = match receipt.outcome {
                     RunOutcome::Canceled => Some(GdlOutcome::Canceled),
                     RunOutcome::TurnCapReached { .. } => Some(GdlOutcome::Capped {
@@ -3599,7 +3619,13 @@ impl GdlDriver {
                                 // transition stays bound to the FIRST
                                 // exchange (the receipt law): its artifact is
                                 // what the persisted case keeps; the
-                                // confirmation's rows live in the session log.
+                                // confirmation's rows live in the session
+                                // log. EXCEPTION (F12b): if the confirmation
+                                // itself is interrupted (cancel/turn cap/
+                                // budget), the transition REBINDS to the
+                                // confirm exchange — a terminal must be
+                                // backed by its own end receipt, and the
+                                // interrupt's receipt is the confirm's.
                                 if change.terminal.is_none() && change.verdict == "pass" {
                                     let confirm_key = format!(
                                         "gdl:{}:phase:{}:attempt:{attempt}:confirm",
@@ -3617,27 +3643,54 @@ impl GdlDriver {
                                         )
                                         .await?;
                                     let confirm_exchange_id = confirm.exchange_id;
+                                    // F12b: the interrupt terminals here are
+                                    // CAPPED, not Routed — Routed's validate
+                                    // law requires gate exhaustion at
+                                    // MAX_PHASE_ATTEMPTS, so an interrupted
+                                    // confirmation mapped onto Routed could
+                                    // never commit ("GDL terminal/case
+                                    // mismatch"). A cap at the confirm
+                                    // boundary IS the consumption/cancel
+                                    // boundary acting on the case; the
+                                    // terminal is receipt-backed like every
+                                    // Capped. (Found because F12a made the
+                                    // budget arm reachable.)
                                     change.terminal = match confirm.outcome {
-                                        RunOutcome::Canceled => Some(GdlOutcome::Routed {
-                                            at: phase,
-                                            reason: "second verification interrupted: \
-                                                     canceled"
-                                                .into(),
-                                        }),
+                                        // An interrupted confirmation is NOT a
+                                        // pass: the verdict drops to "route" so
+                                        // the transition carries no artifact and
+                                        // the checkpoint law's
+                                        // accepted/artifact binding holds. (The
+                                        // cap mapping is F12b's: Routed's
+                                        // validate law requires gate exhaustion,
+                                        // so an interrupted confirm mapped onto
+                                        // Routed could never commit.) The
+                                        // transition REBINDS to the confirm
+                                        // exchange: the receipt law demands the
+                                        // terminal be backed by its own
+                                        // exchange's end receipt, and the
+                                        // interrupt's evidence lives there —
+                                        // the first exchange completed cleanly
+                                        // and cannot back a cap.
+                                        RunOutcome::Canceled => {
+                                            change.verdict = "route";
+                                            change.exchange = Some(confirm_exchange_id);
+                                            Some(GdlOutcome::Canceled)
+                                        }
                                         RunOutcome::TurnCapReached { .. } => {
-                                            Some(GdlOutcome::Routed {
+                                            change.verdict = "route";
+                                            change.exchange = Some(confirm_exchange_id);
+                                            Some(GdlOutcome::Capped {
                                                 at: phase,
-                                                reason: "second verification \
-                                                         interrupted: turn cap"
-                                                    .into(),
+                                                reason: "turn_cap".into(),
                                             })
                                         }
                                         RunOutcome::BudgetExceeded { .. } => {
-                                            Some(GdlOutcome::Routed {
+                                            change.verdict = "route";
+                                            change.exchange = Some(confirm_exchange_id);
+                                            Some(GdlOutcome::Capped {
                                                 at: phase,
-                                                reason: "second verification \
-                                                         interrupted: budget"
-                                                    .into(),
+                                                reason: "budget".into(),
                                             })
                                         }
                                         RunOutcome::ProviderFailed { failure } => {
@@ -6982,6 +7035,7 @@ mod tests {
                 artifact: Some(INTAKE_JSON.into()),
                 exchange: Some(exchange),
                 terminal: None,
+                usage: None,
             },
             Some(&satellites),
         )
@@ -7181,6 +7235,7 @@ mod tests {
                 artifact: Some(INTAKE_JSON.into()),
                 exchange: Some(exchange),
                 terminal: None,
+                usage: None,
             },
             None,
         )
@@ -7481,6 +7536,7 @@ mod tests {
                 artifact: Some(INTAKE_JSON.into()),
                 exchange: Some(exchange),
                 terminal: None,
+                usage: None,
             },
             None,
         );
@@ -9000,11 +9056,12 @@ mod tests {
         let runtime = rt();
         let f = fixture(happy_script());
         seed_kb_for_ticket(&f, "combined");
-        // 100: the phase spend through Verify's main exchange (~96) stays
-        // under it; the recheck's reservation (2_000 asked, headroom-capped
-        // to the remainder) plus the confirm exchange crosses it.
+        // 110: the phase spend through Verify's main exchange (~96) stays
+        // under it; the recheck's own spend (ask clamped to the case
+        // ceiling, reservation headroom-capped to the remainder) plus the
+        // confirm exchange crosses it.
         let config = LoopConfig {
-            token_budget: Some(100),
+            token_budget: Some(110),
             ..LoopConfig::default()
         };
         let (driver, _) = reload(f.tmp.path(), happy_script(), config);
@@ -9530,6 +9587,7 @@ mod tests {
                         artifact: Some(artifact.into()),
                         exchange: Some(exchange),
                         terminal: None,
+                        usage: None,
                     },
                     None,
                 )

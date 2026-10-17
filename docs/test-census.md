@@ -37,12 +37,12 @@ that applies them, not in prose that can drift from it.
 
 | Class | Tests | Share |
 |---|---:|---:|
-| `behavioral_pin` | 2974 | 86.6% |
+| `behavioral_pin` | 2978 | 86.5% |
 | `structural` | 338 | 9.8% |
 | `control` | 58 | 1.7% |
-| `residual_documentation` | 54 | 1.6% |
+| `residual_documentation` | 59 | 1.7% |
 | `unclassified` | 9 | 0.3% |
-| **total** | **3433** | |
+| **total** | **3442** | |
 
 Scope: `src/` + `tests/`, the two trees the badge's count comes from.
 The census reads HIGHER than the README badge for two reasons, both
@@ -59,9 +59,9 @@ eleven such cases). The census counts what the compiler does.
 | File | Tests |
 |---|---:|
 | `tests/main_suite.rs` | 355 |
-| `src/workflow/gdl.rs` | 138 |
+| `src/workflow/gdl.rs` | 141 |
 | `src/workflow/decide/router.rs` | 59 |
-| `src/agentloop/run_loop.rs` | 55 |
+| `src/agentloop/run_loop.rs` | 56 |
 | `src/workflow/delivery.rs` | 54 |
 | `src/bin/mcp.rs` | 48 |
 | `src/bin/brain.rs` | 43 |
@@ -85,9 +85,9 @@ have no call in it.
 | `src/trace.rs:47` `trace_traversal_caps_are_bounded` |
 | `src/workflow/decide/router.rs:351` `alias_checkpoints_table_is_the_three_names` |
 | `src/workflow/decide/router.rs:361` `alias_bundle_repo_is_the_english_root` |
-| `src/workflow/gdl.rs:5870` `adversarial_task_bound_is_pinned_by_value` |
-| `src/workflow/gdl.rs:5881` `artifact_bounds_are_pinned_by_value` |
-| `src/workflow/session_log.rs:1136` `scope_caps_are_pinned_by_value` |
+| `src/workflow/gdl.rs:5955` `adversarial_task_bound_is_pinned_by_value` |
+| `src/workflow/gdl.rs:5966` `artifact_bounds_are_pinned_by_value` |
+| `src/workflow/session_log.rs:1161` `scope_caps_are_pinned_by_value` |
 
 ## What this census does NOT police
 

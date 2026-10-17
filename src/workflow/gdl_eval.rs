@@ -464,6 +464,128 @@ pub(crate) mod runner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F12b: the measured default. Every judged seed's gate rows now carry
+    /// per-exchange usage; this pin re-runs the 12-seed population, derives
+    /// the per-phase and total p99 from the PERSISTED rows, and holds the
+    /// shipped default to the measurement — a retune of the loopback
+    /// accounting or the scripts shows up as a drift, which is a
+    /// re-measure, not a silence. The record lives in `docs/AGENTS.md` and
+    /// the F12b commit message.
+    #[test]
+    fn the_default_case_budget_is_the_measured_p99() {
+        use crate::workflow::gdl::eval_fixtures;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut totals: Vec<u64> = Vec::new();
+        let mut per_phase: std::collections::BTreeMap<String, Vec<u64>> =
+            std::collections::BTreeMap::new();
+        let mut measured = 0usize;
+        for seed in eval_fixtures::structural_seeds() {
+            let mut seed_total: u64 = 0;
+            register_sqlite_vec();
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            let mgr = SqliteConnectionManager::file(tmp.path());
+            let pool: EvalPool = r2d2::Pool::builder().max_size(4).build(mgr).unwrap();
+            run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).unwrap();
+            pool.get()
+                .unwrap()
+                .execute(
+                    "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                     VALUES ('acme', 'troubleshoot', '{}', 0, 'active', 1, 1)",
+                    [],
+                )
+                .unwrap();
+            pool.get()
+                .unwrap()
+                .execute(
+                    "INSERT INTO knowledge(domain, title, content, flagged) VALUES ('acme', 'Test playbook', ?1, 0)",
+                    rusqlite::params![format!(
+                        "Test playbook covering the ticket: {}",
+                        seed.ticket
+                    )],
+                )
+                .unwrap();
+            let host = Arc::new(SqliteWorkflowHost::new(pool.clone()));
+            let provider = LoopbackProvider::new(
+                "loopback",
+                eval_fixtures::structural_seed_script(seed.id, false),
+            );
+            let driver = GdlDriver::new(
+                pool.clone(),
+                host,
+                provider.clone(),
+                vec![],
+                ExecutionEnv {
+                    fs: Arc::new(DenyAll),
+                    read_only: true,
+                    allow_process: false,
+                    root: "/".into(),
+                    allowed_commands: vec![],
+                },
+                LoopConfig::default(),
+            );
+            let outcome = rt.block_on(driver.run_case(1, seed.ticket, &CancellationToken::new()));
+            // The population is the judged battery: a seed that routes or
+            // escalates still spent; its gate rows measure what it spent.
+            let _ = outcome;
+            let conn = pool.get().unwrap();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT payload_json FROM agent_session_events \
+                     WHERE run_id = 1 AND kind = 'gdl_gate'",
+                )
+                .unwrap();
+            let rows: Vec<String> = stmt
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            for row in rows {
+                let v: serde_json::Value = serde_json::from_str(&row).unwrap();
+                let Some(u) = v["usage"].as_array() else {
+                    continue;
+                };
+                let (input, output) = (u[0].as_u64().unwrap_or(0), u[1].as_u64().unwrap_or(0));
+                measured += 1;
+                let phase = v["phase"].as_str().unwrap_or("?").to_string();
+                per_phase.entry(phase).or_default().push(input + output);
+                seed_total += input + output;
+            }
+            totals.push(seed_total);
+        }
+        assert!(
+            measured >= 40,
+            "the population must have measured real usage rows: {measured}"
+        );
+        let p99 = |mut v: Vec<u64>| -> u64 {
+            v.sort_unstable();
+            let idx = ((v.len() as f64) * 0.99).ceil() as usize;
+            v.get(idx.saturating_sub(1)).copied().unwrap_or(0)
+        };
+        let total_p99 = p99(totals.clone());
+        for (phase, v) in &per_phase {
+            println!("F12b p99[{phase}] = {}", p99(v.clone()));
+        }
+        println!(
+            "F12b: {measured} usage rows across {} seeds; p99[total] = {total_p99}; \
+             max = {}",
+            eval_fixtures::structural_seeds().len(),
+            totals.iter().copied().max().unwrap_or(0)
+        );
+        // The default is the measured p99 times the bounded retry ladder
+        // (MAX_PHASE_ATTEMPTS = 3): the happy-path measurement with full
+        // headroom for the retries the phase contract already allows.
+        assert_eq!(
+            crate::config::GDL_CASE_TOKEN_BUDGET_DEFAULT,
+            Some(3 * total_p99),
+            "the shipped default must be the measured p99 x the retry ladder, \
+             not a chosen number"
+        );
+    }
+
     use crate::agentloop::provider::{LoopbackProvider, scripted_text};
     use crate::config;
     use crate::migration::run_migration;

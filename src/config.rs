@@ -1466,7 +1466,25 @@ pub fn gdl_case_token_budget() -> Option<u64> {
     std::env::var("BRAIN_GDL_CASE_TOKEN_BUDGET")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
+        .or(GDL_CASE_TOKEN_BUDGET_DEFAULT)
 }
+
+/// The measured default (F12b): the p99 of per-case usage over the 12
+/// judged `eval_run1` seeds (112 under the eval harness's loopback
+/// accounting — 79 `gdl_gate` usage rows, 7-9 exchanges x 14
+/// tokens/call, deterministic), times the bounded retry ladder
+/// (MAX_PHASE_ATTEMPTS = 3): a case that exercises every phase's full
+/// gate-error retry budget must still resolve; only spend beyond the
+/// bounded shape caps. 336 = 112 x 3. Re-derived by
+/// `gdl_eval::tests::the_default_case_budget_is_the_measured_p99`; the
+/// pin fails when the measurement drifts, so the default is the
+/// measurement and the repo's own retry constant, never a chosen
+/// number. Scale caveat, recorded: 14 tokens/exchange is the LOOPBACK
+/// PROVIDER's own accounting, not a frontier model's — the default
+/// tracks the harness scale and an operator running real providers
+/// should set `BRAIN_GDL_CASE_TOKEN_BUDGET` to their own measured
+/// ceiling.
+pub const GDL_CASE_TOKEN_BUDGET_DEFAULT: Option<u64> = Some(3 * 112);
 
 /// whether the opt-in `/suggest` routes are live. Defaults
 /// to `true` (the feature ships on); set `BRAIN_SUGGEST_ENABLED=false` to

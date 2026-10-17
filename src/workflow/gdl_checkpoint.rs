@@ -259,6 +259,10 @@ struct GateRecord {
     revision: i64,
     artifact: Option<String>,
     terminal: Option<GdlOutcome>,
+    /// F12b: the exchange's provider-reported usage. Additive — `default`
+    /// keeps old rows (written before this field) readable.
+    #[serde(default)]
+    usage: Option<(u64, u64)>,
 }
 
 // Local decoder for the existing identity journal contract; no SDK change.
@@ -591,6 +595,11 @@ pub(super) struct Transition {
     pub artifact: Option<String>,
     pub exchange: Option<i64>,
     pub terminal: Option<GdlOutcome>,
+    /// The exchange's provider-reported usage (input, output) — F12b's
+    /// measurement payload on the `gdl_gate` row. Additive: old rows read
+    /// as absent, and rows for receipt-less transitions (route-at-gate)
+    /// carry None.
+    pub usage: Option<(u64, u64)>,
 }
 
 /// Called only after the exchange has settled, never across an external await.
@@ -698,6 +707,7 @@ fn advance_tx(
             revision: old.revision,
             artifact: change.artifact,
             terminal: change.terminal,
+            usage: change.usage,
         })
         .map_err(persist_error)?,
         &format!("{}:gate", next.key()),
