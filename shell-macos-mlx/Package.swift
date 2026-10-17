@@ -30,7 +30,8 @@ let package = Package(
         .macOS(.v15),
     ],
     products: [
-        .library(name: "MLXFMProbe", targets: ["MLXFMProbe"])
+        .library(name: "MLXFMProbe", targets: ["MLXFMProbe"]),
+        .executable(name: "banner-experiment", targets: ["banner-experiment"]),
     ],
     dependencies: [
         // Default-on trait `FoundationModelsIntegration` gates MLXFoundationModels.
@@ -74,6 +75,15 @@ let package = Package(
                 // separately; this pins to what resolves today.
                 .product(name: "Transformers", package: "swift-transformers"),
             ],
+            swiftSettings: [.swiftLanguageMode(.v5)],
+        ),
+        // The banner experiment is an EXECUTABLE, not a test: it loads a 6 GB
+        // model, so putting it behind `swift test` would make the package's test
+        // lane download 6 GB and run for minutes on every invocation. It is a
+        // measurement instrument, invoked deliberately.
+        .executableTarget(
+            name: "banner-experiment",
+            dependencies: ["MLXFMProbe"],
             swiftSettings: [.swiftLanguageMode(.v5)],
         ),
         .testTarget(name: "MLXFMProbeTests", dependencies: ["MLXFMProbe"]),
