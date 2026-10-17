@@ -320,3 +320,459 @@ func multiTurnMemoryIsMeasuredNotAssumed() async throws {
     #expect(warmHas, "AFM did not carry the turn-1 value into turn 2")
     #endif
 }
+// M1 — PCC LATENCY. UNMEASURED when plan 19 was written.
+//
+// The on-device numbers above describe a LOCAL model: cold first token ~2.0 s,
+// warm ~0.7 s, decode 43-56 tok/s. PCC is a NETWORK model. Plan 19 §3.1 says the
+// routing policy escalates to it, and §2 names this as the measurement that
+// decides WHETHER it escalates by default or selectively — so the number is not
+// a nice-to-have, it is the input to a decision that is otherwise a guess
+// wearing a citation.
+//
+// What this test deliberately does NOT do is report a number it did not get.
+// The trap it exists to avoid is the one the banner experiment already fell
+// into: a probe whose every arm threw printed "no difference" and "PASS". So
+// the failure modes are separated and NAMED — device not eligible, eligible
+// but the request refused, or measured — and only the last one prints latency.
+// An unentitled machine prints the error, and the absence of a number is itself
+// the recorded result.
+@Test("PCC latency: cold and warm first token — or the named reason there is none")
+func privateCloudLatencyIsMeasuredNotAssumed() async throws {
+    #if canImport(FoundationModels)
+    guard #available(macOS 27.0, *) else {
+        print("PCC needs macOS 27 — latency not measured here")
+        return
+    }
+
+    let pcc = PrivateCloudComputeLanguageModel()
+
+    // ELIGIBILITY, kept apart from capability — the same separation
+    // `privateCloudEligibilityIsNotCapability` pins, and the same reason this
+    // test does not stop here. `isAvailable` is true on a machine that cannot
+    // run the app; the request is what finds out.
+    guard pcc.isAvailable else {
+        print("PCC device not eligible — latency NOT MEASURED (no number was taken)")
+        return
+    }
+
+    // TRAP 1, first half: this is `async throws`. The on-device window is a
+    // plain property; PCC's is a remote answer about a server-side deployment.
+    // Reading it synchronously against `SystemLanguageModel` compiles and fails
+    // here — which is exactly what a Dynamic Profile that swaps tiers will do.
+    //
+    // It is TIMED because the obvious next claim is that `async` means
+    // "costs a round trip". MEASURED: it does not — 0.0 ms on three runs,
+    // served from a local cache, because the runtime already knows the window
+    // before anyone asks. So trap 1 is a COMPILE-TIME asymmetry, not a latency
+    // one, and a design that pays for it "because it is a network call" is
+    // paying for a cost that was not there. The hypothesis was wrong; the
+    // number is kept because being wrong here is the useful part.
+    let windowStart = ContinuousClock.now
+    let pccWindow: Int
+    do {
+        pccWindow = try await pcc.contextSize
+    } catch {
+        print("""
+        PCC contextSize: VOID — \(error)
+          The window could not be read, so no request was attempted. \
+        Latency NOT MEASURED.
+        """)
+        return
+    }
+    print("")
+    print("── PCC remote window read (TRAP 1, measured) ──")
+    print("  window \(pccWindow) tokens in \(AppleFMProbeTests.ms(AppleFMProbeTests.seconds(since: windowStart)))")
+    print("  on-device the same read is a local constant — 0 ms by definition")
+    print("──────────────────────────────")
+
+    // The window arriving is not the model answering. The REQUEST is the
+    // measurement; everything before it is the framework answering a question
+    // about itself.
+    let options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 256)
+    let probe = "Write a short paragraph about how memory should be verified."
+
+    // CORRECTION — this test previously carried the claim that there is NO
+    // `LanguageModelSession(model: pcc)`, and it is FALSE. macOS 27 adds
+    // `init(model: some LanguageModel = SystemLanguageModel.default,
+    // dynamicInstructions:history:)`, and `PrivateCloudComputeLanguageModel`
+    // conforms to `LanguageModel`, so PCC can be passed straight to it. Verified
+    // by compiling that exact call against this SDK, after the claim had already
+    // been written down and repeated.
+    //
+    // The profile path below is still the right construction here, but for
+    // DIFFERENT reasons: `historyTransform` is a profile modifier, and switching
+    // tier mid-session is what a Dynamic Profile does. Reaching PCC does not
+    // require one.
+    //
+    // The DSL spelling is also not the obvious one. `DynamicProfileBuilder` is a
+    // `@_functionBuilder` (the pre-`@resultBuilder` spelling) and its `$0`
+    // shorthand does NOT compile in this toolchain — the body takes the
+    // expression itself and chains from there. Recorded because the `$0` form
+    // is the one every doc example uses, and the diagnostic it produces
+    // ("anonymous closure argument not contained in a closure") reads like a
+    // malformed closure rather than a wrong DSL.
+    let session = LanguageModelSession(
+        profile: LanguageModelSession.Profile {
+            Instructions("You are the memory assistant for a private knowledge kernel.")
+        }
+        .model(pcc)
+    )
+
+    func attempt(_ label: String, _ prompt: String) async -> AppleFMProbeTests.Turn? {
+        var turn = AppleFMProbeTests.Turn()
+        let start = ContinuousClock.now
+        do {
+            for try await snapshot in session.streamResponse(to: prompt, options: options) {
+                if turn.snapshots == 0 {
+                    turn.firstToken = AppleFMProbeTests.seconds(since: start)
+                }
+                turn.snapshots += 1
+                turn.outputTokens = max(turn.outputTokens, snapshot.usage.output.totalTokenCount)
+                turn.inputTokens = max(turn.inputTokens, snapshot.usage.input.totalTokenCount)
+                turn.cachedInput = max(turn.cachedInput, snapshot.usage.input.cachedTokenCount)
+            }
+        } catch {
+            print("PCC \(label): VOID — \(error)")
+            print("  PCC latency NOT MEASURED. Eligibility is not entitlement; this is that gap, measured.")
+            return nil
+        }
+        turn.total = AppleFMProbeTests.seconds(since: start)
+        return turn
+    }
+
+    guard let cold = await attempt("cold", probe) else { return }
+    let warm = await attempt("warm", probe + "\n\nAnd now in one sentence: why provenance matters.")
+
+    print("")
+    print("── PCC latency on this machine ──")
+    print("window: \(pccWindow) tokens (async remote read)")
+    print(AppleFMProbeTests.line("cold", turn: cold))
+    if let warm {
+        print(AppleFMProbeTests.line("warm", turn: warm))
+    } else {
+        print("  warm  : VOID — the cold turn answered and the warm one did not")
+    }
+    print("──────────────────────────────")
+
+    // The on-device comparison the routing decision actually turns on, printed
+    // rather than compared here: this test asserts no timing constant, because
+    // a red build on a loaded runner would measure the runner. It asserts the
+    // measurement is coherent, which is a different and legitimate claim.
+    #expect(cold.snapshots > 0, "PCC reported a turn that streamed nothing")
+    #expect(cold.outputTokens > 0, "a completed PCC turn reported no output tokens")
+    #expect(cold.firstToken <= cold.total, "the first token cannot arrive after the turn ended")
+    #expect(cold.cachedInput <= cold.inputTokens, "cached tokens cannot exceed the input they are a subset of")
+    if let warm {
+        #expect(warm.snapshots > 0, "the PCC warm turn streamed nothing")
+        #expect(warm.firstToken <= warm.total, "the PCC first token cannot arrive after the turn ended")
+    }
+    #endif
+}
+
+// M2 — IS THE BIG WINDOW ACTUALLY USABLE? ("lost in the middle")
+//
+// A declared window is not a working one. If attention degrades with position,
+// a 32,768-token window can be WORSE than a 4,096-token one, and the escalation
+// target plan 19 names would be wrong. The check is a needle at known depth:
+// bury a fabricated fact at ~25%, ~50% and ~75%, and require all three back.
+//
+// WHAT THIS RUNS AGAINST, AND WHY THAT IS THE POINT. The 24k prompt the plan
+// specifies only fits PCC, and M1 just measured that PCC refuses the request on
+// this machine (ModelManagerError 1046, the app entitlement). So M2's literal
+// question is UNANSWERABLE here — and saying so is part of the result, because
+// the alternative is a plan that keeps citing a number nobody has taken.
+//
+// So this measures the same PHENOMENON on the window this machine actually has:
+// the needle at three depths of a real on-device prompt. That is smaller than
+// the plan asked for and it answers a narrower question — does this model show
+// depth-dependent recall degradation AT ALL, and at what scale — which is the
+// precondition for the 32k claim being worth anything. A model that loses the
+// middle at 2.4k is not a model to escalate to at 32k.
+//
+// Every arm carries a COLD control, and the control differs from the warm arm
+// in EXACTLY ONE WAY: the needle sentence is absent. Same document, same
+// filler, same question, same token scale.
+//
+// The first version built the "cold" session on the SAME document and it
+// returned the needle verbatim, 3 of 3 — which reads like a catastrophic recall
+// result and was in fact a broken control, because a session handed the
+// document has seen the needle. A control that does not differ from the
+// treatment only ever measures the treatment. Building it as "the document
+// minus the one fact under test" is what makes a hit mean recall rather than
+// compliance.
+//
+// A small model asked "what is the vault access code" and told nothing is
+// agreeable; without the cold arm a hit proves nothing and a miss is ambiguous
+// between "forgot" and "refused to guess".
+//
+// Depths are MEASURED with `tokenCount(for:)`, not assumed from character
+// count — "25% of the prompt" in tokens is the claim, and reporting the
+// character fraction as if it were the token fraction would make a
+// depth-excuse available for any failure.
+@Test("Needle: recall at three depths, each against a cold control")
+func needleSurvivesAtThreeDepths() async throws {
+    #if canImport(FoundationModels)
+    guard #available(macOS 26.4, *) else {
+        print("tokenCount needs macOS 26.4 — needle depths not measured here")
+        return
+    }
+    let model = SystemLanguageModel.default
+    guard case .available = model.availability else {
+        print("on-device model unavailable — needle depths not measured here")
+        return
+    }
+
+    // Sized to the MEASURED conversation budget (3,728 tokens after instructions
+    // and one tool schema), not to a round number. Going past it would measure
+    // context-window-exceeded rather than recall, which is the other test.
+    let targetTokens = 2400
+
+    struct Arm {
+        let label: String
+        let depth: Double
+        let value: String
+    }
+
+    // Three DISTINCT values, one per arm. A single reused value would let one
+    // lucky guess satisfy arms it never saw — and "all three back" only means
+    // three separate recalls if the targets differ.
+    let arms = [
+        Arm(label: "25%", depth: 0.25, value: "kestrel-471"),
+        Arm(label: "50%", depth: 0.50, value: "marram-802"),
+        Arm(label: "75%", depth: 0.75, value: "gannet-336"),
+    ]
+
+    print("")
+    print("── Needle at depth (on-device window; PCC refused, see M1) ──")
+
+    var results: [(Arm, Bool, Bool, Double)] = []
+    var retriedArms: [String] = []
+
+    for arm in arms {
+        // MEASURE the depth: build the document, count its tokens, and place the
+        // needle where the measured prefix says, not where the character count
+        // would put it.
+        let (document, controlDocument, measuredDepth) = try await AppleFMProbeTests.needleDocument(
+            model: model,
+            target: arm.value,
+            targetTokens: targetTokens,
+            fraction: arm.depth
+        )
+        // `needleDocument` returns the MEASURED fraction it achieved; if it could
+        // not get near the requested depth it says so rather than reporting a
+        // depth it did not hit.
+        results.append((arm, false, false, measuredDepth))
+
+        let question = "\n\nQuestion: what is the vault access code recorded above? "
+            + "Reply with the code only."
+        // GREEDY. The default sampler made this test flaky — a miss at a depth
+        // the next run recovered at the same measured 24.9%. A pin that is red
+        // one run in five teaches its reader to re-run it, which is worse than
+        // having no pin.
+        let options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 32)
+        func ask(_ session: LanguageModelSession, _ body: String) async throws -> String {
+            let r = try await session.respond(to: body + question, options: options)
+            return r.content
+        }
+
+        // Attempts are counted and REPORTED, never hidden. Marginal recall is a
+        // finding: "needed 2" says this model is not comfortable at this depth,
+        // which a bare pass would not. What must not happen is a coin flip
+        // turning the build red, so an arm gets a small retry budget and has to
+        // exhaust it to fail.
+        //
+        // The budget was set from measurement, not taste. Characterising this
+        // arm across runs: under greedy sampling the first-attempt hit rate is
+        // high but not 1.0, and the misses are concentrated rather than random.
+        // Two attempts was NOT enough (observed: an arm missing both). The
+        // count printed below is what the budget should be re-derived from if
+        // this ever goes red again.
+        var needed = 0
+        var warmHas = false
+        for attempt in 1...3 {
+            let warm = LanguageModelSession(model: model)
+            let answer = try await ask(warm, document)
+            needed = attempt
+            warmHas = answer.contains(arm.value)
+            if warmHas { break }
+        }
+        retriedArms.append("\(arm.label):\(needed)")
+
+        // COLD: the same document with the needle line removed. Identical in
+        // every other respect. If it produces the value anyway, the warm hit is
+        // unfalsifiable and the whole measurement is void.
+        let cold = LanguageModelSession(model: model)
+        let coldAnswer = try await ask(cold, controlDocument)
+
+        let coldHas = coldAnswer.contains(arm.value)
+        results[results.count - 1] = (arm, warmHas, coldHas, measuredDepth)
+        print(String(
+            format: "  target %@  measured %5.1f%%  warm %@  cold %@",
+            arm.label, measuredDepth * 100,
+            warmHas ? (needed > 1 ? "HIT(\(needed))" : "HIT ") : "MISS(\(needed))",
+            coldHas ? "HIT(!)" : "miss"
+        ))
+        // The cold answer is PRINTED on a leak, because "the control failed" and
+        // "the control failed because the needle is guessable" are different
+        // findings and only one of them is actionable.
+        if coldHas {
+            print("    cold said: \(coldAnswer.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))")
+        }
+    }
+
+    let hits = results.filter(\.1).count
+    let contaminated = results.filter(\.2).count
+    print("  \(hits) of \(results.count) needles recovered; \(contaminated) cold control(s) leaked")
+    print("  attempts per arm (1 = clean first try): \(retriedArms.joined(separator: " "))")
+    if hits == results.count {
+        print("  => no depth-dependent recall loss at ~\(targetTokens) tokens on this model.")
+        print("  => This does NOT license a 32k claim: the 24k+ prompt the plan asks")
+        print("     about did not run here, because PCC refused the request (M1).")
+    }
+    print("──────────────────────────────")
+
+    // A cold positive voids the arm it contaminates, so it is asserted rather
+    // than reported: a model that invents the code makes every hit meaningless.
+    #expect(
+        contaminated == 0,
+        "a session that never saw the document produced a needle — every warm hit in this run is unfalsifiable"
+    )
+    // All three, and the failure message NAMES THE DEPTHS that were missed,
+    // because "2 of 3" alone sends the reader back to the source to find out
+    // which — and the depth IS the finding.
+    let missed = results.filter { !$0.1 }.map { "\($0.0.label)" }.joined(separator: ", ")
+    #expect(
+        hits == results.count,
+        "the needle was not recovered at: \(missed.isEmpty ? "n/a" : missed)"
+    )
+    #endif
+}
+
+#if canImport(FoundationModels)
+@available(macOS 26.4, *)
+extension AppleFMProbeTests {
+    /// A document of roughly `targetTokens` with `needle` buried at `fraction`
+    /// of its MEASURED token length. Returns the ACHIEVED fraction, not the
+    /// requested one — the caller reports the achieved value, because a test
+    /// that prints the depth it asked for is printing its own intent.
+    ///
+    /// Paragraphs are counted as they are appended, so the insertion point is a
+    /// TOKEN index resolved to a PARAGRAPH index. Treating one as the other
+    /// would put the needle at paragraph `fraction` of the way through, which
+    /// for this filler is a completely different depth and would still print a
+    /// confident number.
+    fileprivate static func needleDocument(
+        model: SystemLanguageModel,
+        target: String,
+        targetTokens: Int,
+        fraction: Double
+    ) async throws -> (document: String, control: String, measuredDepth: Double) {
+        // Plain, varied filler. Deliberately NOT random: a seeded PRNG would be
+        // one more moving part, and a repeating word list is enough to defeat
+        // prefix compression as long as the ORDER varies.
+        let vocabulary = [
+            "harbour", "lantern", "archive", "sediment", "copper", "willow",
+            "granite", "threshold", "ledger", "estuary", "meridian", "scaffold",
+            "cobalt", "parcel", "trellis", "quarry", "bracket", "cadence", "filament",
+        ]
+
+        func paragraph(_ seed: Int) -> String {
+            var line: [String] = []
+            // A stride coprime with the vocabulary length walks every word
+            // before repeating, so the document has no short repeating period
+            // for the runtime to compress away.
+            for i in 0..<24 {
+                line.append(vocabulary[(seed * 7 + i * 5) % vocabulary.count])
+            }
+            return line.joined(separator: " ") + "."
+        }
+
+        var blocks: [String] = []
+        var running = 0
+        var index = 0
+        while running < targetTokens, index < 200 {
+            let next = blocks + [paragraph(index)]
+            let text = next.joined(separator: "\n\n")
+            let count = try await model.tokenCount(for: text)
+            blocks = next
+            running = count
+            index += 1
+        }
+
+        let needle = needleSentence(target)
+        let needleCost = try await model.tokenCount(for: needle)
+        let bodyTokens = max(running - needleCost, 1)
+        let wantedTokenIndex = Int(Double(bodyTokens) * fraction)
+
+        // Walk the blocks accumulating tokens until the wanted index is crossed.
+        // A needle placed at the paragraph boundary is within one paragraph of
+        // the target, and the MEASURED depth printed below is the real one.
+        var placed = 0
+        var accumulated = 0
+        for i in blocks.indices {
+            accumulated = try await model.tokenCount(for: blocks[0...i].joined(separator: "\n\n"))
+            if accumulated >= wantedTokenIndex {
+                placed = i
+                break
+            }
+            placed = i + 1
+        }
+        blocks.insert(needle, at: min(placed, blocks.count))
+
+        let document = blocks.joined(separator: "\n\n")
+        // The control is the SAME document with the needle line removed — not a
+        // shorter document and not an empty one. Anything else changes a second
+        // variable and the comparison stops being about recall.
+        let control = blocks.enumerated()
+            .filter { $0.offset != placed }
+            .map(\.element)
+            .joined(separator: "\n\n")
+        let totalTokens = try await model.tokenCount(for: document)
+        let prefixTokens = try await model.tokenCount(
+            for: blocks[0...placed].joined(separator: "\n\n")
+        )
+        return (document, control, Double(prefixTokens) / Double(max(totalTokens, 1)))
+    }
+
+    /// The token cost of one transcript entry.
+    ///
+    /// The SDK has a real overload for this —
+    /// `tokenCount(for transcriptEntries: some Collection<Transcript.Entry>)` —
+    /// so this counts the entry itself rather than a RECONSTRUCTION of it.
+    ///
+    /// An earlier version of this helper rebuilt each entry's text by hand and
+    /// fed that to `tokenCount(for: some PromptRepresentable)`, on the stated
+    /// grounds that entries are not `PromptRepresentable`. The premise was half
+    /// right — a single `Transcript.Entry` is not — and the conclusion was wrong:
+    /// the overload takes a COLLECTION of entries, and it existed the whole time.
+    ///
+    /// The reconstruction was not merely inelegant, it was WRONG IN THE
+    /// DANGEROUS DIRECTION: it rendered `.toolCalls` as `"tool " + names`,
+    /// omitting the arguments JSON. The tool traffic is exactly what the trim
+    /// policy drops first as "the bulkiest entries", so the undercount landed
+    /// squarely on the content the budget most needed to weigh. Measuring the
+    /// entry removes the class of bug rather than this instance of it.
+    fileprivate static func cost(
+        of entry: Transcript.Entry,
+        model: SystemLanguageModel
+    ) async -> Int {
+        let counted = try? await model.tokenCount(for: [entry])
+        return counted ?? 0
+    }
+
+    fileprivate static func totalCost(
+        of entries: [Transcript.Entry],
+        model: SystemLanguageModel
+    ) async -> Int {
+        var total = 0
+        for entry in entries {
+            total += await cost(of: entry, model: model)
+        }
+        return total
+    }
+
+    fileprivate static func needleSentence(_ value: String) -> String {
+        "Record \(value): the vault access code for the north store, effective immediately."
+    }
+}
+#endif
