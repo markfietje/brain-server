@@ -8669,6 +8669,13 @@ Final paragraph after the rule.";
             "the_edge_history_surface_is_bounded_and_discloses",
             "apply_rate_limit(app,",
             "reg_watch",
+            // The agent-loop context path. Named here because the register
+            // enumerated four router/handler surfaces and carried ZERO rows for
+            // this one while the arm stayed fenced — the same shape as the four
+            // bare guards the register's own first law was written for.
+            "gdl_instruction_replays_with_model_fragments_inside_the_fence",
+            "user_replay_arm_neutralizes_a_forged_fence_close",
+            "plain_user_prefixes_are_not_envelopes_and_escaped_content_is_checked",
         ] {
             assert!(
                 reg.contains(must_name),
