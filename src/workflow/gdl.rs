@@ -9045,6 +9045,77 @@ mod tests {
         );
     }
 
+    /// F10, behavioural half: a stated confidence — ANY value — must not stop,
+    /// defer, or escalate the machine. Plan 15 §F10 declined to add a threshold
+    /// "until there is a held-out measurement to calibrate it against", and asked
+    /// for "a pin against a future well-meaning threshold".
+    ///
+    /// **Why this is not the pin above.** `hypothesize_contract_states_confidence_
+    /// is_subjective_non_blocking` asserts two STRINGS in the instruction
+    /// contract. A future `if h.confidence < 0.3 { escalate }` in `hypothesize_
+    /// gate` would leave both strings intact and that pin green — the guard was
+    /// present and constrained prose while the absence it was written to guard
+    /// was unguarded. That asymmetry was found by re-reading the plan against the
+    /// shipped code (F24), and this is the behavioural half it owed.
+    ///
+    /// **The debt, stated so it stays a decision rather than an omission:** a
+    /// threshold becomes admissible only after a held-out measurement exists —
+    /// N judged cases carrying BOTH a recorded `confidence` and the human
+    /// outcome, so the number can be calibrated against something. Until then the
+    /// absence is deliberate; the moment such a set exists this pin is the thing
+    /// that must be revisited first, because it will go red the day someone acts
+    /// on the debt without re-deciding.
+    ///
+    /// The drill is the red-proof and it is a two-observation drill: adding a
+    /// threshold turns THIS pin red while the prose pin above stays green. That
+    /// asymmetry is the finding, so both observations are recorded.
+    #[test]
+    fn a_hypothesis_stating_low_confidence_still_reaches_the_next_phase() {
+        // Arm 1 — the pure gate. A confidence of 0.01 produces no error, and
+        // specifically none that mentions it: the gate never reads the field.
+        let low = HYPOTHESIZE_JSON.replace("\"confidence\":0.7", "\"confidence\":0.01");
+        assert_ne!(
+            low, HYPOTHESIZE_JSON,
+            "the fixture must actually carry a confidence field to substitute"
+        );
+        let artifact: HypothesizeArtifact = serde_json::from_str(&low).expect("hypothesize JSON");
+        assert_eq!(
+            artifact.hypotheses[0].confidence,
+            Some(0.01),
+            "the arm is meaningless unless the low value reached the artifact"
+        );
+        let case = GdlCase::fresh("F24 low confidence");
+        let errors = hypothesize_gate(&artifact, &case);
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.to_lowercase().contains("confidence")),
+            "a stated confidence must not be a gate failure — it is the model's \
+             subjective self-report and confirms nothing. The gate said: {errors:?}"
+        );
+
+        // Arm 2 — the machine, end to end. The low-confidence hypothesis runs the
+        // whole 7-phase case to a resolution: it did not stop, defer, or escalate.
+        let runtime = rt();
+        let mut script = happy_script();
+        // happy_script is Intake, Triage, Hypothesize, Plan, Act, Verify,
+        // re-check, confirm, Handoff — so the hypothesize ask is index 2.
+        script[2] = scripted_text(&low);
+        let f = fixture(script);
+        seed_kb_for_ticket(&f, "low-confidence");
+        let outcome = runtime
+            .block_on(
+                f.driver
+                    .run_case(1, "low-confidence", &CancellationToken::new()),
+            )
+            .unwrap();
+        assert!(
+            matches!(outcome, GdlOutcome::Resolved { .. }),
+            "a 0.01-confidence hypothesis must run the case through, not stop or escalate \
+             it — the absence is the decision. Got: {outcome:?}"
+        );
+    }
+
     // ── Phase D (F8/F9/F11) grounding pins: the exit criteria ──────────
 
     /// F8 exit: no accept without a SERVER search hit. The model cites

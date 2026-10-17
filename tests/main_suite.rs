@@ -8680,6 +8680,9 @@ Final paragraph after the rule.";
             // stored attack, the composed app. Named so a future reader does
             // not assume the read seam is covered by the fence row above.
             "recall_injection_flow",
+            // Phase G: the bounded citation anchor. Named so the register knows a
+            // guard reads the PLAN SET, not only the tracked docs.
+            "the_plan_sets_load_bearing_citations_still_resolve",
         ] {
             assert!(
                 reg.contains(must_name),
