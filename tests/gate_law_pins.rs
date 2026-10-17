@@ -433,10 +433,11 @@ fn r51_gate_law_register_entries_carry_justifications() {
 #[test]
 fn r51_gdl_engine_site_is_bound_to_new_with_proficiency() {
     let lines = strip_comments(&read_src("src/workflow/gdl.rs"));
-    // Re-dated for Phase D (F11): the triage-retrieval + resolution gates
-    // moved the engine construction down. The register binds the SYMBOL
-    // (`new_with_proficiency`); this number is the re-derived anchor.
-    let site_line = 2841usize;
+    // Re-dated for Phase D (F11), again for Phase E (F12a): the case-budget
+    // wiring moved the engine construction down once more. The register
+    // binds the SYMBOL (`new_with_proficiency`); this number is the
+    // re-derived anchor.
+    let site_line = 2867usize;
 
     // Walk backwards to the nearest `fn` declaration.
     let enclosing = lines
@@ -457,8 +458,8 @@ fn r51_gdl_engine_site_is_bound_to_new_with_proficiency() {
         "the `LoopDriver::new` at gdl.rs:{site_line} lives inside a function declared at \
          :{decl_line} — `{decl}` — but the register binds `{GDL_ENCLOSING_SYMBOL}`. The \
          register must bind the function the call actually lives in: `GdlDriver::new` \
-         (:2799) is only the L3-delegating wrapper that calls `new_with_proficiency` \
-         (:2823), which is where the engine is built."
+         (:2817) is only the L3-delegating wrapper that calls `new_with_proficiency` \
+         (:2841), which is where the engine is built."
     );
 
     // And the wrapper really is a delegator, not a constructor. Bound the search to
