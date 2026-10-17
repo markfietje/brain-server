@@ -164,17 +164,30 @@ public enum ChatWindow {
 
 /// Why a turn would escalate, in the priority order plan 19 §3.1 sets.
 ///
-/// Plan 19 lists a FIRST trigger above these — "reasoning the small model is
+/// Plan 19 lists a FIRST trigger above this — "reasoning the small model is
 /// measured to get wrong" — and it is deliberately ABSENT rather than carried as
 /// an unimplemented case. It was an enum case for a while and it was removed: no
 /// code produced it, and a case nothing constructs is a promise with no
 /// implementation behind it. The measurement it depends on has not been taken,
 /// so the trigger does not exist yet.
 public enum EscalationReason: String, Sendable, Equatable, CaseIterable {
-    /// Trigger 2 — the evidence to inject exceeds the remaining on-device
+    /// Trigger 2 — what the turn asks for exceeds the remaining on-device
     /// budget. The only trigger currently decidable from a measurement, because
     /// the budget IS measured (`ContextBudget`).
-    case evidenceExceedsOnDeviceBudget
+    ///
+    /// ## RENAMED, because the old name was the bug
+    ///
+    /// This case was `evidenceExceedsOnDeviceBudget`, and `decide` compared
+    /// `evidenceTokens` alone — the recall payload — against the whole budget. So
+    /// a turn carrying a 2,443-token trimmed history and a 200-token recall
+    /// payload routed as `.onDevice` with no escalation and no record, on a
+    /// 2,710-token budget. The router could not see the conversation at all, and
+    /// the conversation is most of the demand.
+    ///
+    /// The case is now named for the SUM, because that is what is compared and
+    /// because a caller holding both numbers cannot tell which term crossed —
+    /// a reason that claims to localize the cause would be guessing.
+    case conversationExceedsOnDeviceBudget
 
     /// Never on turn 1. The first token is the thing the user feels, and M1
     /// means the cost of the alternative is unmeasured rather than known.
@@ -250,7 +263,24 @@ public struct ChatRouter: Sendable {
     /// - Parameters:
     ///   - turn: 1-based turn number. Turn 1 never escalates.
     ///   - evidenceTokens: measured size of the recall payload to inject.
-    public func decide(turn: Int, evidenceTokens: Int) -> RoutingDecision {
+    ///   - historyTokens: measured size of the conversation that will be SENT —
+    ///     the post-trim transcript, which is `TrimPlan.keptTokens`. Pass the
+    ///     PLAN'S number, not the pre-trim one: the trimmer exists precisely to
+    ///     make this smaller, and a router that reads the untrimmed size would
+    ///     escalate on conversations the trimmer already fixed.
+    ///
+    ///     ## WHY IT IS A PARAMETER AND NOT A DEFAULT
+    ///
+    ///     A defaulted `historyTokens: Int = 0` would compile at every call site
+    ///     and preserve the exact blindness this parameter exists to remove: a
+    ///     caller who forgets it gets "the conversation costs nothing" and a
+    ///     silent overflow. There are no call sites yet, so making it required
+    ///     costs nothing and makes the omission impossible.
+    public func decide(
+        turn: Int,
+        evidenceTokens: Int,
+        historyTokens: Int
+    ) -> RoutingDecision {
         // Trigger 3, first, because it is unconditional and cheapest to state.
         // Turn 1 is the turn where latency is the entire user experience.
         if turn <= 1 {
@@ -263,17 +293,28 @@ public struct ChatRouter: Sendable {
         guard let budget = onDeviceBudget, budget > 0 else {
             return .onDevice()
         }
-        if evidenceTokens > budget {
+        // The whole window is one pool — instructions, tool schemas, transcript,
+        // and the answer — so the only honest demand is the SUM. `onDeviceBudget`
+        // has already had instructions, tool schemas and the response reserve
+        // subtracted, so what is left to compare is what the turn adds:
+        //
+        //     historyTokens  what `historyTransform` will send
+        //   + evidenceTokens  what the recall payload injects
+        //
+        // Comparing the evidence alone is what let a 2,443-token conversation
+        // through a 2,710-token budget on the strength of a small payload.
+        let demand = historyTokens + evidenceTokens
+        if demand > budget {
             guard escalationPermitted else {
                 // The refusal is RECORDED, not silent. A caller that cannot see
                 // it will read the fallback as "escalation was not needed".
                 return RoutingDecision(
-                    tier: .onDevice, reason: .evidenceExceedsOnDeviceBudget,
+                    tier: .onDevice, reason: .conversationExceedsOnDeviceBudget,
                     escalationRefused: true
                 )
             }
             return RoutingDecision(
-                tier: .deep, reason: .evidenceExceedsOnDeviceBudget,
+                tier: .deep, reason: .conversationExceedsOnDeviceBudget,
                 escalationRefused: false
             )
         }
@@ -281,6 +322,94 @@ public struct ChatRouter: Sendable {
         return .onDevice()
     }
 }
+// MARK: - Where the trim and the route meet
+
+/// A turn that cannot be sent.
+///
+/// THROWS rather than returning a decision, deliberately. The alternative — a
+/// plan that silently over-fits, a session that sends anyway, and a
+/// `LanguageModelError.contextSizeExceeded` raised MID-GENERATION — is the
+/// failure this whole layer was built to avoid, and it ends the conversation:
+///
+/// > *"the framework throws a `LanguageModelError.contextSizeExceeded(_:)`
+/// > error and the session stops responding"*
+///
+/// > *"The session stops responding after this error, so create a new session
+/// > in the catch block"*
+///
+/// Source: <https://developer.apple.com/documentation/foundationmodels/managing-the-context-window>
+///
+/// The shortfall travels in the case because that is the number a caller needs
+/// to choose a recovery, and a bare "it didn't fit" is not actionable.
+public enum ChatTurnError: Error, Equatable {
+    /// The conversation does not fit the on-device window even after trimming
+    /// to the exchange floor. `shortfallTokens` is how far over it is.
+    case conversationDoesNotFit(shortfallTokens: Int)
+}
+
+/// Joins the trimmer and the router, so a caller has one call to make.
+///
+/// This type exists because `TrimPlan` and `ChatRouter` were correct and
+/// DISCONNECTED: the trimmer computed a shortfall nobody read, and the router
+/// compared numbers nobody supplied. Either alone is inert — the field and the
+/// method were both exercised only by their own pins. The gap was exactly one
+/// argument, and this is it.
+@available(macOS 26.0, *)
+public struct ChatTurnPlanner: Sendable {
+    private let router: ChatRouter
+    private let controller: HistoryBudget.Controller
+
+    public init(router: ChatRouter, controller: HistoryBudget.Controller) {
+        self.router = router
+        self.controller = controller
+    }
+
+    /// Refresh the trim, then route on the result. THROWS if the conversation
+    /// cannot fit the on-device window.
+    ///
+    /// The order matters and is the whole point: measure first, route second,
+    /// and refuse BEFORE the request leaves. A caller that wants to send a
+    /// turn it knows will overflow has to catch this, which is the point.
+    ///
+    /// - Throws: `ChatTurnError.conversationDoesNotFit` when the trimmed
+    ///   conversation still exceeds the window. Not thrown when the decision is
+    ///   `.deep`: that tier's window is larger, so a shortfall measured against
+    ///   the ON-DEVICE budget says nothing about it — and M1 established that
+    ///   the escalation tier refuses every request on this machine anyway, so
+    ///   the honest answer there is still "do not send", which is the caller's
+    ///   call to make with the decision in hand.
+    public func prepare(
+        turn: Int,
+        evidenceTokens: Int,
+        entries: [Transcript.Entry],
+        incomingTokens: Int,
+        cost: @Sendable (Transcript.Entry) async -> Int
+    ) async throws -> RoutingDecision {
+        await controller.refresh(entries, incomingTokens: incomingTokens, cost: cost)
+        let plan = controller.currentPlan
+        let decision = router.decide(
+            turn: turn,
+            evidenceTokens: evidenceTokens,
+            // The POST-TRIM size. The pre-trim number would escalate on
+            // conversations the trimmer already fixed, which is the router
+            // making a decision about a transcript that will not be sent.
+            historyTokens: plan.keptTokens
+        )
+        if decision.tier == .onDevice, plan.exceedsBudget {
+            throw ChatTurnError.conversationDoesNotFit(
+                shortfallTokens: plan.unmetTokens ?? 0
+            )
+        }
+        return decision
+    }
+
+    /// The closure to hand `historyTransform`, so the caller cannot trim
+    /// through one path and route through another.
+    public var transform: ([Transcript.Entry]) -> [Transcript.Entry] {
+        controller.transform
+    }
+}
+
 // MARK: - Window budgeting by historyTransform
 
 /// Spends the window by TRIMMING A COPY, never by rewriting the session.
@@ -326,10 +455,91 @@ public enum HistoryBudget {
         public let keptTokens: Int
         public let droppedTokens: Int
 
-        init(dropped: Set<Transcript.Entry.ID>, keptTokens: Int, droppedTokens: Int) {
+        /// Tokens the trim COULD NOT remove, because the exchange floor held.
+        ///
+        /// **Why this exists.** A trim can fail to meet its budget, and until this
+        /// field existed it failed SILENTLY: the plan dropped what it could, the
+        /// caller applied it, and the only evidence was a
+        /// `LanguageModelError.contextSizeExceeded` raised MID-GENERATION. Apple is
+        /// explicit about what that costs:
+        ///
+        /// > *"the framework throws a `LanguageModelError.contextSizeExceeded(_:)`
+        /// > error and the session stops responding"*
+        ///
+        /// > *"The session stops responding after this error, so create a new
+        /// > session in the catch block"*
+        ///
+        /// Source: <https://developer.apple.com/documentation/foundationmodels/managing-the-context-window>
+        ///
+        /// So the failure is not one lost turn, it is the END of the conversation,
+        /// discovered after the request went out. The floor that causes it —
+        /// never break the last exchange — is the right policy; what was wrong was
+        /// that the policy could not TELL anyone it had bound.
+        ///
+        /// **The three values, and none of them is the default.**
+        ///
+        /// ## THE FIELD IS ABOUT THE BUDGET, NOT THE TARGET
+        ///
+        /// This was documented as "met the target, or there was nothing to
+        /// trim" and **both clauses were false**. The floor binds whenever the
+        /// last exchange is heavy, which stops the loop before the WATERMARK
+        /// while still landing inside the budget. Measured, budget 1000 (target
+        /// 700), costs `100,100,100,100,700,100`:
+        ///
+        ///     target=700  kept=1000  unmet=0  exceeds=false
+        ///
+        /// The plan missed its own target, had droppable entries left, and
+        /// reported `0` — matching neither clause. So the accurate statement:
+        ///
+        /// - `0` — the kept tokens are WITHIN `budgetTokens`. This is the whole
+        ///   meaning. It does NOT mean the watermark target was reached: the
+        ///   floor binds between the two routinely, and that is fine, because a
+        ///   trim that cannot reach its own target and still fits is a WORKING
+        ///   trim. Do not read `0` as "met the target".
+        /// - positive — the kept tokens EXCEED `budgetTokens` by this many, so
+        ///   the request will overflow the window. The floor held with entries
+        ///   still to drop. A caller that routes should treat this as an
+        ///   escalation input, not as a trim that worked.
+        /// - `nil` — the plan could not be MEASURED (costs that do not match the
+        ///   transcript). Unknown is not zero: reporting `0` there would certify
+        ///   an unmeasured plan as a fitting one, which is the same silence this
+        ///   field was added to remove. `nil` makes the caller fail closed, the
+        ///   way an unreadable budget already does in `ChatRouter`.
+        ///
+        /// ## WHAT IS STILL OWED, and is not implemented here
+        ///
+        /// Apple names the recovery: *"consider summarizing the conversation and
+        /// starting a fresh session with that summary as context"*, and again in
+        /// the caching article — *"If you need to remove older entries, consider
+        /// summarizing the conversation and starting a fresh session."*
+        ///
+        /// Source: <https://developer.apple.com/documentation/foundationmodels/optimizing-key-value-caching-in-language-model-sessions>
+        ///
+        /// That is a model round-trip whose latency and fidelity are UNMEASURED
+        /// here, and M1 already established that the alternative tier refuses
+        /// every request on this machine. So today the floor-bound turn sends an
+        /// over-budget request and the framework ends the session. This field
+        /// makes that turn VISIBLE and ROUTABLE before the request goes out; it
+        /// does not make it survivable, and it is named rather than implied.
+        public let unmetTokens: Int?
+
+        init(
+            dropped: Set<Transcript.Entry.ID>,
+            keptTokens: Int,
+            droppedTokens: Int,
+            unmetTokens: Int?
+        ) {
             self.dropped = dropped
             self.keptTokens = keptTokens
             self.droppedTokens = droppedTokens
+            self.unmetTokens = unmetTokens
+        }
+
+        /// Whether the plan is known to exceed the window. `false` for the
+        /// ordinary case; `true` when the floor held, and ALSO when the plan
+        /// could not be measured — an unmeasured plan is never a fitting one.
+        public var exceedsBudget: Bool {
+            (unmetTokens ?? 1) > 0
         }
 
         /// The synchronous half. Drops a NAMED set rather than keeping a named
@@ -358,10 +568,27 @@ public enum HistoryBudget {
     /// turns can append onto a stable prefix before the next consolidation.
     public static let watermark = 0.7
 
-    /// The floor on what survives a trim: the last exchange — a question and its
-    /// answer — which is the minimum from which "continue the conversation" means
-    /// anything. Everything after the latest response is never touched, which is
-    /// what makes this floor real rather than aspirational.
+/// The floor on what survives a trim: the last exchange — a question and its
+/// answer — which is the minimum from which "continue the conversation" means
+/// anything. Everything after the latest response is never touched, which is
+/// what makes this floor real rather than aspirational.
+    ///
+    /// ## THE FLOOR CAN BIND, and a bound floor is a REPORTED outcome
+    ///
+    /// Two entries is one exchange for a plain question-and-answer transcript,
+    /// which is what this constant was written for. It stops being exactly that
+    /// the moment an exchange carries tool traffic or reasoning: the loop drops
+    /// whole units, so the floor then holds whatever the last unit weighs. That
+    /// is measured, not hypothetical — the model-driven history-pressure test
+    /// holds at 2,443 tokens against a 2,710 budget with a 1,897 watermark
+    /// target, because dropping the last exchange is not on the table.
+    ///
+    /// A bound floor means the trim CANNOT meet the budget by dropping. It used
+    /// to mean that silently. Now `TrimPlan.unmetTokens` carries the shortfall,
+    /// so the decision to send an over-budget request — or to route elsewhere —
+    /// happens BEFORE the request, where a caller can still make it. The
+    /// alternative is the framework's own: send it, and lose the session to
+    /// `contextSizeExceeded`.
     static let keepAtLeast = 2
 
     /// Measures and plans.
@@ -388,8 +615,20 @@ public enum HistoryBudget {
         costs: [Int],
         budgetTokens: Int
     ) -> TrimPlan {
-        guard budgetTokens > 0, !entries.isEmpty, costs.count == entries.count else {
-            return TrimPlan(dropped: [], keptTokens: 0, droppedTokens: 0)
+        // Every exit below reports what it could not drop. The helper exists so
+        // no return can forget: a plan that is silent about its own shortfall is
+        // the defect `unmetTokens` was added for.
+        func unmet(_ kept: Int) -> Int { max(0, kept - budgetTokens) }
+        guard budgetTokens > 0, !entries.isEmpty else {
+            return TrimPlan(dropped: [], keptTokens: 0, droppedTokens: 0, unmetTokens: 0)
+        }
+        guard costs.count == entries.count else {
+            // UNMEASURED, and reported as such. The costs do not describe this
+            // transcript, so the size of the conversation is unknown — and an
+            // unknown size is not a fitting one. `nil` rather than `0` because a
+            // caller that cannot measure must fail closed, not proceed on a
+            // number nobody computed.
+            return TrimPlan(dropped: [], keptTokens: 0, droppedTokens: 0, unmetTokens: nil)
         }
         let total = costs.reduce(0, +)
         let target = Int(Double(budgetTokens) * watermark)
@@ -397,7 +636,9 @@ public enum HistoryBudget {
             // Under budget: drop nothing. Apple's "defer removing entries until
             // the window is nearly full" taken literally — the common case
             // touches nothing at all.
-            return TrimPlan(dropped: [], keptTokens: total, droppedTokens: 0)
+            return TrimPlan(
+                dropped: [], keptTokens: total, droppedTokens: 0, unmetTokens: unmet(total)
+            )
         }
 
         // Only entries BEFORE THE LATEST PROMPT are eligible — not before the
@@ -411,11 +652,19 @@ public enum HistoryBudget {
         // including the pending prompt, and that prompt is the question being
         // asked right now — it must never be droppable.
         guard let promptStart = entries.lastIndex(where: { isPrompt($0) }) else {
-            return TrimPlan(dropped: [], keptTokens: total, droppedTokens: 0)
+            return TrimPlan(
+                dropped: [], keptTokens: total, droppedTokens: 0, unmetTokens: unmet(total)
+            )
         }
         let eligible = Array(entries[..<promptStart])
         guard eligible.count > keepAtLeast else {
-            return TrimPlan(dropped: [], keptTokens: total, droppedTokens: 0)
+            // Nothing droppable without breaking the last exchange. This is the
+            // floor in its purest form — a conversation whose newest exchange is
+            // larger than the budget — and it is the case that used to reach the
+            // framework as a silent overflow.
+            return TrimPlan(
+                dropped: [], keptTokens: total, droppedTokens: 0, unmetTokens: unmet(total)
+            )
         }
         let eligibleCosts = Array(costs[..<promptStart])
 
@@ -459,6 +708,10 @@ public enum HistoryBudget {
             while end < eligible.count, !isPrompt(eligible[end]) { end += 1 }
             let alive = eligible.indices.filter { !dropped.contains(eligible[$0].id) }.count
             let unit = (start..<end).filter { !dropped.contains(eligible[$0].id) }
+            // The floor, in the unit the loop now drops by. Stopping here with
+            // entries still to drop is not a silent outcome: `unmetTokens`
+            // reports the overflow above, so this break is visible to the caller
+            // before the request rather than after it.
             guard alive - unit.count >= keepAtLeast else { break }
             for i in unit {
                 dropped.insert(eligible[i].id)
@@ -468,10 +721,12 @@ public enum HistoryBudget {
         }
 
         let kept = entries.indices.filter { !dropped.contains(entries[$0].id) }
+        let keptTokens = kept.reduce(0) { $0 + costs[$1] }
         return TrimPlan(
             dropped: dropped,
-            keptTokens: kept.reduce(0) { $0 + costs[$1] },
-            droppedTokens: total - remaining
+            keptTokens: keptTokens,
+            droppedTokens: total - remaining,
+            unmetTokens: unmet(keptTokens)
         )
     }
 
@@ -496,7 +751,12 @@ public enum HistoryBudget {
     public final class Controller: @unchecked Sendable {
         private let lock = NSLock()
         private var cachedCosts: [Transcript.Entry.ID: Int] = [:]
-        private var plan = TrimPlan(dropped: [], keptTokens: 0, droppedTokens: 0)
+        // `unmetTokens: nil` before the first refresh, and that is the honest value:
+        // nothing has been measured yet, so whether the conversation fits is
+        // unknown — and `exceedsBudget` reads unknown as "assume it does not".
+        // A `0` here would be the quiet version of the same bug this field was
+        // added to end: certifying a plan nobody measured.
+        private var plan = TrimPlan(dropped: [], keptTokens: 0, droppedTokens: 0, unmetTokens: nil)
         public let budgetTokens: Int
 
         public init(budgetTokens: Int) {

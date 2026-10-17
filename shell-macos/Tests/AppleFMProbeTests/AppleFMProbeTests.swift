@@ -1225,9 +1225,22 @@ func trimKeepsTheMostRecentAndDropsOldestFirst() {
     // This arm appends a pending `q6` and uses a budget whose WATERMARK does
     // not land on an exchange boundary, so an entry-wise loop fits
     // mid-exchange. The budget is chosen from a sweep, not a guess: against
-    // the entry-wise loop, 400–550 happened to cut cleanly (`q5 a5 q6`),
-    // 600–700 orphaned `a4`, and 750+ cut cleanly again. A single lucky
-    // budget is how the first version of this arm passed on the broken code.
+    // the entry-wise loop the orphan bands are 575–700 (`a4`), 875–975 (`a3`)
+    // and 1150–1275 (`a2`), with clean bands at 400–550, 725–850 and
+    // 1000–1125.
+    //
+    // THE FIRST VERSION OF THIS COMMENT REPORTED ONLY THE FIRST BAND, and
+    // generalized the rest away as "750+ cut cleanly again". It did not: 750–850
+    // IS clean and 875–975 is not, so a budget picked from "750+" is a coin
+    // flip — and the coin lands vacuous more often than not. The full band list
+    // is here so the next budget choice cannot be made from a summary of a
+    // sweep that stopped early.
+    //
+    // Why the bands repeat at all: a cut that lands between a prompt and its
+    // response orphans, and raising the budget by one entry moves the cut back
+    // onto a boundary. The bands are every budget whose watermark lands
+    // mid-exchange, which is most of them — 400 was chosen because its
+    // watermark does not.
     let pending = entries + [prompt("q6")]
     let pendingCosts = costs + [100]
     let pendingPlan = HistoryBudget.plan(pending, costs: pendingCosts, budgetTokens: 700)
@@ -1259,7 +1272,204 @@ func trimKeepsTheMostRecentAndDropsOldestFirst() {
     #endif
 }
 
-// HISTORY ACROSS A PROFILE SWITCH — the mechanism escalation depends on.
+// A TRIM THAT COULD NOT MEET ITS BUDGET HAS TO SAY SO.
+//
+// The exchange floor (`keepAtLeast`) is the right policy and an unbendable one:
+// the last exchange is what "continue the conversation" means. But a floor that
+// BINDS — a conversation whose newest exchange is larger than the whole budget —
+// produces a plan that is over the window, and until `unmetTokens` existed the
+// plan said nothing about it. `apply` returned the over-budget transcript, the
+// request went out, and the only report was the framework's:
+//
+//     "the framework throws a LanguageModelError.contextSizeExceeded(_:) error
+//      and the session stops responding"
+//
+//     — https://developer.apple.com/documentation/foundationmodels/managing-the-context-window
+//
+// Not one lost turn: the END of the session, discovered after the fact. So the
+// floor's consequence has to be available BEFORE the request, which is what this
+// pins. Three values, and the third is the one a `0` default would have hidden:
+//
+//   0      the trim met its target (the ordinary case)
+//   > 0    the floor held with entries still to drop; the request WILL overflow
+//   nil    the plan could not be measured at all — unknown, and read as overflow
+//
+// The third arm is the fail-closed one, and it is the arm that makes the field
+// honest: `costs` that do not describe the transcript mean the conversation's
+// size is unknown, and an unknown size is not a fitting one.
+@Test("A floor-bound trim REPORTS the tokens it could not drop")
+func floorBoundTrimReportsItsUnmetTokens() {
+    #if canImport(FoundationModels)
+    // 27.0, not 26.0: `Transcript.Response.init` is macOS 27. The PLANNER is
+    // 26.0 — this pin's guard is set by the fixtures it has to build, and
+    // claiming 26 here would be an availability claim this test cannot honour.
+    guard #available(macOS 27.0, *) else { return }
+
+    func prompt(_ t: String) -> Transcript.Entry {
+        .prompt(Transcript.Prompt(segments: [.text(Transcript.TextSegment(content: t))]))
+    }
+    func response(_ t: String) -> Transcript.Entry {
+        .response(Transcript.Response(segments: [.text(Transcript.TextSegment(content: t))]))
+    }
+
+    // Three exchanges of 400 plus the pending prompt — 2,500 tokens against a
+    // 500-token budget, so the floor is forced to bind partway through.
+    var entries: [Transcript.Entry] = []
+    var costs: [Int] = []
+    for i in 0..<3 {
+        entries.append(prompt("q\(i)")); costs.append(400)
+        entries.append(response("a\(i)")); costs.append(400)
+    }
+    entries.append(prompt("qP")); costs.append(100)
+
+    let bound = HistoryBudget.plan(entries, costs: costs, budgetTokens: 500)
+    print("floor-bound: kept=\(bound.keptTokens) unmet=\(String(describing: bound.unmetTokens))")
+    #expect(
+        bound.unmetTokens == 400,
+        "expected the floor to hold 400 tokens over a 500 budget, got \(String(describing: bound.unmetTokens))"
+    )
+    #expect(
+        bound.exceedsBudget,
+        "a plan 400 tokens over the window did not report itself as one"
+    )
+
+    // THE CONTROL, and the reason this pin is not a tautology. The SAME
+    // transcript with a budget its last exchange fits inside: the loop still
+    // stops on the floor — dropping the newest exchange is not on the table —
+    // and `unmetTokens` is still `0`, because the floor held nothing over. A pin
+    // that only ever saw the first arm could not tell "the loop stopped" from
+    // "the plan overflowed", and those are different facts.
+    let fits = HistoryBudget.plan(entries, costs: costs, budgetTokens: 1000)
+    #expect(
+        fits.unmetTokens == 0,
+        "a plan that fits the budget reported \(String(describing: fits.unmetTokens)) unmet"
+    )
+    #expect(
+        !fits.exceedsBudget,
+        "a plan that fits the budget claimed to exceed it"
+    )
+
+    // The other floor exit: nothing droppable at all. One exchange plus the
+    // pending prompt is below `keepAtLeast` eligible entries, so the planner
+    // returns before any loop — and the conversation is 900 tokens against a
+    // 200-token budget.
+    let tiny = [prompt("q0"), response("a0"), prompt("qP")]
+    let tinyPlan = HistoryBudget.plan(tiny, costs: [400, 400, 100], budgetTokens: 200)
+    #expect(
+        tinyPlan.unmetTokens == 700,
+        "the empty-eligible-range floor reported \(String(describing: tinyPlan.unmetTokens))"
+    )
+
+    // UNMEASURED. Costs that do not describe this transcript: the honest answer
+    // is `nil`, and `exceedsBudget` reads `nil` as overflow so a caller that
+    // forgets to check cannot treat it as a fitting plan.
+    let unmeasured = HistoryBudget.plan(entries, costs: [1, 2, 3], budgetTokens: 500)
+    #expect(
+        unmeasured.unmetTokens == nil,
+        "an unmeasurable plan reported \(String(describing: unmeasured.unmetTokens)) — unknown is not zero"
+    )
+    #expect(
+        unmeasured.exceedsBudget,
+        "an unmeasured plan did not read as overflow; unknown is not 'it fits'"
+    )
+    #endif
+}
+
+// THE ROUTER HAS TO SEE THE CONVERSATION IT IS ROUTING.
+//
+// `ChatRouter.decide` compared `evidenceTokens` — the recall payload — against
+// the WHOLE budget, and the budget has already had instructions, tool schemas
+// and the response reserve subtracted from it. So the conversation itself was
+// invisible: the measured history-pressure case routes a 2,600-token trimmed
+// history plus a 200-token payload against a 2,710 budget as `.onDevice`, with
+// no escalation and no record, and the turn goes out over the window.
+//
+// The window is one pool — instructions, tools, transcript and answer draw from
+// the same 4,096 — so the demand is the SUM. This policy had no pin at all
+// before now: `decide`, `EscalationReason`, `escalationRefused` and the
+// fail-closed-on-unknown-budget rule were all unpinned, in a file where the
+// neighbouring policies are pinned several times over.
+//
+// The arms are ordered so the pin can fail in only one direction: the blindness
+// arm first, then the refusal record, then the two controls that stop a fixed
+// comparison from reading as correct.
+@Test("Routing compares the CONVERSATION against the budget, not the evidence alone")
+func routerRoutesOnTheConversationNotTheEvidenceAlone() {
+    #if canImport(FoundationModels)
+    guard #available(macOS 26.0, *) else { return }
+
+    let budget = 2710  // the measured conversation budget: 4096 − 58 − 304 − 1024
+    let router = ChatRouter(escalationPermitted: true, onDeviceBudget: budget)
+
+    // THE BLINDNESS ARM. 200 alone is 7% of the budget; 2,800 together is over
+    // it. A router that reads only the evidence calls this `.onDevice`.
+    let overConversation = router.decide(turn: 4, evidenceTokens: 200, historyTokens: 2600)
+    #expect(
+        overConversation.tier == .deep,
+        "a turn asking for 2,800 tokens against a \(budget) budget routed on-device"
+    )
+    #expect(
+        overConversation.reason == .conversationExceedsOnDeviceBudget,
+        "the escalation was recorded as \(String(describing: overConversation.reason))"
+    )
+    #expect(
+        !overConversation.escalationRefused,
+        "escalation was permitted here, so a refusal flag is false information"
+    )
+
+    // THE SAME TURN WITH ESCALATION REFUSED — which is every turn on this
+    // machine, M1 — must be RECORDED, not silent. A caller that cannot see the
+    // refusal reads the fallback as "escalation was not needed".
+    let refusing = ChatRouter(escalationPermitted: false, onDeviceBudget: budget)
+        .decide(turn: 4, evidenceTokens: 200, historyTokens: 2600)
+    #expect(
+        refusing.tier == .onDevice,
+        "an unpermitted escalation must fall back on-device, not route deep"
+    )
+    #expect(
+        refusing.escalationRefused,
+        "the refusal was silent — the caller reads this as 'escalation not needed'"
+    )
+    #expect(
+        refusing.reason == .conversationExceedsOnDeviceBudget,
+        "the refusal was recorded as \(String(describing: refusing.reason))"
+    )
+
+    // CONTROL 1 — the comparison is `>`, not `>=`. Exactly at the limit fits; an
+    // off-by-one here either escalates every full turn or overflows every one.
+    let exact = router.decide(turn: 4, evidenceTokens: 200, historyTokens: 2510)
+    #expect(
+        exact.tier == .onDevice && exact.reason == nil && !exact.escalationRefused,
+        "a turn of exactly \(budget) tokens was treated as over budget: \(exact)"
+    )
+
+    // CONTROL 2 — the ordinary case still passes through untouched, so the arms
+    // above cannot be satisfied by a router that escalates unconditionally.
+    let fits = router.decide(turn: 4, evidenceTokens: 200, historyTokens: 400)
+    #expect(
+        fits.tier == .onDevice && fits.reason == nil && !fits.escalationRefused,
+        "a turn well inside the budget was escalated: \(fits)"
+    )
+
+    // Turn 1 never escalates, however far over it is — the latency law, and the
+    // reason trigger 3 sits above trigger 2.
+    let firstTurn = router.decide(turn: 1, evidenceTokens: 200, historyTokens: 9000)
+    #expect(
+        firstTurn.tier == .onDevice && firstTurn.reason == .neverOnFirstTurn,
+        "turn 1 escalated: \(firstTurn)"
+    )
+
+    // AN UNREADABLE BUDGET still fails closed — no escalation, no refusal, and
+    // therefore no claim that the turn fits. This is the pre-existing law and
+    // the new parameter must not have weakened it.
+    let unknown = ChatRouter(escalationPermitted: true, onDeviceBudget: nil)
+        .decide(turn: 4, evidenceTokens: 200, historyTokens: 9000)
+    #expect(
+        unknown.tier == .onDevice && !unknown.escalationRefused,
+        "an unknown budget escalated: \(unknown)"
+    )
+    #endif
+}
 //
 // Plan 19 §3.1 rests on one claim: a `DynamicProfile` switches model INSIDE one
 // `LanguageModelSession`, preserving conversation history, so the user feels
@@ -1528,6 +1738,166 @@ func contextSizeIsReadThroughOnePath() async throws {
     case let .unreadable(reason):
         #expect(!reason.isEmpty, "an unreadable window must say why")
     }
+    #endif
+}
+
+// THE CALL SITE. This is the pin for the gap where a correct trimmer and a
+// correct router were each exercised only by their own pins, and neither read
+// the other.
+//
+// `TrimPlan.unmetTokens` computed a shortfall nobody consumed. `ChatRouter.decide`
+// compared numbers nobody supplied. Both were correct and both were inert, which
+// is a failure mode no individual unit test can see: every pin was green and
+// the layer still sent over-budget turns that ended the session at
+// `contextSizeExceeded`.
+//
+// The property: a floor-bound conversation is REFUSED BEFORE the request, and
+// the refusal carries the shortfall.
+@Test("A conversation that cannot fit is REFUSED before the request, with the shortfall")
+func chatTurnPlannerRefusesAConversationThatCannotFit() async throws {
+    #if canImport(FoundationModels)
+    guard #available(macOS 27.0, *) else {
+        print("needs macOS 27 — call-site refusal not driven here")
+        return
+    }
+
+    func prompt(_ t: String) -> Transcript.Entry {
+        .prompt(Transcript.Prompt(segments: [.text(Transcript.TextSegment(content: t))]))
+    }
+    func response(_ t: String) -> Transcript.Entry {
+        .response(Transcript.Response(segments: [.text(Transcript.TextSegment(content: t))]))
+    }
+    // Every entry costs 100, so the arithmetic is checkable by eye.
+    let costs: [Int] = Array(repeating: 100, count: 12)
+
+    // A transcript whose LAST EXCHANGE alone is larger than the budget: the
+    // floor binds, dropping cannot help, and the request would overflow.
+    var entries: [Transcript.Entry] = []
+    for i in 0..<6 {
+        entries.append(prompt("q\(i)"))
+        entries.append(response("a\(i)"))
+    }
+    entries.append(prompt("qP"))
+
+    // The budget must be BELOW the floor for this fixture to bind. The exchange
+    // floor keeps one whole exchange (200) plus the pending prompt (100), so
+    // the smallest possible request is 300 tokens: at a 500-token budget the
+    // trim succeeds and nothing is refused. My first version used 500 and the
+    // pin went red — correctly, because it had not built a case that needed
+    // refusing at all. 150 is below the floor.
+    //
+    // Escalation DELIBERATELY not permitted: this machine refuses every PCC
+    // request (M1), so the on-device path is the only one that can run, and it
+    // is the one that must refuse.
+    let planner = ChatTurnPlanner(
+        router: ChatRouter(escalationPermitted: false, onDeviceBudget: 150),
+        controller: HistoryBudget.Controller(budgetTokens: 150)
+    )
+
+    let constantCost: @Sendable (Transcript.Entry) async -> Int = { _ in 100 }
+
+    // REFUSED, and the shortfall is reported rather than the turn being sent.
+    var caught: ChatTurnError?
+    do {
+        _ = try await planner.prepare(
+            turn: 4, evidenceTokens: 0, entries: entries,
+            incomingTokens: 100, cost: constantCost
+        )
+    } catch let error as ChatTurnError {
+        caught = error
+    }
+    switch caught {
+    case let .conversationDoesNotFit(shortfall):
+        #expect(shortfall > 0, "the refusal carried a non-positive shortfall — it reports nothing actionable")
+    case nil:
+        Issue.record("the planner SENT a conversation that cannot fit — this is the silent overflow the layer exists to prevent")
+    }
+
+    // ANTI-VACUITY: the same planner must NOT refuse a conversation that fits,
+    // or "always throws" would satisfy everything above.
+    let roomy = ChatTurnPlanner(
+        router: ChatRouter(escalationPermitted: false, onDeviceBudget: 5_000),
+        controller: HistoryBudget.Controller(budgetTokens: 5_000)
+    )
+    let ok = try await roomy.prepare(
+        turn: 4, evidenceTokens: 100, entries: entries,
+        incomingTokens: 100, cost: constantCost
+    )
+    #expect(ok.tier == .onDevice, "a conversation inside its window was not routed on-device")
+    #expect(
+        !ok.escalationRefused,
+        "a conversation inside its window recorded a refused escalation"
+    )
+    // The planner's `transform` must be the SAME plan it routed on. If it were a
+    // second, independently-built trimmer, the request could be sent with a
+    // history the routing decision never saw — the two halves disagreeing
+    // behind a single API.
+    _ = try await roomy.prepare(
+        turn: 2, evidenceTokens: 100, entries: entries,
+        incomingTokens: 100, cost: constantCost
+    )
+    let viaTransform = Set(roomy.transform(entries).map(\.id))
+    #expect(
+        !viaTransform.isEmpty,
+        "the planner's transform dropped the entire transcript — including the pending prompt"
+    )
+
+    // THE ROUTE ARM, and it exists because the first version of this pin was
+    // half blind.
+    //
+    // Drilled both ways and the refusal pin passed under EITHER: routing the
+    // conversation on `evidenceTokens` alone, and passing a pre-trim
+    // `historyTokens`. Both are wrong, and both were invisible — because a
+    // floor-bound turn throws on `plan.exceedsBudget` BEFORE the router's
+    // comparison can matter. The throw path and the route path need separate
+    // arms, and only the throw path had one.
+    //
+    // So: a conversation that FITS the window but whose total DEMAND does not.
+    // No throw is possible here, so the decision is the only observable, and
+    // the decision depends on `historyTokens` being the post-trim number.
+    let routing = ChatTurnPlanner(
+        router: ChatRouter(escalationPermitted: false, onDeviceBudget: 1_000),
+        controller: HistoryBudget.Controller(budgetTokens: 1_000)
+    )
+    // Measured, not guessed: `refresh` plans against `budget - incoming` = 900
+    // with a 630 watermark, so it keeps four eligible entries (400) plus the
+    // pending prompt (100) = 500. Evidence of 700 puts the demand at 1,200
+    // against 1,000 — over the window, with the conversation itself fitting.
+    let demandsRefusal = try await routing.prepare(
+        turn: 4, evidenceTokens: 700, entries: entries,
+        incomingTokens: 100, cost: constantCost
+    )
+    #expect(
+        demandsRefusal.escalationRefused,
+        "a 500-token conversation plus a 700-token payload against a 1,000-token budget did not record a refused escalation — the router is not seeing the conversation"
+    )
+    #expect(demandsRefusal.tier == .onDevice, "with escalation refused the tier must be onDevice")
+
+    // Same shape, escalation PERMITTED: now it must route deep, and the
+    // refusal flag must be false — the two are different outcomes and a pin
+    // that only checks one of them passes an implementation that inverts them.
+    let escalating = ChatTurnPlanner(
+        router: ChatRouter(escalationPermitted: true, onDeviceBudget: 1_000),
+        controller: HistoryBudget.Controller(budgetTokens: 1_000)
+    )
+    let routed = try await escalating.prepare(
+        turn: 4, evidenceTokens: 700, entries: entries,
+        incomingTokens: 100, cost: constantCost
+    )
+    #expect(routed.tier == .deep, "an over-budget conversation with escalation permitted did not route deep")
+    #expect(!routed.escalationRefused, "a successful escalation recorded itself as refused")
+    #expect(
+        routed.reason == .conversationExceedsOnDeviceBudget,
+        "the routed decision does not name the conversation as the cause"
+    )
+
+    // TURN 1 still never escalates, through the call site rather than only
+    // through `decide` — the one rule a caller cannot be trusted to remember.
+    let first = try await roomy.prepare(
+        turn: 1, evidenceTokens: 100, entries: entries,
+        incomingTokens: 100, cost: constantCost
+    )
+    #expect(first.reason == .neverOnFirstTurn, "turn 1 routed without the never-on-first-turn rule")
     #endif
 }
 
