@@ -2775,13 +2775,20 @@ pub(crate) struct GdlDriver {
     /// task text only, never executes.
     recheck: Option<RecheckDeps>,
     /// The case's spending authority. Parents the adversarial re-check's
-    /// reservation, so recheck spend lands in the case ledger instead of a
-    /// throwaway per-delegation root (the old shape). Phase exchanges
-    /// deliberately keep their own ledgers: a shared multi-exchange
-    /// authority would let one incomplete stream poison the case root
-    /// (`mark_incomplete` closes the shared dispatch and fails every later
-    /// admission) — isolation there is the fail-closed posture, and the
-    /// recheck reservation is the only spend this authority parents.
+    /// reservation AND (F12a, the shared-fate decision) every phase
+    /// exchange: the loop driver carries this budget as its
+    /// `budget_accounting`, so each phase exchange is a `fresh_exchange`
+    /// view whose exhaustion consults the case's cumulative usage. This
+    /// REVERSES F11's isolation rationale on purpose: F11 kept phase
+    /// exchanges on per-exchange roots so one incomplete stream could not
+    /// poison the case root (`mark_incomplete` closes the shared dispatch
+    /// and fails every later admission). A real cumulative budget makes
+    /// continued spending on an unknown-cost case the bigger hazard —
+    /// unknown spend plus continued spending is the unbounded shape F12
+    /// exists to kill — so a poisoned case now DIES at the budget boundary
+    /// instead of continuing on fresh per-exchange ledgers. `mark_incomplete`
+    /// itself is not on trial: the accounting core's poison walk keeps its
+    /// semantics; the case accepts them.
     case_budget: crate::agentloop::subagents::ExchangeBudget,
 }
 
@@ -2842,6 +2849,13 @@ impl GdlDriver {
     ) -> Self {
         let env = super::proficiency::env_for(&env, proficiency);
         let adversarial_recheck = config.adversarial_recheck;
+        // F12a: the case authority carries the case's cumulative ceiling,
+        // and the loop driver draws every phase exchange from it as a
+        // fresh_exchange view (see the case_budget doc for the shared-fate
+        // decision this encodes).
+        let case_budget = crate::agentloop::subagents::ExchangeBudget::new(config.token_budget);
+        let mut wired = config.clone();
+        wired.budget_accounting = Some(case_budget.clone());
         let recheck = RecheckDeps {
             host: host.clone(),
             provider: provider.clone(),
@@ -2857,7 +2871,7 @@ impl GdlDriver {
             provider,
             tools,
             env,
-            config,
+            wired,
             "",
             LoopHooks::pass_through(),
         );
@@ -2872,7 +2886,7 @@ impl GdlDriver {
             corroboration_ablated: false,
             adversarial_recheck,
             recheck: Some(recheck),
-            case_budget: crate::agentloop::subagents::ExchangeBudget::new(None),
+            case_budget,
         }
     }
 
@@ -2892,6 +2906,11 @@ impl GdlDriver {
         env: ExecutionEnv,
         config: LoopConfig,
     ) -> Self {
+        // Same F12a wiring as the live constructor: the ablated arbiter
+        // does not ablate the budget.
+        let case_budget = crate::agentloop::subagents::ExchangeBudget::new(config.token_budget);
+        let mut wired = config.clone();
+        wired.budget_accounting = Some(case_budget.clone());
         let harness = Arc::new(AgentHarness::new(host.clone(), "gdl", GDL_METHOD_PROMPT));
         let mut loop_driver = LoopDriver::new(
             pool.clone(),
@@ -2900,7 +2919,7 @@ impl GdlDriver {
             provider,
             tools,
             env,
-            config,
+            wired,
             "",
             LoopHooks::pass_through(),
         );
@@ -2913,7 +2932,7 @@ impl GdlDriver {
             corroboration_ablated: false,
             adversarial_recheck: false,
             recheck: None,
-            case_budget: crate::agentloop::subagents::ExchangeBudget::new(None),
+            case_budget,
         }
     }
 
@@ -8858,8 +8877,12 @@ mod tests {
 
     /// F11 exit: the adversarial re-check spends from the case budget.
     /// Same script twice — recheck on vs off. The spend appears with the
-    /// recheck on and only then: no throwaway ledger, no phase leakage
-    /// (phases keep their own ledgers by design).
+    /// recheck on and only then: no throwaway ledger, no phase leakage.
+    /// (F12a updated the ledger shape this pin once recorded: phase
+    /// exchanges now ALSO draw from the case budget as fresh_exchange
+    /// views — the shared-fate reversal is the case_budget doc's to
+    /// explain; this pin's property, recheck spend lands in the case
+    /// ledger, is unchanged.)
     #[test]
     fn adversarial_recheck_spend_lands_in_the_case_budget() {
         let f = fixture(happy_script());
@@ -8879,7 +8902,10 @@ mod tests {
             spent > 0,
             "the recheck's provider spend propagates to the case budget"
         );
-        // Recheck off: the same case spends nothing from the case budget.
+        // Recheck off: the same case still spends PHASE tokens from the
+        // case budget (the F12a shared fate), but strictly less — the
+        // delta is the recheck's own spend, which is the property this pin
+        // has always guarded.
         let g = fixture(happy_script());
         seed_kb_for_ticket(&g, "recheck spend");
         let off = LoopConfig {
@@ -8897,10 +8923,110 @@ mod tests {
             matches!(outcome, GdlOutcome::Resolved { .. }),
             "{outcome:?}"
         );
-        assert_eq!(
-            driver.case_budget.usage().total(),
-            0,
-            "with the recheck off, nothing touches the case budget"
+        let off_spent = driver.case_budget.usage().total();
+        assert!(
+            off_spent > 0,
+            "phase spend lands in the case budget (the F12a shared fate)"
+        );
+        assert!(
+            spent > off_spent,
+            "the recheck's own spend is the delta: on={spent} off={off_spent}"
+        );
+    }
+
+    /// F12a: the case's cumulative budget caps the machine. A ceiling the
+    /// case's TOTAL spend crosses (60 ≪ the ~112 tokens this happy script
+    /// spends) stops the case loudly at an exchange boundary —
+    /// `Capped{reason:"budget"}`, receipt-backed (the consumption-limit
+    /// law above owns the receipt shape; this pin asserts it too). The
+    /// pre-F12a shape gave every phase exchange a FRESH root with the full
+    /// ceiling, so the ceiling never accrued across phases — observed red
+    /// by un-wiring `budget_accounting`: the case ran to
+    /// `ProviderFailed{Unavailable}` (the recheck reservation over a
+    /// per-exchange root) instead of the cumulative cap.
+    ///
+    /// Note on the prompt's "bundle present" arm: `Capped` carries no
+    /// bundle in this tree — the bundle belongs to Escalated/VerifyFailed;
+    /// the Capped terminal's evidence IS the exchange receipt (the
+    /// receipt-backed law), which this pin asserts instead.
+    #[test]
+    fn a_case_over_its_cumulative_budget_caps() {
+        let runtime = rt();
+        let f = fixture(happy_script());
+        seed_kb_for_ticket(&f, "cumulative");
+        let config = LoopConfig {
+            token_budget: Some(60),
+            ..LoopConfig::default()
+        };
+        let (driver, provider) = reload(f.tmp.path(), happy_script(), config);
+        let outcome = runtime
+            .block_on(driver.run_case(1, "cumulative", &CancellationToken::new()))
+            .unwrap();
+        match &outcome {
+            GdlOutcome::Capped { reason, .. } => assert_eq!(reason, "budget"),
+            other => panic!("a 60-token ceiling must cap the ~112-token case: {other:?}"),
+        }
+        assert!(
+            provider.requests().len() < happy_script().len(),
+            "the cap stopped provider work before the script ran out"
+        );
+        let (opened, done_budget): (i64, i64) = Connection::open(f.tmp.path())
+            .unwrap()
+            .query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM agent_session_events
+                    WHERE run_id = 1 AND kind = 'control:exchange'),
+                   (SELECT COUNT(*) FROM agent_session_events
+                    WHERE run_id = 1 AND kind = 'control:exchange_done'
+                      AND payload_json LIKE '%BudgetExceeded%')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(opened >= 1, "the capped exchange opened");
+        assert!(
+            done_budget >= 1,
+            "the cap is receipt-backed: the exchange ended BudgetExceeded"
+        );
+    }
+
+    /// F12a trap 8: the COMBINED spend (phases + the adversarial re-check
+    /// reservation) trips a ceiling that phase spend alone does not reach —
+    /// the pin that F11 and F12 are actually connected. Anti-vacuity: the
+    /// recheck row MUST exist on the log (a script misalignment that
+    /// consumed the recheck turn early would make this pass vacuously).
+    #[test]
+    fn a_budget_only_the_combined_spend_exceeds_still_caps() {
+        let runtime = rt();
+        let f = fixture(happy_script());
+        seed_kb_for_ticket(&f, "combined");
+        // 100: the phase spend through Verify's main exchange (~96) stays
+        // under it; the recheck's reservation (2_000 asked, headroom-capped
+        // to the remainder) plus the confirm exchange crosses it.
+        let config = LoopConfig {
+            token_budget: Some(100),
+            ..LoopConfig::default()
+        };
+        let (driver, _) = reload(f.tmp.path(), happy_script(), config);
+        let outcome = runtime
+            .block_on(driver.run_case(1, "combined", &CancellationToken::new()))
+            .unwrap();
+        match &outcome {
+            GdlOutcome::Capped { reason, .. } => assert_eq!(reason, "budget"),
+            other => panic!("the combined spend must cap: {other:?}"),
+        }
+        let rechecks: i64 = Connection::open(f.tmp.path())
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events \
+                 WHERE kind = 'control:adversarial_recheck'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            rechecks >= 1,
+            "the recheck ran (its spend is part of what crossed the ceiling)"
         );
     }
 

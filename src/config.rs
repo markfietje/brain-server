@@ -1453,6 +1453,21 @@ pub fn max_domain_dbs() -> usize {
         .unwrap_or(MAX_DOMAIN_DBS)
 }
 
+/// The GDL case machine's cumulative token ceiling (F12). `None` (the
+/// current default) = uncapped — the exact posture this seam exists to
+/// replace. The DEFAULT NUMBER IS OWED, not chosen: the measured per-phase
+/// cost of a real case is not recorded anywhere in the tree yet, and a
+/// number without a measurement is a guess wearing a bound. F12b records
+/// per-phase usage on the `gdl_gate` row, runs the 12 judged `eval_run1`
+/// seeds through the eval runner, and sets the default from the observed
+/// p99. Until then an operator may set `BRAIN_GDL_CASE_TOKEN_BUDGET`
+/// explicitly; unparsable → default (None).
+pub fn gdl_case_token_budget() -> Option<u64> {
+    std::env::var("BRAIN_GDL_CASE_TOKEN_BUDGET")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+}
+
 /// whether the opt-in `/suggest` routes are live. Defaults
 /// to `true` (the feature ships on); set `BRAIN_SUGGEST_ENABLED=false` to
 /// disable the surface entirely — the routes then return `501 Not Implemented`.

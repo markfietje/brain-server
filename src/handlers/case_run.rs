@@ -227,7 +227,14 @@ pub(crate) async fn run_gdl_case(
         provider,
         vec![],
         brain_engine_sdk::env::ExecutionEnv::default(),
-        crate::agentloop::run_loop::LoopConfig::default(),
+        // F12a: the case's cumulative budget rides the operator seam. The
+        // default is None (owed — see config::gdl_case_token_budget); the
+        // GdlDriver turns it into the case authority every phase exchange
+        // draws from.
+        crate::agentloop::run_loop::LoopConfig {
+            token_budget: crate::config::gdl_case_token_budget(),
+            ..crate::agentloop::run_loop::LoopConfig::default()
+        },
     );
     let outcome = driver
         .run_case(run_id, &ticket, &tokio_util::sync::CancellationToken::new())
