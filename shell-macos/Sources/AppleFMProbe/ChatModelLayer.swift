@@ -437,24 +437,34 @@ public enum HistoryBudget {
             index = pairEnd
         }
 
-        // OLDEST FIRST, walking FORWARD. The comment here said "oldest-first"
-        // while the loop walked `.reversed()` — which drops the NEWEST eligible
-        // entries first and therefore keeps the oldest. In a real chat that is
-        // the exact inversion of the policy: under pressure the model recalls
-        // the opening exchange and forgets everything the user just said.
+        // OLDEST FIRST, walking FORWARD, and BY EXCHANGE — a prompt together
+        // with everything up to the next prompt (its response, and any tool
+        // traffic the pair walk above left in place), dropped as one unit with
+        // the budget checked between units.
         //
-        // Found by drill, not by reading: six equal-cost exchanges `q0 a0 …
-        // q5 a5` under a forcing budget kept `q0 a0 a5` — the first exchange and
-        // an orphaned trailing response. The pin that now covers this asserts
-        // the kept eligible entries form a SUFFIX of the eligible range, which
-        // is the property `.reversed()` violates and a token-count assertion
-        // cannot see.
-        for i in eligible.indices where remaining > target {
-            guard !dropped.contains(eligible[i].id) else { continue }
+        // The unit matters as much as the direction. Dropping entries one at a
+        // time stops the moment the budget fits, and that moment lands between
+        // a prompt and its response as often as not. The runtime shape is the
+        // one that exposed it: `historyTransform` receives the history WITH the
+        // pending prompt, so the in-flight pair is protected but the exchange
+        // just before it is eligible — and the entry-wise loop dropped `q4`,
+        // fitted, and kept `a4`. The orphan the pair walk prevents for tools
+        // was still being produced for the conversation itself.
+        //
+        // Both halves were found by drill: `.reversed()` kept `q0 a0 a5`, and
+        // the entry-wise loop with a pending `q6` kept `a4 q5 a5 q6`.
+        var start = 0
+        while start < eligible.count, remaining > target {
+            var end = start + 1
+            while end < eligible.count, !isPrompt(eligible[end]) { end += 1 }
             let alive = eligible.indices.filter { !dropped.contains(eligible[$0].id) }.count
-            guard alive > keepAtLeast else { break }
-            dropped.insert(eligible[i].id)
-            remaining -= eligibleCosts[i]
+            let unit = (start..<end).filter { !dropped.contains(eligible[$0].id) }
+            guard alive - unit.count >= keepAtLeast else { break }
+            for i in unit {
+                dropped.insert(eligible[i].id)
+                remaining -= eligibleCosts[i]
+            }
+            start = end
         }
 
         let kept = entries.indices.filter { !dropped.contains(entries[$0].id) }

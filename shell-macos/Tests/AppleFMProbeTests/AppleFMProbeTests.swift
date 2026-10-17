@@ -1125,6 +1125,16 @@ func trimConsolidatesOnceRatherThanEveryTurn() {
 // it. The second was added after the first turned out to be insufficient —
 // protecting from the last `.response` rather than the last `.prompt` yields
 // `a4 q5 a5`, which satisfies every suffix assertion while orphaning `a4`.
+//
+// A THIRD gap remained after both, and the committed exchange-wise fix closed
+// it: the fixture below ends in a response, so the in-flight pair is protected
+// by construction, and the orphan rule only ever saw cuts that landed on
+// exchange boundaries. The runtime shape — `historyTransform` is handed the
+// history WITH the pending prompt, so the transcript ends in a `.prompt` —
+// orphaned `a4` under budgets 600–700 while passing every assertion here. The
+// pending-prompt arm covers it, and the budget for that arm comes from a sweep
+// rather than a guess, because a single lucky budget is how its first version
+// passed on the broken code.
 @Test("A trim drops the OLDEST history and keeps the most recent exchange whole")
 func trimKeepsTheMostRecentAndDropsOldestFirst() {
     #if canImport(FoundationModels)
@@ -1188,18 +1198,64 @@ func trimKeepsTheMostRecentAndDropsOldestFirst() {
     // THE ORPHAN RULE: no kept `.response` may have lost the `.prompt` that
     // asked it. This is the general form of "the exchange survives whole" and
     // it covers the in-flight exchange and every older one.
-    var orphaned: [String] = []
-    for (i, entry) in entries.enumerated() {
-        guard case .response = entry, keptIds.contains(entry.id), i > 0 else { continue }
-        let previous = entries[i - 1]
-        if case .prompt = previous, !keptIds.contains(previous.id) {
-            orphaned.append(text(entry))
+    func orphans(in entries: [Transcript.Entry], kept keptIds: Set<Transcript.Entry.ID>) -> [String] {
+        var orphaned: [String] = []
+        for (i, entry) in entries.enumerated() {
+            guard case .response = entry, keptIds.contains(entry.id), i > 0 else { continue }
+            let previous = entries[i - 1]
+            if case .prompt = previous, !keptIds.contains(previous.id) {
+                orphaned.append(text(entry))
+            }
         }
+        return orphaned
     }
+    let orphaned = orphans(in: entries, kept: keptIds)
     #expect(
         orphaned.isEmpty,
         "kept \(orphaned.count) response(s) whose prompt was dropped — the model is reading answers to questions it cannot see: \(orphaned.joined(separator: "; "))"
     )
+
+    // THE RUNTIME SHAPE, which the arm above never builds. `historyTransform`
+    // is handed the history WITH the pending prompt, so the transcript ends in
+    // a `.prompt` and the exchange just before it is eligible. The arm above
+    // ends in a response, so its in-flight pair is protected by construction
+    // and the orphan rule only ever sees cuts that happen to land on exchange
+    // boundaries — 400 is an even number of 100-token entries.
+    //
+    // This arm appends a pending `q6` and uses a budget whose WATERMARK does
+    // not land on an exchange boundary, so an entry-wise loop fits
+    // mid-exchange. The budget is chosen from a sweep, not a guess: against
+    // the entry-wise loop, 400–550 happened to cut cleanly (`q5 a5 q6`),
+    // 600–700 orphaned `a4`, and 750+ cut cleanly again. A single lucky
+    // budget is how the first version of this arm passed on the broken code.
+    let pending = entries + [prompt("q6")]
+    let pendingCosts = costs + [100]
+    let pendingPlan = HistoryBudget.plan(pending, costs: pendingCosts, budgetTokens: 700)
+    let pendingKept = pendingPlan.apply(pending)
+    let pendingIds = Set(pendingKept.map(\.id))
+    print("KEPT (pending prompt): \(pendingKept.map(text).joined(separator: " "))")
+
+    #expect(
+        pendingKept.last.map(text) == "q6",
+        "the pending prompt — the question being asked right now — was dropped"
+    )
+    let pendingOrphans = orphans(in: pending, kept: pendingIds)
+    #expect(
+        pendingOrphans.isEmpty,
+        "with a pending prompt, kept \(pendingOrphans.count) orphaned response(s): \(pendingOrphans.joined(separator: "; "))"
+    )
+    // Every kept exchange is whole in the other direction too: a kept prompt
+    // keeps its response. An exchange-wise drop cannot produce a lone prompt;
+    // an entry-wise one can.
+    for (i, entry) in pending.enumerated() where pendingIds.contains(entry.id) {
+        guard case .prompt = entry, i + 1 < pending.count else { continue }
+        if case .response = pending[i + 1] {
+            #expect(
+                pendingIds.contains(pending[i + 1].id),
+                "kept prompt \(text(entry)) lost its response — a half exchange"
+            )
+        }
+    }
     #endif
 }
 
