@@ -15,11 +15,16 @@
 //! Two separate defects are visible there, and this probe is careful to keep
 //! them apart:
 //!
-//! 1. **RANK-1 IS THE LOWEST-SCORING HIT.** Soursop ties with Durian at
-//!    0.00241, the bottom of the list, and is nevertheless first. Whatever the
-//!    emitted `score` means, it is not the key the results are sorted by. That
-//!    is a sorting bug and reranking cannot fix it — reranking reorders a list
-//!    that is already mis-sorted, which hides the bug behind better ordering.
+//! 1. **RANK-1 IS THE LOWEST-SCORING HIT — and this is a MISREADING, not a
+//!    sorting bug.** Soursop ties with Durian at 0.00241, the bottom of the
+//!    emitted `score` values, and is nevertheless first. An earlier version of
+//!    this comment called that a sorting bug and said reranking "hides it behind
+//!    better ordering". Checked against the code (`src/search/mod.rs`, the
+//!    post-fusion `fused.sort_by`: it tie-breaks only on EQUAL scores and
+//!    otherwise returns `Ordering::Equal`), the recall path sorts by RRF ORDER.
+//!    `score` is the per-source score that RRF fuses; it is not the sort key, and
+//!    reading a rank as "sorted by this number" is the error. The list is
+//!    correctly ordered — the field is just not the key that ordered it.
 //! 2. **Off-topic documents win on a generic term.** "Soursop/Durian/Dragon
 //!    Fruit Health Benefits" match the query word *benefits* and lose to the
 //!    entity *green tea*. This is the defect a cross-encoder is actually good
