@@ -7,9 +7,15 @@
 //! deliberate and is what makes "no Swift path reaches the kernel except the
 //! core" a structural fact rather than a convention.
 //!
-//! It reads the kernel's ACTUAL response bytes, not a re-serialization by the
-//! caller. One reader of the contract, and the `decision` enum is checked
-//! against the published vocabulary rather than trusted.
+//! It reads the kernel's response BODY — one reader of the contract, and the
+//! `decision` enum is checked against the published vocabulary rather than
+//! trusted. What it does NOT read is the kernel's raw BYTES, and that
+//! distinction was found the hard way: `openapi-fetch` consumes the body
+//! itself (`response.text()` on a chunked success, and again on a failure), so
+//! the response it returns has already had its body used. The core therefore
+//! validates the kernel's JSON *values* — which is what every pin below
+//! depends on — and not its byte framing. Corrected here rather than in the
+//! commit that first claimed it.
 //!
 //! Two fields of Plan 04 §2's shape are deliberately ABSENT, and their absence
 //! is the point:
@@ -181,9 +187,9 @@ pub fn authorize(request: RecallQuery) -> Result<AuthorizedRecall, RecallRefusal
 // ─────────────────────────────────────────────────────────────────────
 
 /// One `/recall` exchange as the webview observed it: the status and the
-/// response bytes, verbatim. Status is part of the input because the REFUSAL
-/// taxonomy is a function of it — a 401 and an empty 200 are different facts,
-/// and whoever holds the bytes is the only place both are visible at once.
+/// body. Status is part of the input because the REFUSAL taxonomy is a
+/// function of it — a 401 and an empty 200 are different facts, and whoever
+/// holds both is the only place they are visible at once.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WireExchange {
