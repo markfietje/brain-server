@@ -322,12 +322,35 @@ pub(crate) fn message_tokens(messages: &[ChatMessage]) -> Result<usize, ContextE
 
 /// Select only complete projected groups. Current-exchange rows never enter
 /// the head, even if one exchange alone exhausts the verbatim budget.
+///
+/// ONE pass measures the candidates. This loop used to call
+/// `context::project(&tail[split..])` for every `split` in `0..=live` and
+/// re-serialize the result to count its tokens — quadratic in the window, and
+/// each candidate re-shaped the same payloads through the read seam. Measured
+/// on the 25x4 KB window the loop's own tests seed: 1.8 s idle and 5.3 s on a
+/// loaded 2-core runner, which is what made the compaction-boundary test
+/// flaky before its wait was made honest. `context::suffix_lengths` answers
+/// the same three questions per candidate from a single fold of the same
+/// per-event rules, and is pinned by equivalence against the projections it
+/// replaces.
 pub(crate) fn admit(
     effective: EffectiveContext,
     current: i64,
 ) -> Result<Option<Admission>, ContextError> {
-    let messages = context::with_summary(effective.summary.as_deref(), &effective.tail)?;
-    if !brain_engine_sdk::prompt::should_compact(message_tokens(&messages)?) {
+    // ONE fold of the window serves both the pressure measurement and the
+    // split search: `suffix_lengths` returns the messages it built, and the
+    // pressure check is asked of those rather than of a second projection of
+    // the same payloads through the same read seam.
+    let measured = context::suffix_lengths(&effective.tail)?;
+    let measured_messages = match effective.summary.as_deref() {
+        Some(summary) => {
+            let mut messages = vec![context::summary_message(summary)?];
+            messages.extend(measured.messages);
+            messages
+        }
+        None => measured.messages,
+    };
+    if !brain_engine_sdk::prompt::should_compact(message_tokens(&measured_messages)?) {
         return Ok(None);
     }
     let budget = brain_engine_sdk::prompt::KEEP_VERBATIM_TOKENS;
@@ -340,22 +363,21 @@ pub(crate) fn admit(
     if message_tokens(&context::project(&effective.tail[live..])?)? > budget {
         return Err(ContextError::CompactionTailBudget);
     }
-    // Bounded by the selected-event cap. Project candidate slices to preserve
-    // exact tool-group correlation rather than estimating a raw JSON boundary.
+    let facts = measured.facts;
     for split in 0..=live {
-        let Ok(tail_messages) = context::project(&effective.tail[split..]) else {
+        let Some(bytes) = facts.suffix(split) else {
             continue;
         };
-        if message_tokens(&tail_messages)? > budget {
+        if bytes.div_ceil(CHARS_PER_TOKEN) > budget {
             continue;
         }
-        let Ok(head_messages) = context::project(&effective.tail[..split]) else {
+        if !facts.prefix_ok(split) {
             continue;
-        };
-        if head_messages.is_empty() {
+        }
+        if facts.prefix_empty(split) {
             return Ok(None);
         }
-        if tail_messages.is_empty() {
+        if facts.suffix_empty(split) {
             return Err(ContextError::CompactionTailBudget);
         }
         return Ok(Some(Admission {

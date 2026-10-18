@@ -2048,15 +2048,21 @@ mod tests {
     ///
     /// The size is NOT a performance assertion and must not be sized like one.
     /// The wait covers whatever PRODUCTION work stands between "the run
-    /// started" and "the run is parked at the seam". On the compaction path
-    /// that includes the admission search, which re-projects and re-shapes the
-    /// whole replay window once per candidate split: measured 1.8 s idle and
-    /// 5.3 s under ~2.5x CPU contention on the 25x4 KB window these tests
-    /// seed, against a CI suite that runs ~2.2x slower than an idle laptop.
-    /// These tests claim WHERE the cancellation landed, never how fast the loop
-    /// got there — so the budget only has to outlast the slowest runner in the
-    /// matrix, with the measured worst case an order of magnitude under it. A
-    /// premise that is NEVER observed still fails, loudly.
+    /// started" and "the run is parked at the seam". These tests claim WHERE
+    /// the cancellation landed, never how fast the loop got there — so the
+    /// budget is a fail-closed ceiling, not a claim about the loop.
+    ///
+    /// It was once sized BY a measurement: the compaction boundary sits behind
+    /// the admission search, which re-projected and re-shaped the whole replay
+    /// window once per candidate split — 1.8 s idle and 5.3 s under ~2.5x CPU
+    /// contention on the 25x4 KB window these tests seed, against a CI suite
+    /// that runs ~2.2x slower than an idle laptop. That search is now linear
+    /// (`context::suffix_lengths`), and the same admission measures ~230 ms
+    /// idle in a debug build — so the number below no longer describes
+    /// anything. It stays generous anyway, and deliberately: a test that waits
+    /// on production work must not become a performance gate the next time
+    /// that work is slower on a loaded runner. The premise that is NEVER
+    /// observed still fails, loudly, naming what was missing.
     const SEAM_WAIT: Duration = Duration::from_secs(60);
 
     /// Await `seam`, or fail the test naming what was never observed.

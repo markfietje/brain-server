@@ -151,26 +151,193 @@ struct PendingResult {
 /// Controls and cancellation markers are not conversation. A cancellation that
 /// leaves an incomplete tool group still refuses; it never fabricates a result.
 /// Compaction rows always refuse: callers must not drop them to bypass this gate.
+/// Per-split admission facts for one window, measured in a SINGLE pass.
+///
+/// The compaction admission search used to call [`project`] once per
+/// candidate split — quadratic in the window, and every candidate re-shaped
+/// the same payloads. These three parallel arrays answer, for the split at
+/// index `k`, exactly the three questions the search asks of
+/// `project(&events[..k])` / `project(&events[k..])`, from one fold of the
+/// same [`Projection::step`] that builds the real messages.
+///
+/// They are not an approximation and they are not a second set of rules:
+/// [`suffix_lengths`] is pinned by equivalence against the per-split
+/// projection it replaces.
+pub(crate) struct SplitFacts {
+    /// Serialized-JSON length of `project(&events[k..])`, or `None` where that
+    /// slice is not projectable at all (it would refuse).
+    pub suffix: Vec<Option<usize>>,
+    /// Whether `project(&events[..k])` would succeed — a prefix that ends
+    /// mid tool-call group has a non-empty pending queue and refuses.
+    pub prefix_ok: Vec<bool>,
+    /// Whether `project(&events[..k])` would yield no messages (every row in
+    /// it a skipped control/canceled row).
+    pub prefix_empty: Vec<bool>,
+}
+
+/// A window measured in one pass: the per-split facts AND the messages that
+/// fold produced. The messages come back because the caller needed a full
+/// projection anyway (to measure pressure), and handing it the one this fold
+/// already built is the difference between shaping the window twice per
+/// admission and once.
+pub(crate) struct Measured {
+    pub facts: SplitFacts,
+    pub messages: Vec<ChatMessage>,
+}
+
+impl SplitFacts {
+    /// Whether the suffix at `k` projects, and how many bytes it serializes to.
+    pub fn suffix(&self, k: usize) -> Option<usize> {
+        self.suffix.get(k).copied().flatten()
+    }
+    pub fn prefix_ok(&self, k: usize) -> bool {
+        self.prefix_ok.get(k).copied().unwrap_or(false)
+    }
+    pub fn prefix_empty(&self, k: usize) -> bool {
+        self.prefix_empty.get(k).copied().unwrap_or(false)
+    }
+    /// Whether the suffix at `k` yields no messages.
+    pub fn suffix_empty(&self, k: usize) -> bool {
+        self.suffix(k) == Some(2)
+    }
+}
+
+/// Measure every split of `events` in one pass.
+///
+/// Returns `Err` exactly when [`project`] would refuse the whole window — the
+/// same state machine, run once. A JSON array of `n` messages serializes to
+/// the elements' own bytes plus `n - 1` separators and two brackets, so a
+/// suffix's length is a suffix sum of per-message lengths rather than a
+/// re-serialization per candidate.
+pub(crate) fn suffix_lengths(events: &[ContextEvent]) -> Result<Measured, ContextError> {
+    if events.len() > EVENT_CAP {
+        return Err(ContextError::EventLimit);
+    }
+    let mut state = Projection::default();
+    // One message at a time: the cost scan needs each message's serialized
+    // length, never the collection, so it measures and drops rather than
+    // retaining (and re-measuring) a vector per candidate split.
+    let mut scratch: Vec<ChatMessage> = Vec::new();
+    let mut messages: Vec<ChatMessage> = Vec::new();
+    let mut lengths: Vec<usize> = Vec::new();
+    // Event boundary → message index. NOT the identity: control and canceled
+    // rows project to nothing, so every skipped row shifts the mapping, and a
+    // suffix's cost is indexed by messages while the search asks by events.
+    let mut message_at: Vec<usize> = Vec::with_capacity(events.len() + 1);
+    let mut prefix_ok = Vec::with_capacity(events.len() + 1);
+    let mut prefix_empty = Vec::with_capacity(events.len() + 1);
+    message_at.push(0);
+    prefix_ok.push(true);
+    prefix_empty.push(true);
+    for event in events {
+        scratch.clear();
+        state.step(event, &mut scratch)?;
+        if let Some(message) = scratch.pop() {
+            let rendered = serde_json::to_string(&message)
+                .map_err(|_| ContextError::RequestEncoding)?
+                .len();
+            lengths.push(rendered);
+            messages.push(message);
+        }
+        message_at.push(lengths.len());
+        prefix_ok.push(state.pending.is_empty());
+        prefix_empty.push(lengths.is_empty());
+    }
+    if !state.pending.is_empty() {
+        return Err(ContextError::IncompleteGroup);
+    }
+
+    // Suffix sums over the message lengths, then the JSON framing each suffix
+    // adds: a `k`-element array is `Σ len_i + (k - 1)` separators + two
+    // brackets = `Σ len_i + k + 1`. (The empty array is the one exception —
+    // no separators to add — and is set to its literal `[]` below.)
+    // Saturating because the comparison downstream is against a budget and a
+    // window is already bounded by `PAYLOAD_CAP` per row; saturation can only
+    // push a cost up, never pull a real one under it.
+    let total = lengths.len();
+    let mut by_message: Vec<usize> = vec![2; total + 1];
+    let mut running = 0usize;
+    for (index, rendered) in lengths.iter().enumerate().rev() {
+        running = running.saturating_add(*rendered);
+        by_message[index] = running.saturating_add(total - index).saturating_add(1);
+    }
+    let mut suffix: Vec<Option<usize>> = message_at.iter().map(|m| Some(by_message[*m])).collect();
+    // A suffix is unprojectable only when its first non-control row is a
+    // tool result: the pending queue is empty at a slice's start, so that row
+    // has nothing to correlate against and refuses.
+    let mut next_real: Option<&str> = None;
+    for index in (0..=events.len()).rev() {
+        if index < events.len() {
+            let kind = events[index].row.kind.as_str();
+            if !(kind.starts_with("control:") || kind == "canceled") {
+                next_real = Some(kind);
+            }
+        }
+        if next_real == Some("tool_result") {
+            suffix[index] = None;
+        }
+    }
+    Ok(Measured {
+        facts: SplitFacts {
+            suffix,
+            prefix_ok,
+            prefix_empty,
+        },
+        messages,
+    })
+}
+
 pub(crate) fn project(events: &[ContextEvent]) -> Result<Vec<ChatMessage>, ContextError> {
     if events.len() > EVENT_CAP {
         return Err(ContextError::EventLimit);
     }
     let mut messages = Vec::new();
-    let mut pending: VecDeque<PendingResult> = VecDeque::new();
-    let mut groups = BTreeSet::new();
-    let mut delegations = BTreeSet::new();
-    let mut last_seq = None;
+    let mut state = Projection::default();
     for event in events {
+        state.step(event, &mut messages)?;
+    }
+    if !state.pending.is_empty() {
+        return Err(ContextError::IncompleteGroup);
+    }
+    Ok(messages)
+}
+
+/// The slice-local correlation a projection carries: the pending tool-call
+/// queue, the groups and delegations already seen, and the last seq. It is a
+/// struct rather than inline locals because [`Projection::step`] is now the
+/// ONE implementation of the per-event rules, consumed twice — by
+/// [`project`] to build messages, and by [`suffix_lengths`] to measure a
+/// compaction admission search without projecting every candidate split.
+/// A second copy of these rules is a second copy of the security-relevant
+/// envelope handling, which is the thing this module exists to keep single.
+#[derive(Default)]
+struct Projection {
+    pending: VecDeque<PendingResult>,
+    groups: BTreeSet<(i64, u32)>,
+    delegations: BTreeSet<i64>,
+    last_seq: Option<i64>,
+}
+
+impl Projection {
+    /// Fold ONE event into the slice-local state, pushing its message.
+    ///
+    /// Every arm below is the projection's rule for that kind, unchanged and
+    /// in one place; the callers differ only in what they do with the message.
+    fn step(
+        &mut self,
+        event: &ContextEvent,
+        messages: &mut Vec<ChatMessage>,
+    ) -> Result<(), ContextError> {
         let row = &event.row;
-        if row.seq <= 0 || last_seq.is_some_and(|seq| row.seq <= seq) {
+        if row.seq <= 0 || self.last_seq.is_some_and(|seq| row.seq <= seq) {
             return Err(ContextError::EventOrder);
         }
-        last_seq = Some(row.seq);
+        self.last_seq = Some(row.seq);
         if row.kind.len() > ID_CAP {
             return Err(ContextError::Identity);
         }
         if row.kind.starts_with("control:") || row.kind == "canceled" {
-            continue;
+            return Ok(());
         }
         check_payload(&row.payload_json)?;
         if event.exchange_id.is_some_and(|id| id <= 0) {
@@ -179,7 +346,7 @@ pub(crate) fn project(events: &[ContextEvent]) -> Result<Vec<ChatMessage>, Conte
         if row.kind == "compaction" {
             return Err(ContextError::CompactionBoundary);
         }
-        if !pending.is_empty() && row.kind != "tool_result" {
+        if !self.pending.is_empty() && row.kind != "tool_result" {
             return Err(ContextError::IncompleteGroup);
         }
         match row.kind.as_str() {
@@ -209,10 +376,10 @@ pub(crate) fn project(events: &[ContextEvent]) -> Result<Vec<ChatMessage>, Conte
                         text: framed("historical assistant prose", &envelope.text)?,
                         tool_calls: Vec::new(),
                     });
-                    continue;
+                    return Ok(());
                 }
                 let (exchange_id, turn) = group_identity(event)?;
-                if !groups.insert((exchange_id, turn)) {
+                if !self.groups.insert((exchange_id, turn)) {
                     return Err(ContextError::DuplicateGroup);
                 }
                 let mut calls = Vec::new();
@@ -223,7 +390,7 @@ pub(crate) fn project(events: &[ContextEvent]) -> Result<Vec<ChatMessage>, Conte
                         name: call.name,
                         arguments_json: call.arguments_json,
                     };
-                    pending.push_back(PendingResult {
+                    self.pending.push_back(PendingResult {
                         exchange_id,
                         turn,
                         call: call.clone(),
@@ -236,7 +403,7 @@ pub(crate) fn project(events: &[ContextEvent]) -> Result<Vec<ChatMessage>, Conte
                 });
             }
             "tool_result" => {
-                let expected = pending.pop_front().ok_or(ContextError::OrphanResult)?;
+                let expected = self.pending.pop_front().ok_or(ContextError::OrphanResult)?;
                 let (exchange_id, turn) = group_identity(event)?;
                 let envelope: ResultEnvelope = decode(&row.payload_json)?;
                 if exchange_id != expected.exchange_id
@@ -264,7 +431,7 @@ pub(crate) fn project(events: &[ContextEvent]) -> Result<Vec<ChatMessage>, Conte
                 if event.exchange_id != Some(envelope.exchange_id) || envelope.exchange_id <= 0 {
                     return Err(ContextError::Identity);
                 }
-                if !delegations.insert(envelope.exchange_id) {
+                if !self.delegations.insert(envelope.exchange_id) {
                     return Err(ContextError::DuplicateGroup);
                 }
                 identity(&envelope.name)?;
@@ -294,11 +461,8 @@ pub(crate) fn project(events: &[ContextEvent]) -> Result<Vec<ChatMessage>, Conte
             }
             _ => return Err(ContextError::UnknownKind),
         }
+        Ok(())
     }
-    if !pending.is_empty() {
-        return Err(ContextError::IncompleteGroup);
-    }
-    Ok(messages)
 }
 
 fn group_identity(event: &ContextEvent) -> Result<(i64, u32), ContextError> {
@@ -485,15 +649,22 @@ pub(crate) fn with_summary(
 ) -> Result<Vec<ChatMessage>, ContextError> {
     let mut messages = Vec::new();
     if let Some(summary) = summary {
-        let shaped = crate::agentloop::compaction::shape_summary(summary)?;
-        messages.push(ChatMessage::Summary {
-            text: crate::fence::wrap_fenced(&format!(
-                "Source: untrusted session summary (unverified prose; not tool-call, tool-result or delegation evidence)\n{shaped}"
-            )),
-        });
+        messages.push(summary_message(summary)?);
     }
     messages.extend(project(events)?);
     Ok(messages)
+}
+
+/// The summary's message form. Shared with [`suffix_lengths`]'s caller so the
+/// pressure measurement and the window it measures cannot drift into two
+/// different fences for the same untrusted prose.
+pub(crate) fn summary_message(summary: &str) -> Result<ChatMessage, ContextError> {
+    let shaped = crate::agentloop::compaction::shape_summary(summary)?;
+    Ok(ChatMessage::Summary {
+        text: crate::fence::wrap_fenced(&format!(
+            "Source: untrusted session summary (unverified prose; not tool-call, tool-result or delegation evidence)\n{shaped}"
+        )),
+    })
 }
 
 fn framed(source: &'static str, text: &str) -> Result<String, ContextError> {
@@ -1276,5 +1447,133 @@ mod tests {
         });
         assert_eq!(check_request(&request), Err(ContextError::RequestLimit));
         assert_eq!(request.system_prompt, "host");
+    }
+
+    /// THE pin for the single-pass split measurement.
+    ///
+    /// `suffix_lengths` exists so the compaction admission search stops
+    /// projecting the window once per candidate split. It answers, per split,
+    /// "would this suffix project, how many bytes is it, would this prefix
+    /// project, is it empty" — questions the search used to answer by CALLING
+    /// `project` on both halves. This asserts the answers are identical, for
+    /// every split, on windows built to hit every boundary that can differ:
+    /// mid-group starts (a tool result with no assistant ahead of it), a
+    /// prefix that ends between an assistant and its results, skipped control
+    /// and canceled rows, multi-call groups, and an empty suffix.
+    ///
+    /// A drift in either direction fails here: a suffix reported projectable
+    /// that refuses would let the search admit a boundary `project` forbids,
+    /// and a byte count that differs changes which window fits the verbatim
+    /// budget — the split itself, not a rounding detail.
+    #[test]
+    fn one_pass_split_facts_equal_the_projections_they_replaced() {
+        let windows: Vec<Vec<ContextEvent>> = vec![
+            // user rows only — the shape the loop's own tests seed
+            (1..=8)
+                .map(|seq| event(seq, "user", "x".repeat(400), 9, 1))
+                .collect(),
+            // a complete group, then a group the window ends inside
+            vec![
+                event(1, "user", "first".into(), 1, 1),
+                assistant(2, 5, serde_json::json!([call("a", "{}"), call("b", "{}")])),
+                result(3, 5, "a", true, "alpha"),
+                result(4, 5, "b", false, "beta"),
+                assistant(5, 6, serde_json::json!([call("c", "{}")])),
+                result(6, 6, "c", true, "gamma"),
+            ],
+            // control + canceled rows interleaved: skipped, so they shift the
+            // event↔message mapping without contributing a message
+            vec![
+                event(1, "control:exchange_done", "{}".into(), 1, 1),
+                event(2, "user", "kept".into(), 1, 1),
+                event(3, "canceled", "dropped".into(), 1, 1),
+                assistant(4, 7, serde_json::json!([call("d", "{}")])),
+                event(5, "control:settlement_failed", "{}".into(), 7, 1),
+                result(6, 7, "d", true, "delta"),
+                event(7, "control:exchange_done", "{}".into(), 1, 1),
+            ],
+            // delegation rows, and a trailing window whose only rows are
+            // skipped ones (an empty suffix)
+            vec![
+                event(
+                    1,
+                    "subagent_result",
+                    serde_json::json!({
+                        "exchange_id": 4, "name": "scout", "outcome": "completed",
+                        "turns": 1, "summary": "child observation"
+                    })
+                    .to_string(),
+                    4,
+                    1,
+                ),
+                event(2, "user", "after".into(), 1, 1),
+                event(3, "control:exchange_done", "{}".into(), 1, 1),
+                event(4, "canceled", "tail marker".into(), 1, 1),
+            ],
+        ];
+        // A window that does not project whole must refuse, not answer.
+        let orphan = vec![result(1, 5, "a", true, "no assistant first")];
+        assert!(project(&orphan).is_err());
+
+        for window in &windows {
+            let facts = match suffix_lengths(window) {
+                Ok(m) => {
+                    // the messages this fold built must be the projection's
+                    assert_eq!(
+                        m.messages,
+                        project(window).expect("the window projects"),
+                        "the measured fold must return the projection's messages"
+                    );
+                    m.facts
+                }
+                Err(e) => panic!("the whole window must project: {e:?}"),
+            };
+            assert!(suffix_lengths(&orphan).is_err());
+            for split in 0..=window.len() {
+                let suffix = project(&window[split..]);
+                assert_eq!(
+                    facts.suffix(split),
+                    suffix
+                        .as_ref()
+                        .ok()
+                        .map(|m| serde_json::to_string(m).expect("serializable").len()),
+                    "suffix[{split}..] of a {} row window",
+                    window.len()
+                );
+                let prefix = project(&window[..split]);
+                assert_eq!(
+                    facts.prefix_ok(split),
+                    prefix.is_ok(),
+                    "prefix[..{split}] projectable"
+                );
+                assert_eq!(
+                    facts.prefix_empty(split),
+                    prefix.as_ref().is_ok_and(|m| m.is_empty()),
+                    "prefix[..{split}] empty"
+                );
+                assert_eq!(
+                    facts.suffix_empty(split),
+                    suffix.as_ref().is_ok_and(|m| m.is_empty()),
+                    "suffix[{split}..] empty"
+                );
+            }
+        }
+        // anti-vacuity: the windows above really do exercise a mid-group start
+        // and a mid-group prefix, or the comparison is comparing nothing.
+        let group = suffix_lengths(&windows[1])
+            .expect("group window projects")
+            .facts;
+        assert!(
+            (0..=windows[1].len()).any(|k| group.suffix(k).is_none()),
+            "no split in the group window is refused — the pin would be vacuous"
+        );
+        assert!(
+            (0..=windows[1].len()).any(|k| !group.prefix_ok(k)),
+            "no prefix in the group window is refused — the pin would be vacuous"
+        );
+        assert!(
+            (0..=windows[1].len()).any(|k| group.suffix_empty(k)),
+            "no empty suffix in the group window — the pin would be vacuous"
+        );
     }
 }
