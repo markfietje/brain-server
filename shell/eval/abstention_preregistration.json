@@ -1,0 +1,68 @@
+{
+	"record": "shell-abstention-fixture-preregistration",
+	"version": 1,
+	"phase": "P2 the surface (Plan 02 §7, Plan 06 §3, Plan 08 §2.3)",
+	"preregistered_at": "2026-10-18",
+	"first_run_at": null,
+	"note": "P1's T3 FAILED with zero abstentions over 106 queries and preregistered the consequence: a dedicated abstention fixture is OWED. This record is the OTHER half of that debt — the fixture itself. It is committed BEFORE any abstention corpus is built, and the criterion below is stated as a PROVABILITY requirement rather than an observation, because the investigation that led here (nine probes, then an exhaustive enumeration of the estimator's rank space) says the corpus cannot exist. That conclusion is recorded as a FINDING to be tested, not assumed: `the_abstention_state_is_unreachable_in_the_recall_pipeline` re-derives it from the estimator's own arithmetic, and if it ever goes red the fixture becomes buildable and this record's consequence fires.",
+	"machine": {
+		"cpu": "Apple M1 Pro",
+		"memory_bytes": 17179869184,
+		"macos": "27.0.1",
+		"kernel_commit": "13eceae4"
+	},
+	"dataset": {
+		"fixture": "shell/eval/abstention_queries.md",
+		"sha256": null,
+		"judged_queries": 0,
+		"corpus_docs": 0,
+		"state": "NOT BUILT",
+		"why_not_built": "The abstention fixture is a NEW corpus and the frozen `tests/fixtures/eval_queries.md` stays untouched (its SHA-256 is pinned by eval-preregistration.test.ts). This record exists to hold the criteria for a corpus that the enumeration shows cannot produce an abstention. `sha256` is null because no corpus was built; a corpus with a digest here would assert a fixture that does not exist, which is the decoration Plan 08 §0 forbids."
+	},
+	"why_a_fixture_cannot_exist": {
+		"claim": "No corpus and no query can make `/recall` return `decision: low_confidence` over HTTP.",
+		"mechanism": "abstention_decision (src/handlers/recall.rs) abstains only on Recommendation::ClarifyQuery AND an empty final hit list. ClarifyQuery comes from HeuristicEstimator::decide (src/search/quality.rs).",
+		"the_three_gates": [
+			"gate 1 (hard): overlap < agreement_min/10 = 0.2 -> IncreaseTopK",
+			"gate 2 (hard): gap < gap_threshold = 0.023 -> RunPrf",
+			"gate 3 (score): score >= 0.35 -> IncreaseTopK"
+		],
+		"the_formula": "score = 0.4*overlap + 0.3*gap + 0.2*rr + 0.1*lex, with rr = 1.0 for the top row because the kernel reports vector_rank 0-BASED (rr = 1/(1+0))",
+		"the_bound": "rr contributes a constant 0.2, so `score < 0.35` requires 0.4*overlap + 0.3*gap + 0.1*lex < 0.15. Gate 1 already forces overlap >= 0.2 (contributing 0.08) and gate 2 forces gap >= 0.023 (contributing 0.0069), leaving under 0.063 for lex. The enumeration shows that every rank assignment clearing both hard gates scores at least 0.4324, because clearing gate 1 requires enough rows in BOTH legs, which makes top-1 and top-2 near-tied or far-apart in ways that push the weighted sum up.",
+		"best_case_observed": {
+			"n": 5,
+			"ranks": "r0{v:1,f:1} r1{v:2,f:-} r2..r4 absent",
+			"overlap": 0.2,
+			"gap": 0.5081,
+			"lexical_density": 0,
+			"score": 0.4324,
+			"corroboration": "Live measurement of the query `passes` against a five-row corpus returned overlap 0.20, gap 0.5082, lex 0.00, score 0.4325 — the model above reproduces the kernel to four decimals, so the bound is not an artifact of the transcription."
+		},
+		"cases_enumerated": 109220,
+		"cases_clearing_both_hard_gates": 20500,
+		"cases_reaching_clarify_query": 0
+	},
+	"tolerances": {
+		"A1_abstention_state_provable": {
+			"gating": true,
+			"rule": "Either (a) the enumeration over the estimator's reachable rank space yields at least one assignment whose recommendation is ClarifyQuery, or (b) it yields none and the finding 'the abstention state is unreachable over HTTP' is committed with its arithmetic.",
+			"decides_in_advance": "This is the criterion that decides whether the abstention FIXTURE is buildable at all. If (a) holds, the fixture is owed and Plan 02's 'low_confidence renders as an answer' becomes an end-to-end exit criterion. If (b) holds, the fixture is IMPOSSIBLE, Plan 06 §3's abstention headline has no data path behind it, and the surface work must pin abstention at the classifier boundary instead — recorded, not silently narrowed.",
+			"why_this_form": "The alternative would have been to build a corpus, run it, observe zero abstentions, and report 'still no abstentions' — which is indistinguishable from not having tried, and leaves the next reader assuming the state is merely hard to reach."
+		},
+		"A2_no_claim_the_fixture_provides": {
+			"gating": true,
+			"rule": "No committed artifact may state or imply that an abstention corpus exists, exercises the state end to end, or was run against the kernel, unless a digest is recorded here.",
+			"decides_in_advance": "The prompt says the abstention fixture is 'a prerequisite, not a chore'. It is a prerequisite that cannot be met, and the failure mode this arm refuses is the plausible one: writing 'the abstention fixture demonstrates…' over a corpus that was never built because it cannot be. The digest being null IS the honest state."
+		},
+		"A3_pinned_at_the_classifier_not_the_wire": {
+			"gating": true,
+			"rule": "The abstention rendering is pinned at the boundary that CAN be exercised — the core's six-state classifier and the renderer's four renderings — and the pin must state that the end-to-end path is unmeasured.",
+			"decides_in_advance": "Plan 02's exit criterion is 'low_confidence renders as an answer, visually distinct from an error'. That is still testable, because the core's classifier and the renderer are both real subjects; what is untestable is the KERNEL emitting the state. Pinning the rendering while naming the gap keeps the criterion honest in both halves: the UI work is proved, and the data path is not claimed."
+		}
+	},
+	"what_this_does_not_settle": [
+		"Whether the kernel SHOULD abstain more often is a product decision this phase does not make; `src/search/quality.rs` is outside the phase's declared scope (`shell/src/**`, `shell/src-tauri/**`, `shell-macos/Sources/**`, `shell/tests/**`, `shell/eval/**`) and the estimator's thresholds were deliberately left as a calibrated multi-signal policy rather than a raw score cutoff.",
+		"The recovery path (Plan 19) remains owed and unmeasured.",
+		"Escalation remains refused on this machine (ModelManagerError 1046) and no part of this phase may promise it."
+	]
+}
