@@ -4,7 +4,49 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
-## [Unreleased] — 2026-10-18
+## [1.29.19] — 2026-10-19 — the security audit release
+
+The client phase picked up the kernel's security audit: twenty findings were
+reproduced, fixed and pinned, and a second adversarial pass closed the holes the
+first pass left open. The headline defects were a retrieval fallback that
+dropped every tenant and owner predicate, a role claim that *removed* the
+record fence, PII redaction that was inert on five of six write paths, an
+injection screen defeated by the strip that followed it, and a `/verify` offset
+contract that indexed a derived string. Every fix has an executable pin; the
+new penetration suite drives the real router with signed tokens.
+
+### Release notes
+
+**Security fixes**
+
+- A read-only role can no longer widen a token to every owner's rows: an empty
+  `reports` allowlist denies, and a custom `owner_filter` without the explicit
+  shared-pool capability narrows to the caller.
+- The legacy retrieval fallback applies the same domain, owner, scope, validity
+  and decay predicates as the primary vector path; the graph leg honours source
+  and a normalized `as_of`.
+- PII is flagged on every production write path, including markdown headings,
+  and both detectors now cover Unicode addresses, offset-zero values, dotted
+  and adjacent card numbers. The read seam strips invisibles before redacting,
+  and cannot weld a live markdown image around a deleted tag.
+- Quarantine by id now checks the gate, the domain and the legal hold in one
+  immediate transaction, requires the purge capability to delete, and uses the
+  caller's domain pool.
+- Token files are validated through one opened handle; the boot gate uses the
+  same reader; the agent token is removed from the operator set; rotation
+  preserves the agent lane.
+- Webhook replay claims key on the payload for every body-only lane. Backup
+  writes use a unique owner-only temp and rename, so a rewrite tightens the mode
+  and a planted symlink is replaced, not followed.
+
+**Bug fixes**
+
+- `/verify` reports an exact match whose case-fold changes byte length, runs in
+  linear time, and publishes the real decision semantics in the contract.
+- DSAR disclosure is authored/addressed only, sanitizes every free-text field,
+  and no longer mirrors the purge's content match.
+- The UMP export signs with the operator key when configured and sanitizes the
+  fields it emits. The page-packing reorder no longer mislabels a hit's domain.
 
 ### Security
 
