@@ -6,6 +6,64 @@ are consistent at that tag.
 
 ## [Unreleased] — 2026-10-18
 
+### Security
+
+- **The security audit closed 20 findings, and the second pass closed the ones
+  the first pass left open.** The largest were a fail-open retrieval fallback
+  that dropped every tenant/owner/scope predicate, a record-gate widening where
+  adding a read-only role *removed* the owner fence, a PII flag that five of six
+  write paths never wrote (turning read-time redaction off silently), an
+  injection screen that ran before the strip that manufactured its payload, and
+  a `/verify` offset contract that indexed the lowercased string rather than the
+  content.
+
+- **Authorization and tenancy.** `owner_filter` is a restriction, never a
+  grant: a `reports` role with an empty `manages` claim now resolves to an empty
+  owner allowlist (deny), not `None` (every owner); a custom
+  `owner_filter:"all"` without the explicit `shared_pool` capability narrows to
+  the caller. The quarantine by-id routes gate, resolve and write inside one
+  IMMEDIATE transaction, use the header domain's pool in multi-db mode, and
+  require `purge` to delete. The legacy vector fallback takes the full filter
+  bundle; the graph leg applies `source`/`sources` and a normalized `as_of`; the
+  KCS stale translations are domain-filtered; DSAR disclosure is
+  authored/addressed only (erase and disclose are deliberately asymmetric) and
+  every free-text field rides the read seam; the UMP export signs with the
+  operator key when configured.
+
+- **Data protection.** Every production `INSERT INTO knowledge` names `pii`,
+  including the markdown `heading_path` the chunker removes from the body. The
+  email detector is Unicode- and offset-0-correct; the card scanner handles
+  dot/tab groups, a card followed by another number, a card embedded at the edge
+  of a longer run, and two adjacent PANs — without manufacturing a card out of
+  a 16-digit id. The read seam normalizes invisible/control bytes BEFORE
+  redaction (a ZWSP-split address is detected and masked), and it alternates its
+  deletion transforms to a fixed point so deleting a hostile tag cannot weld a
+  live markdown image. The steering, answer, rewind, channel and Signal write
+  paths screen the sanitized form they store.
+
+- **Transport and credentials.** The token reader opens once and validates the
+  opened handle (mode, length, inode); the boot gate uses the same reader, and a
+  set-but-blank token source refuses instead of disabling auth. The agent token
+  is removed from the operator set, and `brain token rotate` preserves the agent
+  lane. Every body-only webhook lane keys its replay claim on the payload, so a
+  captured delivery cannot replay with a fresh id. Both backup writers use a
+  unique `create_new` 0600 sibling and rename, so a rewrite tightens the mode and
+  a planted symlink is replaced rather than followed.
+
+- **A penetration suite now drives the real router** with signed JWTs:
+  unauthenticated 401s, cross-tenant by-id/multi-get/recall/search, the
+  empty-`manages` reviewer, quarantine delete without `purge`, `hard:true` from
+  a write token, `/verify`'s probe-blind 404 and claim ceiling, DSAR Admin, and
+  the UMP export's markup/bidi cleanliness.
+
+- **Residual, stated rather than hidden:** the DSAR/termination bundle still
+  sanitizes with `pii=false` and the loopback posture, because the bundle is the
+  subject's own data and the termination path is operator-authorized; a
+  third-party-PII masking decision for that path is owed and named in the
+  register. `sanitize_read` changes move the digest of any stored row they
+  touch; rows containing controls/sentinels fail approval closed and must be
+  re-reviewed.
+
 ### Added
 
 - **The shell's Rust core grew beyond recall: `/verify` and `/ump/forget`,
