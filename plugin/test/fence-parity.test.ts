@@ -29,26 +29,26 @@
  * `a_single_pass_would_heal_a_nested_ref_into_a_live_image`.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, test } from "vitest";
 import { sanitizeForBlock } from "../src/format.js";
 
 /** The welded form the fixed point is FOR: a live image ref that survived. */
 const LIVE_REF = /!?\[[^\]]*\]\([^)]*\)/;
 
 describe("sanitizeForBlock — markdown-ref parity with the Rust core", () => {
-  it("strips a plain remote image ref and keeps its alt text", () => {
+  test("strips a plain remote image ref and keeps its alt text", () => {
     expect(sanitizeForBlock("before ![alt](https://evil.example/p.png) after")).toBe(
       "before [alt] after",
     );
   });
 
-  it("strips a plain link ref but keeps its label", () => {
+  test("strips a plain link ref but keeps its label", () => {
     expect(sanitizeForBlock("see [the doc](https://example.com/a?b=c) now")).toBe(
       "see the doc now",
     );
   });
 
-  it("a_single_pass_would_heal_a_nested_ref_into_a_live_image", () => {
+  test("a_single_pass_would_heal_a_nested_ref_into_a_live_image", () => {
     const plant = "x [![a](https://inner.example/i.png) c](https://outer.example/leak.png) y";
     const out = sanitizeForBlock(plant);
 
@@ -58,7 +58,7 @@ describe("sanitizeForBlock — markdown-ref parity with the Rust core", () => {
     expect(out).not.toMatch(LIVE_REF);
   });
 
-  it("survives a deeply nested plant with no ref left behind", () => {
+  test("survives a deeply nested plant with no ref left behind", () => {
     // Each layer re-emits the inner label unscanned, so nesting DEPTH is
     // exactly the input a fixed point is for.
     const plant =
@@ -68,13 +68,13 @@ describe("sanitizeForBlock — markdown-ref parity with the Rust core", () => {
     expect(out).not.toMatch(LIVE_REF);
   });
 
-  it("leaves plain prose with bare brackets and parens untouched", () => {
+  test("leaves plain prose with bare brackets and parens untouched", () => {
     expect(sanitizeForBlock("a plain sentence with [brackets] and (parens)")).toBe(
       "a plain sentence with [brackets] and (parens)",
     );
   });
 
-  it("does not weld a live ref around a deleted hostile element", () => {
+  test("does not weld a live ref around a deleted hostile element", () => {
     // The ref strip ran BEFORE the hostile-element strip, so deleting a tag
     // between a label and its `(url)` welded the two into a live remote
     // image (audit N5). Both shapes are the SAME primitive as the nested
