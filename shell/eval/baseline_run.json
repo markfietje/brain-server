@@ -1,0 +1,1876 @@
+{
+	"record": "shell-eval-baseline-run",
+	"version": 1,
+	"tolerances_ref": "shell/eval/baseline_preregistration.json",
+	"preregistered_at": "2026-10-18",
+	"preregistration_commit": "5550b3fc264881476b99489a8885a283846d0a68",
+	"first_run_at": "2026-10-18",
+	"machine": {
+		"cpu": "Apple M1 Pro",
+		"memory_bytes": 17179869184,
+		"macos": "27.0.1",
+		"kernel_commit": "9ff3f2fe"
+	},
+	"dataset": {
+		"fixture": "tests/fixtures/eval_queries.md",
+		"sha256": "cc0bdbb723548cbe8b729ea9636e9400c1681734a7ac15c8a3a13fc9a3bea43d",
+		"judged_queries": 106,
+		"corpus_docs": 25,
+		"repeats": 3
+	},
+	"tolerance_results": {
+		"T1_wire_lossless": {
+			"pass": true,
+			"divergent": 0
+		},
+		"T2_decision_complete": {
+			"pass": true,
+			"missing_decision": 0,
+			"off_enum": 0
+		},
+		"T3_abstention_reachable": {
+			"pass": false,
+			"abstentions": 0,
+			"abstaining_queries": [],
+			"finding": "THIS CORPUS CANNOT SUPPORT THE ABSTENTION EVAL (Plan 08 2.3) and a dedicated abstention fixture is OWED. It is explicitly NOT a pass, exactly as T3 preregistered before this run existed."
+		},
+		"T6_dataset_and_harness_drift": {
+			"pass": true,
+			"fixture_sha256": "cc0bdbb723548cbe8b729ea9636e9400c1681734a7ac15c8a3a13fc9a3bea43d",
+			"preregistered_sha256": "cc0bdbb723548cbe8b729ea9636e9400c1681734a7ac15c8a3a13fc9a3bea43d"
+		},
+		"T4_refusal_is_not_absence": {
+			"pass": true,
+			"status": 401,
+			"structurally_distinct": true
+		},
+		"T5_recall_row": {
+			"gating": false,
+			"recall_at_5": 0.9669811320754716,
+			"zero_hit_queries": []
+		}
+	},
+	"rows": [
+		{
+			"id": "Q1",
+			"vertical": "migration",
+			"query": "RCM green before upgrade wave",
+			"relevant": [
+				10
+			],
+			"ids": [
+				10,
+				18,
+				6,
+				24,
+				17
+			],
+			"decision": "ok",
+			"confidence": 0.492931
+		},
+		{
+			"id": "Q2",
+			"vertical": "migration",
+			"query": "release certification manifest VxRail",
+			"relevant": [
+				10
+			],
+			"ids": [
+				10,
+				24,
+				14,
+				13,
+				16
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q3",
+			"vertical": "migration",
+			"query": "stretched cluster rolling reboot",
+			"relevant": [
+				11
+			],
+			"ids": [
+				11,
+				22,
+				24,
+				20,
+				4
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q4",
+			"vertical": "migration",
+			"query": "reboot one node at a time",
+			"relevant": [
+				11
+			],
+			"ids": [
+				11,
+				22,
+				19,
+				7,
+				21
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q5",
+			"vertical": "migration",
+			"query": "vSAN policy failures to tolerate",
+			"relevant": [
+				12
+			],
+			"ids": [
+				12,
+				21,
+				13,
+				22,
+				14
+			],
+			"decision": "ok",
+			"confidence": 0.47245905
+		},
+		{
+			"id": "Q6",
+			"vertical": "migration",
+			"query": "FTT FTM storage policy",
+			"relevant": [
+				12
+			],
+			"ids": [
+				12,
+				24,
+				5,
+				21,
+				13
+			],
+			"decision": "ok",
+			"confidence": 0.46745902
+		},
+		{
+			"id": "Q7",
+			"vertical": "migration",
+			"query": "PowerFlex fault sets boundaries",
+			"relevant": [
+				13
+			],
+			"ids": [
+				13,
+				11,
+				14,
+				12,
+				7
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q8",
+			"vertical": "migration",
+			"query": "protection domain SDS pools",
+			"relevant": [
+				13
+			],
+			"ids": [
+				13,
+				3,
+				15,
+				9,
+				6
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q9",
+			"vertical": "migration",
+			"query": "micro-segmentation rules transport nodes",
+			"relevant": [
+				14
+			],
+			"ids": [
+				14,
+				11,
+				9,
+				22,
+				3
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q10",
+			"vertical": "migration",
+			"query": "NSX-T control plane firewall",
+			"relevant": [
+				14
+			],
+			"ids": [
+				14,
+				13,
+				11,
+				20,
+				17
+			],
+			"decision": "ok",
+			"confidence": 0.45701504
+		},
+		{
+			"id": "Q11",
+			"vertical": "migration",
+			"query": "LCM wave scheduling prerequisite",
+			"relevant": [
+				10
+			],
+			"ids": [
+				10,
+				18,
+				24,
+				21,
+				12
+			],
+			"decision": "ok",
+			"confidence": 0.30121955
+		},
+		{
+			"id": "Q12",
+			"vertical": "migration",
+			"query": "ESXi concurrent reboot rule",
+			"relevant": [
+				11
+			],
+			"ids": [
+				11,
+				13,
+				21,
+				14,
+				7
+			],
+			"decision": "ok",
+			"confidence": 0.40951222
+		},
+		{
+			"id": "Q13",
+			"vertical": "migration",
+			"query": "upgrade planning checklist",
+			"relevant": [
+				10
+			],
+			"ids": [
+				10,
+				16,
+				18,
+				13,
+				6
+			],
+			"decision": "ok",
+			"confidence": 0.407178
+		},
+		{
+			"id": "Q14",
+			"vertical": "migration",
+			"query": "maintenance window node procedure",
+			"relevant": [
+				11
+			],
+			"ids": [
+				11,
+				22,
+				14,
+				20,
+				12
+			],
+			"decision": "ok",
+			"confidence": 0.23358054
+		},
+		{
+			"id": "Q15",
+			"vertical": "migration",
+			"query": "per-VM resilience settings",
+			"relevant": [
+				12
+			],
+			"ids": [
+				24,
+				12,
+				21,
+				10,
+				11
+			],
+			"decision": "ok",
+			"confidence": 0.25986373
+		},
+		{
+			"id": "Q16",
+			"vertical": "migration",
+			"query": "scale-out storage fault domains",
+			"relevant": [
+				13
+			],
+			"ids": [
+				13,
+				21,
+				20,
+				11,
+				7
+			],
+			"decision": "ok",
+			"confidence": 0.4684161
+		},
+		{
+			"id": "Q17",
+			"vertical": "migration",
+			"query": "distributed firewall distribution",
+			"relevant": [
+				14
+			],
+			"ids": [
+				14,
+				13,
+				20,
+				21,
+				12
+			],
+			"decision": "ok",
+			"confidence": 0.35163233
+		},
+		{
+			"id": "Q18",
+			"vertical": "migration",
+			"query": "one at a time not parallel",
+			"relevant": [
+				11
+			],
+			"ids": [
+				11,
+				20,
+				21,
+				14,
+				7
+			],
+			"decision": "ok",
+			"confidence": 0.3045444
+		},
+		{
+			"id": "Q19",
+			"vertical": "migration",
+			"query": "FTT",
+			"relevant": [
+				12
+			],
+			"ids": [
+				12,
+				5,
+				24,
+				21,
+				23
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q20",
+			"vertical": "migration",
+			"query": "RCM",
+			"relevant": [
+				10
+			],
+			"ids": [
+				10,
+				12,
+				6,
+				18,
+				5
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q21",
+			"vertical": "migration",
+			"query": "upgrade prerequisite manifest check",
+			"relevant": [
+				10
+			],
+			"ids": [
+				10,
+				18,
+				17,
+				16,
+				5
+			],
+			"decision": "ok",
+			"confidence": 0.42467666
+		},
+		{
+			"id": "Q22",
+			"vertical": "migration",
+			"query": "cluster maintenance single node rule",
+			"relevant": [
+				11
+			],
+			"ids": [
+				11,
+				22,
+				14,
+				13,
+				4
+			],
+			"decision": "ok",
+			"confidence": 0.34463993
+		},
+		{
+			"id": "Q23",
+			"vertical": "migration",
+			"query": "storage policy tolerance settings",
+			"relevant": [
+				12
+			],
+			"ids": [
+				12,
+				13,
+				20,
+				1,
+				3
+			],
+			"decision": "ok",
+			"confidence": 0.44245905
+		},
+		{
+			"id": "Q24",
+			"vertical": "migration",
+			"query": "fault boundary mapping storage",
+			"relevant": [
+				13
+			],
+			"ids": [
+				13,
+				14,
+				20,
+				5,
+				12
+			],
+			"decision": "ok",
+			"confidence": 0.44245905
+		},
+		{
+			"id": "Q25",
+			"vertical": "migration",
+			"query": "firewall rule propagation mechanism",
+			"relevant": [
+				14
+			],
+			"ids": [
+				14,
+				16,
+				12,
+				22,
+				20
+			],
+			"decision": "ok",
+			"confidence": 0.3643041
+		},
+		{
+			"id": "Q26",
+			"vertical": "legal",
+			"query": "processor bound to controller instructions",
+			"relevant": [
+				15
+			],
+			"ids": [
+				15,
+				7,
+				13,
+				14,
+				1
+			],
+			"decision": "ok",
+			"confidence": 0.3913401
+		},
+		{
+			"id": "Q27",
+			"vertical": "legal",
+			"query": "Article 28 data processing agreement",
+			"relevant": [
+				15
+			],
+			"ids": [
+				15,
+				9,
+				16,
+				3,
+				18
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q28",
+			"vertical": "legal",
+			"query": "EU transfer mechanism outside EEA",
+			"relevant": [
+				16
+			],
+			"ids": [
+				16,
+				3,
+				9,
+				18,
+				15
+			],
+			"decision": "ok",
+			"confidence": 0.28389168
+		},
+		{
+			"id": "Q29",
+			"vertical": "legal",
+			"query": "standard contractual clauses 2021",
+			"relevant": [
+				16
+			],
+			"ids": [
+				16,
+				6,
+				19,
+				5,
+				7
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q30",
+			"vertical": "legal",
+			"query": "Philippine breach notification deadline",
+			"relevant": [
+				17
+			],
+			"ids": [
+				17,
+				22,
+				15,
+				9,
+				16
+			],
+			"decision": "ok",
+			"confidence": 0.49236733
+		},
+		{
+			"id": "Q31",
+			"vertical": "legal",
+			"query": "NPC 72 hours data privacy act",
+			"relevant": [
+				17
+			],
+			"ids": [
+				17,
+				9,
+				15,
+				3,
+				14
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q32",
+			"vertical": "legal",
+			"query": "transfer impact assessment requirement",
+			"relevant": [
+				18
+			],
+			"ids": [
+				18,
+				10,
+				16,
+				24,
+				15
+			],
+			"decision": "ok",
+			"confidence": 0.46745902
+		},
+		{
+			"id": "Q33",
+			"vertical": "legal",
+			"query": "third country data transfer ruling",
+			"relevant": [
+				18
+			],
+			"ids": [
+				18,
+				16,
+				15,
+				3,
+				9
+			],
+			"decision": "ok",
+			"confidence": 0.30401888
+		},
+		{
+			"id": "Q34",
+			"vertical": "legal",
+			"query": "hold freezes erasure until released",
+			"relevant": [
+				19
+			],
+			"ids": [
+				19,
+				11,
+				1,
+				22,
+				7
+			],
+			"decision": "ok",
+			"confidence": 0.47245905
+		},
+		{
+			"id": "Q35",
+			"vertical": "legal",
+			"query": "legal hold explicit release",
+			"relevant": [
+				19
+			],
+			"ids": [
+				19,
+				5,
+				15,
+				17,
+				3
+			],
+			"decision": "ok",
+			"confidence": 0.5112831
+		},
+		{
+			"id": "Q36",
+			"vertical": "legal",
+			"query": "who signs the processing agreement",
+			"relevant": [
+				15
+			],
+			"ids": [
+				15,
+				9,
+				16,
+				18,
+				10
+			],
+			"decision": "ok",
+			"confidence": 0.3678595
+		},
+		{
+			"id": "Q37",
+			"vertical": "legal",
+			"query": "cross-border contract for vendors",
+			"relevant": [
+				16
+			],
+			"ids": [
+				16,
+				10,
+				24,
+				15,
+				13
+			],
+			"decision": "ok",
+			"confidence": 0.3361939
+		},
+		{
+			"id": "Q38",
+			"vertical": "legal",
+			"query": "manila privacy regulator timeline",
+			"relevant": [
+				17
+			],
+			"ids": [
+				17,
+				3,
+				15,
+				9,
+				20
+			],
+			"decision": "ok",
+			"confidence": 0.34864312
+		},
+		{
+			"id": "Q39",
+			"vertical": "legal",
+			"query": "assessment before moving data abroad",
+			"relevant": [
+				18
+			],
+			"ids": [
+				18,
+				24,
+				9,
+				15,
+				3
+			],
+			"decision": "ok",
+			"confidence": 0.40876657
+		},
+		{
+			"id": "Q40",
+			"vertical": "legal",
+			"query": "can we delete while litigation pending",
+			"relevant": [
+				19
+			],
+			"ids": [
+				19,
+				21,
+				15,
+				24,
+				20
+			],
+			"decision": "ok",
+			"confidence": 0.2974719
+		},
+		{
+			"id": "Q41",
+			"vertical": "legal",
+			"query": "without EEA adequacy what mechanism",
+			"relevant": [
+				16,
+				18
+			],
+			"ids": [
+				16,
+				3,
+				1,
+				15,
+				19
+			],
+			"decision": "ok",
+			"confidence": 0.2416293
+		},
+		{
+			"id": "Q42",
+			"vertical": "legal",
+			"query": "erasure blocked during investigation",
+			"relevant": [
+				19
+			],
+			"ids": [
+				19,
+				9,
+				13,
+				3,
+				24
+			],
+			"decision": "ok",
+			"confidence": 0.4142129
+		},
+		{
+			"id": "Q43",
+			"vertical": "legal",
+			"query": "DPA",
+			"relevant": [
+				15
+			],
+			"ids": [
+				15,
+				13,
+				23,
+				3,
+				9
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q44",
+			"vertical": "legal",
+			"query": "controller processor contract terms",
+			"relevant": [
+				15
+			],
+			"ids": [
+				15,
+				16,
+				7,
+				13,
+				14
+			],
+			"decision": "ok",
+			"confidence": 0.31876698
+		},
+		{
+			"id": "Q45",
+			"vertical": "legal",
+			"query": "EEA exit data transfer compliance",
+			"relevant": [
+				16,
+				18
+			],
+			"ids": [
+				18,
+				3,
+				15,
+				9,
+				16
+			],
+			"decision": "ok",
+			"confidence": 0.25014687
+		},
+		{
+			"id": "Q46",
+			"vertical": "legal",
+			"query": "philippines data privacy regulator",
+			"relevant": [
+				17
+			],
+			"ids": [
+				17,
+				3,
+				9,
+				15,
+				19
+			],
+			"decision": "ok",
+			"confidence": 0.3134958
+		},
+		{
+			"id": "Q47",
+			"vertical": "legal",
+			"query": "schrems assessment obligation",
+			"relevant": [
+				18
+			],
+			"ids": [
+				18,
+				10,
+				6,
+				24,
+				9
+			],
+			"decision": "ok",
+			"confidence": 0.485454
+		},
+		{
+			"id": "Q48",
+			"vertical": "legal",
+			"query": "release of frozen records operator",
+			"relevant": [
+				19
+			],
+			"ids": [
+				19,
+				5,
+				10,
+				15,
+				7
+			],
+			"decision": "ok",
+			"confidence": 0.44762614
+		},
+		{
+			"id": "Q49",
+			"vertical": "troubleshoot",
+			"query": "storage latency failing SFP uplink",
+			"relevant": [
+				20
+			],
+			"ids": [
+				20,
+				21,
+				11,
+				13,
+				12
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q50",
+			"vertical": "troubleshoot",
+			"query": "intermittent fabric latency cause",
+			"relevant": [
+				20
+			],
+			"ids": [
+				20,
+				21,
+				11,
+				22,
+				14
+			],
+			"decision": "ok",
+			"confidence": 0.42766982
+		},
+		{
+			"id": "Q51",
+			"vertical": "troubleshoot",
+			"query": "VM disk latency triage order",
+			"relevant": [
+				21
+			],
+			"ids": [
+				21,
+				24,
+				20,
+				11,
+				22
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q52",
+			"vertical": "troubleshoot",
+			"query": "vSAN congestion host cache check",
+			"relevant": [
+				21
+			],
+			"ids": [
+				21,
+				12,
+				1,
+				4,
+				17
+			],
+			"decision": "ok",
+			"confidence": 0.46466544
+		},
+		{
+			"id": "Q53",
+			"vertical": "troubleshoot",
+			"query": "node flapping out of vCenter",
+			"relevant": [
+				22
+			],
+			"ids": [
+				22,
+				11,
+				14,
+				24,
+				21
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q54",
+			"vertical": "troubleshoot",
+			"query": "NTP drift certificate validation",
+			"relevant": [
+				22
+			],
+			"ids": [
+				22,
+				6,
+				13,
+				18,
+				12
+			],
+			"decision": "ok",
+			"confidence": 0.44906384
+		},
+		{
+			"id": "Q55",
+			"vertical": "troubleshoot",
+			"query": "purple screen dump collection",
+			"relevant": [
+				23
+			],
+			"ids": [
+				23,
+				1,
+				17,
+				10,
+				11
+			],
+			"decision": "ok",
+			"confidence": 0.46745902
+		},
+		{
+			"id": "Q56",
+			"vertical": "troubleshoot",
+			"query": "PSOD logs before reboot",
+			"relevant": [
+				23
+			],
+			"ids": [
+				23,
+				11,
+				17,
+				22,
+				13
+			],
+			"decision": "ok",
+			"confidence": 0.29719654
+		},
+		{
+			"id": "Q57",
+			"vertical": "troubleshoot",
+			"query": "vMotion fails at ten percent",
+			"relevant": [
+				24
+			],
+			"ids": [
+				24,
+				12,
+				21,
+				14,
+				11
+			],
+			"decision": "ok",
+			"confidence": 0.47245905
+		},
+		{
+			"id": "Q58",
+			"vertical": "troubleshoot",
+			"query": "VMkernel shared datastore check",
+			"relevant": [
+				24
+			],
+			"ids": [
+				24,
+				21,
+				10,
+				20,
+				11
+			],
+			"decision": "ok",
+			"confidence": 0.3433165
+		},
+		{
+			"id": "Q59",
+			"vertical": "troubleshoot",
+			"query": "flaky network port hardware swap",
+			"relevant": [
+				20
+			],
+			"ids": [
+				20,
+				24,
+				1,
+				11,
+				21
+			],
+			"decision": "ok",
+			"confidence": 0.32754004
+		},
+		{
+			"id": "Q60",
+			"vertical": "troubleshoot",
+			"query": "slow virtual machine diagnostics",
+			"relevant": [
+				21
+			],
+			"ids": [
+				21,
+				24,
+				11,
+				10,
+				22
+			],
+			"decision": "ok",
+			"confidence": 0.24833691
+		},
+		{
+			"id": "Q61",
+			"vertical": "troubleshoot",
+			"query": "host lost from inventory causes",
+			"relevant": [
+				22
+			],
+			"ids": [
+				21,
+				4,
+				24,
+				13,
+				20
+			],
+			"decision": "ok",
+			"confidence": 0.25038323
+		},
+		{
+			"id": "Q62",
+			"vertical": "troubleshoot",
+			"query": "kernel panic evidence preservation",
+			"relevant": [
+				23
+			],
+			"ids": [
+				7,
+				13,
+				19,
+				15,
+				11
+			],
+			"decision": "ok",
+			"confidence": 0.22713013
+		},
+		{
+			"id": "Q63",
+			"vertical": "troubleshoot",
+			"query": "live migration stuck early stage",
+			"relevant": [
+				24
+			],
+			"ids": [
+				24,
+				18,
+				14,
+				4,
+				19
+			],
+			"decision": "ok",
+			"confidence": 0.20965375
+		},
+		{
+			"id": "Q64",
+			"vertical": "troubleshoot",
+			"query": "PSOD",
+			"relevant": [
+				23
+			],
+			"ids": [
+				23,
+				17,
+				11,
+				13,
+				14
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q65",
+			"vertical": "troubleshoot",
+			"query": "SFP",
+			"relevant": [
+				20
+			],
+			"ids": [
+				20,
+				13,
+				15,
+				6,
+				9
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q66",
+			"vertical": "troubleshoot",
+			"query": "NTP drift",
+			"relevant": [
+				22
+			],
+			"ids": [
+				22,
+				20,
+				11,
+				14,
+				12
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q67",
+			"vertical": "troubleshoot",
+			"query": "vMotion",
+			"relevant": [
+				24
+			],
+			"ids": [
+				24,
+				21,
+				12,
+				22,
+				23
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q68",
+			"vertical": "troubleshoot",
+			"query": "uplink port errors hardware fault",
+			"relevant": [
+				20
+			],
+			"ids": [
+				20,
+				13,
+				1,
+				24,
+				21
+			],
+			"decision": "ok",
+			"confidence": 0.28634137
+		},
+		{
+			"id": "Q69",
+			"vertical": "troubleshoot",
+			"query": "disk performance investigation steps",
+			"relevant": [
+				21
+			],
+			"ids": [
+				21,
+				24,
+				18,
+				12,
+				9
+			],
+			"decision": "ok",
+			"confidence": 0.26931176
+		},
+		{
+			"id": "Q70",
+			"vertical": "troubleshoot",
+			"query": "time sync breaks management connection",
+			"relevant": [
+				22
+			],
+			"ids": [
+				22,
+				11,
+				14,
+				20,
+				21
+			],
+			"decision": "ok",
+			"confidence": 0.3141777
+		},
+		{
+			"id": "Q71",
+			"vertical": "troubleshoot",
+			"query": "collect diagnostics before restart",
+			"relevant": [
+				23
+			],
+			"ids": [
+				11,
+				23,
+				1,
+				10,
+				24
+			],
+			"decision": "ok",
+			"confidence": 0.30007482
+		},
+		{
+			"id": "Q72",
+			"vertical": "troubleshoot",
+			"query": "shared datastore requirement migration",
+			"relevant": [
+				24
+			],
+			"ids": [
+				5,
+				3,
+				15,
+				18,
+				9
+			],
+			"decision": "ok",
+			"confidence": 0.206182
+		},
+		{
+			"id": "Q73",
+			"vertical": "general",
+			"query": "blueberry alternative fruit",
+			"relevant": [
+				0,
+				8
+			],
+			"ids": [
+				0,
+				8,
+				7,
+				11,
+				3
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q74",
+			"vertical": "general",
+			"query": "memory safe programming language",
+			"relevant": [
+				1,
+				7
+			],
+			"ids": [
+				1,
+				7,
+				15,
+				20,
+				13
+			],
+			"decision": "ok",
+			"confidence": 0.37111235
+		},
+		{
+			"id": "Q75",
+			"vertical": "general",
+			"query": "vitamin supplements immune health",
+			"relevant": [
+				2
+			],
+			"ids": [
+				2,
+				4,
+				8,
+				0,
+				10
+			],
+			"decision": "ok",
+			"confidence": 0.4264595
+		},
+		{
+			"id": "Q76",
+			"vertical": "general",
+			"query": "EU data protection regulation",
+			"relevant": [
+				3,
+				9
+			],
+			"ids": [
+				3,
+				9,
+				15,
+				16,
+				13
+			],
+			"decision": "ok",
+			"confidence": 0.46745902
+		},
+		{
+			"id": "Q77",
+			"vertical": "general",
+			"query": "gut inflammation microbiome",
+			"relevant": [
+				4
+			],
+			"ids": [
+				4,
+				2,
+				11,
+				5,
+				8
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q78",
+			"vertical": "general",
+			"query": "embedded database search",
+			"relevant": [
+				5
+			],
+			"ids": [
+				5,
+				15,
+				7,
+				9,
+				3
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q79",
+			"vertical": "general",
+			"query": "quality management standard",
+			"relevant": [
+				6
+			],
+			"ids": [
+				6,
+				22,
+				12,
+				16,
+				14
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q80",
+			"vertical": "general",
+			"query": "GDPR organization coverage",
+			"relevant": [
+				3,
+				9
+			],
+			"ids": [
+				3,
+				9,
+				15,
+				17,
+				19
+			],
+			"decision": "ok",
+			"confidence": 0.28214774
+		},
+		{
+			"id": "Q81",
+			"vertical": "general",
+			"query": "antioxidants tropical fruit stress",
+			"relevant": [
+				0,
+				8
+			],
+			"ids": [
+				8,
+				0,
+				4,
+				6,
+				2
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q82",
+			"vertical": "general",
+			"query": "Rust ownership borrowing",
+			"relevant": [
+				1,
+				7
+			],
+			"ids": [
+				7,
+				1,
+				16,
+				5,
+				18
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q83",
+			"vertical": "general",
+			"query": "which fruit lowers oxidative damage",
+			"relevant": [
+				0,
+				8
+			],
+			"ids": [
+				8,
+				0,
+				1,
+				2,
+				7
+			],
+			"decision": "ok",
+			"confidence": 0.34101078
+		},
+		{
+			"id": "Q84",
+			"vertical": "general",
+			"query": "garbage-collector-free memory model",
+			"relevant": [
+				1,
+				7
+			],
+			"ids": [
+				1,
+				7,
+				12,
+				13,
+				19
+			],
+			"decision": "ok",
+			"confidence": 0.42311612
+		},
+		{
+			"id": "Q85",
+			"vertical": "general",
+			"query": "bone density supplement recommendation",
+			"relevant": [
+				2
+			],
+			"ids": [
+				2,
+				5,
+				7,
+				13,
+				15
+			],
+			"decision": "ok",
+			"confidence": 0.44234663
+		},
+		{
+			"id": "Q86",
+			"vertical": "general",
+			"query": "who enforces European privacy law",
+			"relevant": [
+				3,
+				9
+			],
+			"ids": [
+				3,
+				9,
+				17,
+				15,
+				19
+			],
+			"decision": "ok",
+			"confidence": 0.30426392
+		},
+		{
+			"id": "Q87",
+			"vertical": "general",
+			"query": "diet and immune system link",
+			"relevant": [
+				4
+			],
+			"ids": [
+				4,
+				2,
+				5,
+				8,
+				11
+			],
+			"decision": "ok",
+			"confidence": 0.29076648
+		},
+		{
+			"id": "Q88",
+			"vertical": "general",
+			"query": "in-process database with text search",
+			"relevant": [
+				5
+			],
+			"ids": [
+				5,
+				9,
+				15,
+				14,
+				1
+			],
+			"decision": "ok",
+			"confidence": 0.45673212
+		},
+		{
+			"id": "Q89",
+			"vertical": "general",
+			"query": "international quality certification",
+			"relevant": [
+				6
+			],
+			"ids": [
+				6,
+				10,
+				1,
+				12,
+				13
+			],
+			"decision": "ok",
+			"confidence": 0.4552338
+		},
+		{
+			"id": "Q90",
+			"vertical": "general",
+			"query": "compile-time safety guarantees Rust",
+			"relevant": [
+				1,
+				7
+			],
+			"ids": [
+				7,
+				1,
+				5,
+				20,
+				6
+			],
+			"decision": "ok",
+			"confidence": 0.29121196
+		},
+		{
+			"id": "Q91",
+			"vertical": "general",
+			"query": "tropical superfruit antioxidants",
+			"relevant": [
+				0,
+				8
+			],
+			"ids": [
+				8,
+				0,
+				23,
+				9,
+				17
+			],
+			"decision": "ok",
+			"confidence": 0.3168246
+		},
+		{
+			"id": "Q92",
+			"vertical": "general",
+			"query": "privacy fines percentage of revenue",
+			"relevant": [
+				3,
+				9
+			],
+			"ids": [
+				9,
+				3,
+				17,
+				15,
+				14
+			],
+			"decision": "ok",
+			"confidence": 0.31537887
+		},
+		{
+			"id": "Q93",
+			"vertical": "general",
+			"query": "NOT a cloud database embedded engine",
+			"relevant": [
+				5
+			],
+			"ids": [
+				5,
+				11,
+				1,
+				21,
+				15
+			],
+			"decision": "ok",
+			"confidence": 0.40815794
+		},
+		{
+			"id": "Q94",
+			"vertical": "general",
+			"query": "no garbage collector language",
+			"relevant": [
+				1,
+				7
+			],
+			"ids": [
+				1,
+				22,
+				7,
+				6,
+				11
+			],
+			"decision": "ok",
+			"confidence": 0.51626545
+		},
+		{
+			"id": "Q95",
+			"vertical": "general",
+			"query": "GDPR",
+			"relevant": [
+				3,
+				9
+			],
+			"ids": [
+				3,
+				15,
+				9,
+				17,
+				19
+			],
+			"decision": "ok",
+			"confidence": 0.4249181
+		},
+		{
+			"id": "Q96",
+			"vertical": "general",
+			"query": "Kubernetes ingress",
+			"relevant": [],
+			"ids": [
+				20,
+				14,
+				11,
+				21,
+				24
+			],
+			"decision": "ok",
+			"confidence": 0.21364099
+		},
+		{
+			"id": "Q97",
+			"vertical": "general",
+			"query": "database without a network service",
+			"relevant": [
+				5
+			],
+			"ids": [
+				5,
+				11,
+				1,
+				14,
+				13
+			],
+			"decision": "ok",
+			"confidence": 0.35124472
+		},
+		{
+			"id": "Q98",
+			"vertical": "general",
+			"query": "language chosen for systems reliability",
+			"relevant": [
+				1,
+				7
+			],
+			"ids": [
+				6,
+				1,
+				13,
+				11,
+				7
+			],
+			"decision": "ok",
+			"confidence": 0.29492146
+		},
+		{
+			"id": "Q99",
+			"vertical": "general",
+			"query": "supplement for immune deficiency adults",
+			"relevant": [
+				2
+			],
+			"ids": [
+				2,
+				4,
+				10,
+				1,
+				24
+			],
+			"decision": "ok",
+			"confidence": 0.47196892
+		},
+		{
+			"id": "Q100",
+			"vertical": "general",
+			"query": "fruit similar to blueberry nutrition",
+			"relevant": [
+				0,
+				8
+			],
+			"ids": [
+				0,
+				8,
+				2,
+				7,
+				3
+			],
+			"decision": "ok",
+			"confidence": 0.3957979
+		},
+		{
+			"id": "Q101",
+			"vertical": "general",
+			"query": "microbiome diversity inflammation markers",
+			"relevant": [
+				4
+			],
+			"ids": [
+				4,
+				11,
+				13,
+				8,
+				9
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q102",
+			"vertical": "general",
+			"query": "full text search embedded sqlite",
+			"relevant": [
+				5
+			],
+			"ids": [
+				5,
+				7,
+				1,
+				15,
+				19
+			],
+			"decision": "ok",
+			"confidence": 0.49245903
+		},
+		{
+			"id": "Q103",
+			"vertical": "general",
+			"query": "ISO certification for factories",
+			"relevant": [
+				6
+			],
+			"ids": [
+				6,
+				10,
+				9,
+				3,
+				20
+			],
+			"decision": "ok",
+			"confidence": 0.46332628
+		},
+		{
+			"id": "Q104",
+			"vertical": "general",
+			"query": "borrow checker memory safety",
+			"relevant": [
+				1,
+				7
+			],
+			"ids": [
+				7,
+				1,
+				13,
+				19,
+				21
+			],
+			"decision": "ok",
+			"confidence": 0.34071362
+		},
+		{
+			"id": "Q105",
+			"vertical": "general",
+			"query": "bignay health benefits",
+			"relevant": [
+				0,
+				8
+			],
+			"ids": [
+				8,
+				0,
+				2,
+				21,
+				13
+			],
+			"decision": "ok",
+			"confidence": 0.24015997
+		},
+		{
+			"id": "Q106",
+			"vertical": "general",
+			"query": "EU residents personal data rules",
+			"relevant": [
+				3,
+				9
+			],
+			"ids": [
+				3,
+				9,
+				15,
+				16,
+				17
+			],
+			"decision": "ok",
+			"confidence": 0.34981364
+		}
+	]
+}

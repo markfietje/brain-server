@@ -3,7 +3,7 @@
 	"version": 1,
 	"phase": "P1 typed wire bridge (Plan 04) + baseline eval (Plan 08)",
 	"preregistered_at": "2026-10-18",
-	"first_run_at": null,
+	"first_run_at": "2026-10-18",
 	"note": "Written and committed BEFORE the first baseline run. A tolerance edited after seeing the numbers is a rationalization, not a criterion (Plan 08 §0). `first_run_at` is set by the run commit and never by this one; a tolerance loosened here after that date is refused by shell/tests/eval-preregistration.test.ts.",
 	"machine": {
 		"cpu": "Apple M1 Pro",
