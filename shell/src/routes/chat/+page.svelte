@@ -25,13 +25,157 @@
 	} from '#lib/api/recall.js';
 	import { renderTurn, renderingToken, type TurnRendering } from '#lib/chat/turn.js';
 	import { provenanceBlock, type ProvenanceBlock } from '#lib/chat/provenance.js';
+	import {
+		verifyClaim,
+		typedVerifyTransport,
+		type AuthorizedVerify,
+		type VerifyCore,
+		type VerifyOutcome,
+		type VerifyRequest
+	} from '#lib/api/verify.js';
+	import {
+		forgetRecord,
+		typedForgetTransport,
+		type AuthorizedForget,
+		type ForgetCore,
+		type ForgetOutcome
+	} from '#lib/api/forget.js';
 	import { Button } from '#lib/components/ui/button/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
 	import { Textarea } from '#lib/components/ui/textarea/index.js';
 
 	interface Turn {
 		id: number;
 		rendering: TurnRendering;
 		provenance: ProvenanceBlock | null;
+	}
+
+	/**
+	 * II-7g — the per-citation affordances: `[correct]` and `[forget]`.
+	 *
+	 * Both go through their own core in the SAME order the recall turn does
+	 * (authorize → wire → shape), and neither decision is made in this
+	 * component: the six `/verify` states and the five `/ump/forget` states are
+	 * classified in Rust, and this file only draws what came back. That is the
+	 * whole reason these are affordances rather than inline fetches — an inline
+	 * `/verify` would put a content-confirmation oracle in the renderer with the
+	 * core's bounds nowhere in it.
+	 *
+	 * State is keyed by CITATION id, so two citations in one turn cannot
+	 * overwrite each other's verdicts.
+	 */
+	interface CitationAction {
+		verify: 'idle' | 'busy' | VerifyOutcome;
+		forget: 'idle' | 'busy' | ForgetOutcome;
+	}
+
+	let actions = $state<Record<number, CitationAction>>({});
+	/** The open `[correct]` form, or null. One at a time, so the transcript
+	 * cannot fill with expanded forms nobody asked for. */
+	let verifying = $state<number | null>(null);
+	let claimDrafts = $state<Record<number, string>>({});
+
+	function actionFor(citationId: number): CitationAction {
+		return actions[citationId] ?? { verify: 'idle', forget: 'idle' };
+	}
+
+	const verifyCore: VerifyCore = {
+		authorize: async (request: VerifyRequest): Promise<AuthorizedVerify> => {
+			const response = await import('@tauri-apps/api/core').catch(() => null);
+			if (response && typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+				return (await response.invoke('verify_claim_command', { request })) as AuthorizedVerify;
+			}
+			throw new Error('no Tauri runtime: the core is only reachable inside the shell');
+		},
+		shape: async (
+			exchange: { status: number; body: string },
+			doc: AuthorizedVerify['doc']
+		): Promise<unknown> => {
+			const response = await import('@tauri-apps/api/core').catch(() => null);
+			if (response && typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+				return response.invoke('shape_verify_command', { exchange, requested: doc });
+			}
+			throw new Error('no Tauri runtime: the core is only reachable inside the shell');
+		}
+	};
+
+	const forgetCore: ForgetCore = {
+		// `unknown`, not a request type: the CORE takes `hard` in order to refuse
+		// it, so a narrower type here would hide the field this affordance must
+		// be unable to express. `forgetRecord` is given the id and nothing else.
+		authorize: async (request: unknown): Promise<AuthorizedForget> => {
+			const response = await import('@tauri-apps/api/core').catch(() => null);
+			if (response && typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+				return (await response.invoke('forget_memory', { request })) as AuthorizedForget;
+			}
+			throw new Error('no Tauri runtime: the core is only reachable inside the shell');
+		},
+		shape: async (exchange: { status: number; body: string }, doc: { id: string }): Promise<unknown> => {
+			const response = await import('@tauri-apps/api/core').catch(() => null);
+			if (response && typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+				return response.invoke('shape_forget_command', { exchange, requested: doc });
+			}
+			throw new Error('no Tauri runtime: the core is only reachable inside the shell');
+		}
+	};
+
+	function setAction(citationId: number, patch: Partial<CitationAction>): void {
+		actions = { ...actions, [citationId]: { ...actionFor(citationId), ...patch } };
+	}
+
+	function openVerify(citationId: number, prefill: string): void {
+		verifying = citationId;
+		claimDrafts = { ...claimDrafts, [citationId]: prefill };
+	}
+
+	async function runVerify(citationId: number): Promise<void> {
+		const claim = (claimDrafts[citationId] ?? '').trim();
+		// An empty claim is the CORE's refusal (`claim_empty`), not a guard
+		// here: duplicating the bound in the renderer is how two copies drift.
+		// The button is simply not enabled for an empty draft, which is an
+		// affordance, not the bound.
+		if (claim.length === 0) return;
+		setAction(citationId, { verify: 'busy' });
+		try {
+			const outcome = await verifyClaim(
+				{ chunk_id: citationId, claim },
+				{ core: verifyCore, transport: typedVerifyTransport }
+			);
+			setAction(citationId, { verify: outcome });
+		} catch (error) {
+			// A core that cannot be reached is DEGRADED and STATED. It becomes
+			// `unreachable` rather than a silent "not found" — a surface that
+			// reported "not found in this source" when it never asked would be the
+			// exact conflation the six states exist to prevent.
+			setAction(citationId, {
+				verify: {
+					state: 'unreachable',
+					status: 0,
+					detail: error instanceof Error ? error.message : String(error)
+				}
+			});
+		}
+	}
+
+	async function runForget(citationId: number): Promise<void> {
+		setAction(citationId, { forget: 'busy' });
+		try {
+			// `{id}` and nothing else. There is no `hard` key at this call site,
+			// which is the affordance's half of the core's boundary.
+			const outcome = await forgetRecord(
+				{ id: String(citationId) },
+				{ core: forgetCore, transport: typedForgetTransport }
+			);
+			setAction(citationId, { forget: outcome });
+		} catch (error) {
+			setAction(citationId, {
+				forget: {
+					state: 'unavailable',
+					status: 0,
+					detail: error instanceof Error ? error.message : String(error)
+				}
+			});
+		}
 	}
 
 	let composer = $state('');
@@ -178,6 +322,7 @@
 						</p>
 						<ul class="grid gap-3">
 							{#each turn.provenance.citations as citation (citation.id)}
+								{@const action = actionFor(citation.id)}
 								<li class="grid gap-1 text-sm" data-testid="chat-citation">
 									<span class="font-medium">
 										{citation.title.kind === 'present' ? citation.title.value : m['chat.untitled']()}
@@ -195,6 +340,136 @@
 									</span>
 									{#if citation.flagged}
 										<span class="text-xs text-destructive">{m['chat.quarantined']()}</span>
+									{/if}
+
+									<!-- II-7g — the per-citation affordances.
+									     Every state carries its own `data-*` token, because the
+									     copy is five locales deep and a translated string is not
+									     a stable hook. Six verify arms and five forget arms are
+									     each DISTINCT tokens: a renderer that collapsed a refusal
+									     into an unsupported verdict would still produce one of
+									     these tokens, and the pins compare the token SET. -->
+									<div class="flex flex-wrap items-center gap-2 pt-1">
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											data-testid="chat-correct"
+											onclick={() =>
+												openVerify(
+													citation.id,
+													citation.title.kind === 'present' ? citation.title.value : citation.text
+												)}
+										>
+											{m['chat.correct.open']()}
+											<span class="sr-only"> — {m['chat.correct.claim.label']()}</span>
+										</Button>
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											data-testid="chat-forget"
+											onclick={() => runForget(citation.id)}
+											disabled={action.forget === 'busy'}
+										>
+											{m['chat.forget.open']()}
+											<span class="sr-only"> — {m['chat.forget.submit']()}</span>
+										</Button>
+									</div>
+
+									{#if verifying === citation.id}
+										<!-- The claim surface. A real `<form>` with a real
+										     `<label>`, so the flow is keyboard-complete and the
+										     input is announced; Enter submits without a click. -->
+										<form
+											class="grid gap-2 pt-1"
+											onsubmit={(event) => {
+												event.preventDefault();
+												void runVerify(citation.id);
+											}}
+										>
+											<label class="sr-only" for="chat-claim-{citation.id}">
+												{m['chat.correct.claim.label']()}
+											</label>
+											<Input
+												id="chat-claim-{citation.id}"
+												bind:value={claimDrafts[citation.id]}
+												placeholder={m['chat.correct.claim.placeholder']()}
+												data-testid="chat-claim"
+											/>
+											<div>
+												<Button
+													type="submit"
+													size="sm"
+													data-testid="chat-verify-submit"
+													disabled={(claimDrafts[citation.id] ?? '').trim().length === 0 ||
+														action.verify === 'busy'}
+												>
+													{m['chat.correct.submit']()}
+												</Button>
+											</div>
+										</form>
+									{/if}
+
+									{#if action.verify === 'busy'}
+										<p class="text-xs text-muted-foreground" data-verify-state="busy">
+											{m['chat.working']()}
+										</p>
+									{:else if action.verify !== 'idle'}
+										<!-- `role="status"` so a verdict announces without
+										     interrupting. Each arm is its own token AND its own
+										     copy: `refused` and `no_such_chunk` are deliberately
+										     different sentences, because a refusal must never read
+										     as "the claim is not in that source". -->
+										<p
+											role="status"
+											class="text-xs"
+											data-testid="chat-verify-result"
+											data-verify-state={action.verify.state}
+										>
+											{#if action.verify.state === 'supported'}
+												{m['chat.correct.supported']()}
+											{:else if action.verify.state === 'unsupported'}
+												{m['chat.correct.unsupported']()}
+											{:else if action.verify.state === 'refused'}
+												{m['chat.correct.refused']()}
+											{:else if action.verify.state === 'no_such_chunk'}
+												{m['chat.correct.no_such_chunk']()}
+											{:else if action.verify.state === 'unreachable'}
+												{m['chat.correct.unreachable']()}
+											{:else}
+												{m['chat.correct.violation']()}
+											{/if}
+										</p>
+									{/if}
+
+									{#if action.forget !== 'idle' && action.forget !== 'busy'}
+										<p
+											role="status"
+											class="text-xs"
+											data-testid="chat-forget-result"
+											data-forget-state={action.forget.state}
+										>
+											{#if action.forget.state === 'tombstoned'}
+												{m['chat.forget.tombstoned']()}
+											{:else if action.forget.state === 'refused'}
+												{m['chat.forget.refused']()}
+											{:else if action.forget.state === 'no_such_row'}
+												{m['chat.forget.no_such_row']()}
+											{:else if action.forget.state === 'unavailable'}
+												{m['chat.forget.unavailable']()}
+											{:else}
+												{m['chat.forget.violation']()}
+											{/if}
+										</p>
+										<!-- The human gate, stated on the affordance itself.
+										     II-6's receipt carries `humanGated: true` as a
+										     VALUE; this is the same fact where the action
+										     begins. There is no approve path to disable,
+										     because there is none. -->
+										<p class="text-xs text-muted-foreground" data-testid="chat-forget-gate">
+											{m['chat.forget.human_gate']()}
+										</p>
 									{/if}
 								</li>
 							{/each}
