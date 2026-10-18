@@ -42,6 +42,14 @@ test('shell_ci_contract_is_fail_closed_clean_runner_and_e2e_gated', () => {
 	expect(workflow).toContain('pnpm build');
 	expect(workflow).toContain('pnpm audit --prod --audit-level high');
 	expect(workflow).toContain('cargo build --offline --locked --bin brain-server');
+	// The Rust core's pins must RUN in this lane. `src-tauri` had clippy and a
+	// build but no `cargo test`, so behavioral pins in the core compiled in CI
+	// and never executed — the exact shape of a guard that does not exist.
+	// Red-proofed 2026-10-18 by removing this step: every core pin still passed
+	// locally and the lane stayed green, because nothing in it ran them.
+	expect(workflow).toContain(
+		'cargo test --manifest-path src-tauri/Cargo.toml --locked --offline'
+	);
 	expect(workflow).toContain('pnpm exec openapi-typescript ../openapi.yaml -o "$generated"');
 	expect(workflow).toContain('cmp src/lib/api/schema.d.ts "$generated"');
 	expect(workflow).toContain('pnpm exec playwright install --with-deps chromium webkit');

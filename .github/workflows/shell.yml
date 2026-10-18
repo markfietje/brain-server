@@ -158,6 +158,15 @@ jobs:
       - name: Tauri clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
+      # The Rust core's own pins. `src-tauri` had clippy and a build but no
+      # `cargo test`, so the core's behavioral pins COMPILED in CI and never
+      # RAN -- a guard that exists and is never executed is indistinguishable
+      # from a guard that does not exist. Pinned by
+      # `shell/tests/ci-gates.test.ts`; `--locked --offline` for the same
+      # reason the kernel build below carries them.
+      - name: Tauri core pins (cargo test)
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --offline
+
       - name: Install pinned cargo-audit and audit Tauri lockfile
         run: |
           cargo install cargo-audit --version 0.22.2 --locked

@@ -23,6 +23,14 @@ tauri-build = { version = "2.7.3", features = [] }
 
 [dependencies]
 tauri = { version = "2.12.4", features = [] }
+# Phase I: `recall.rs` reads the kernel's ACTUAL /recall response bytes rather
+# than trusting a caller-shaped re-serialization, so `serde` derives the wire
+# types and `serde_json` parses them. Both are already in this workspace's
+# graph through `tauri` — these edges make an existing dependency explicit
+# rather than adding one, and no HTTP client is added: the core holds no
+# transport (see capabilities/main.json).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [profile.release]
 codegen-units = 1
