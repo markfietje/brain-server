@@ -9,6 +9,23 @@
 use crate::AppState;
 use crate::handlers::HandlerError;
 use crate::webhook::{EnqueueOutcome, WEBHOOK_TS_FUTURE_SKEW_SECS, WebhookQueue};
+/// Which part of the delivery the replay claim keys on — see
+/// [`crate::webhook::ClaimKey`].
+///
+/// EVERY caller of this function verifies a BODY-ONLY MAC: the legacy
+/// `/webhooks/{kind}` arm uses the GitHub verifier for all kinds, and the
+/// delivery family (`delivery/github`, `delivery/actions`) verifies the same
+/// way. Its delivery id and `Date` header are therefore chosen by whoever
+/// replays it, so the claim MUST key on the payload. This used to match only
+/// `kind.starts_with("github")`, so `delivery/*` fell to the id-trusting arm
+/// and a captured body+signature replayed forever with a fresh delivery id
+/// (audit). Standard-Webhooks lanes do NOT come through here: they MAC
+/// `{id}.{timestamp}.{body}` and pass `ClaimKey::DeliveryId` explicitly,
+/// because there the id is unforgeable.
+fn claim_key_for(_kind: &str) -> crate::webhook::ClaimKey {
+    crate::webhook::ClaimKey::PayloadOnly
+}
+
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -201,7 +218,14 @@ pub async fn receive(
         });
 
     let queue = WebhookQueue::new(Arc::new(state.pool.clone()));
-    match queue.enqueue_ts(&kind, &event, &delivery_id, &body, received_at) {
+    match queue.enqueue_ts(
+        &kind,
+        &event,
+        &delivery_id,
+        &body,
+        received_at,
+        claim_key_for(&kind),
+    ) {
         Ok(EnqueueOutcome::Enqueued) => {
             // audit a verified, accepted webhook (delivery id only).
             if let Ok(conn) = state.pool.get() {
@@ -351,7 +375,14 @@ async fn receive_delivery(
             Some(std::time::UNIX_EPOCH + std::time::Duration::new(secs, nanos))
         });
     let queue = WebhookQueue::new(Arc::new(state.pool.clone()));
-    let landed = match queue.enqueue_ts(kind, "delivery", &delivery_id, body, received_at) {
+    let landed = match queue.enqueue_ts(
+        kind,
+        "delivery",
+        &delivery_id,
+        body,
+        received_at,
+        claim_key_for(kind),
+    ) {
         Ok(EnqueueOutcome::Enqueued) => true,
         // A duplicate is a REPLAY and replays are idempotent: the observation
         // was already reconciled on the first delivery, and reconciling it
@@ -521,7 +552,16 @@ async fn receive_standard(
         .and_then(|s| std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(s)));
 
     let queue = WebhookQueue::new(Arc::new(state.pool.clone()));
-    match queue.enqueue_ts(kind, "standard", &id, body, received_at) {
+    match queue.enqueue_ts(
+        kind,
+        "standard",
+        &id,
+        body,
+        received_at,
+        // Standard Webhooks bind `{id}.{timestamp}.{body}` into the MAC, so
+        // the id is unforgeable here and keying on it is lossless.
+        crate::webhook::ClaimKey::DeliveryId,
+    ) {
         Ok(EnqueueOutcome::Enqueued) => {
             if let Ok(conn) = state.pool.get() {
                 crate::audit::record(
@@ -692,9 +732,14 @@ async fn receive_kb_feedback(state: &Arc<AppState>, headers: &HeaderMap, body: &
 
     let queue = WebhookQueue::new(Arc::new(state.pool.clone()));
     let claim_id = id.clone();
-    let first_sight = tokio::task::spawn_blocking(move || queue.seen_claim(&claim_id))
-        .await
-        .unwrap_or_else(|e| Err(crate::handlers::HandlerError::internal(format!("{e}"))));
+    let claim_body = body.clone();
+    let first_sight = tokio::task::spawn_blocking(move || {
+        // Standard Webhooks bind `{id}.{timestamp}.{body}` into the MAC, so
+        // this id is unforgeable and keying the claim on it is lossless.
+        queue.seen_claim(&claim_id, &claim_body, crate::webhook::ClaimKey::DeliveryId)
+    })
+    .await
+    .unwrap_or_else(|e| Err(crate::handlers::HandlerError::internal(format!("{e}"))));
     match first_sight {
         Ok(true) => {}
         Ok(false) => {
@@ -932,7 +977,19 @@ async fn receive_signal(state: &Arc<AppState>, headers: &HeaderMap, body: &Bytes
     }
     // Injection screen BEFORE any state change — a Signal message is exactly
     // as untrusted as a pasted prompt.
-    if crate::screen::contains_suspicious_pattern(&payload.text) {
+    //
+    // On the STRIPPED form, matching `Screen::screen` and `workflow::channel::
+    // screen_content`. Screen-then-strip is the ordering that manufactures the
+    // plant it just cleared: a U+202E//BOM prefix both hides a line-anchored
+    // `system:` marker from `layer1_line_markers` (whose `trim_start()` removes
+    // whitespace only) and is then deleted by the `sanitize_read` below, which
+    // stores the healed line in the steering outbox.
+    // The SAME full store transform the command path applies below
+    // (`sanitize_read`), so a markdown label, C0 split, hostile tag or sentinel
+    // that heals into a line-anchored directive cannot pass this screen
+    // (audit N4).
+    let screened_text = crate::gate::sanitize_read(&payload.text, false, &None);
+    if crate::screen::contains_suspicious_pattern(&screened_text) {
         deny(&state, "signal", "injection pattern rejected");
         return HandlerError::bad_request(
             "steering_rejected",
@@ -943,9 +1000,14 @@ async fn receive_signal(state: &Arc<AppState>, headers: &HeaderMap, body: &Bytes
 
     let queue = WebhookQueue::new(Arc::new(state.pool.clone()));
     let claim_id = id.clone();
-    let first_sight = tokio::task::spawn_blocking(move || queue.seen_claim(&claim_id))
-        .await
-        .unwrap_or_else(|e| Err(crate::handlers::HandlerError::internal(format!("{e}"))));
+    let claim_body = body.clone();
+    let first_sight = tokio::task::spawn_blocking(move || {
+        // Standard Webhooks bind `{id}.{timestamp}.{body}` into the MAC, so
+        // this id is unforgeable and keying the claim on it is lossless.
+        queue.seen_claim(&claim_id, &claim_body, crate::webhook::ClaimKey::DeliveryId)
+    })
+    .await
+    .unwrap_or_else(|e| Err(crate::handlers::HandlerError::internal(format!("{e}"))));
     match first_sight {
         Ok(true) => {}
         Ok(false) => {

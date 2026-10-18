@@ -495,7 +495,15 @@ async fn sink(state: &Arc<AppState>, seq: u64, body: &str) {
     let body = mark_payload_signed(body, signed);
     let delivery_id = format!("alert-{seq}");
     let queue = crate::webhook::WebhookQueue::new(Arc::new(state.pool.clone()));
-    let _ = queue.enqueue("alert", "alert", &delivery_id, body.as_bytes());
+    let _ = queue.enqueue(
+        "alert",
+        "alert",
+        &delivery_id,
+        body.as_bytes(),
+        // OUTBOUND: we mint the delivery id and the body, so there is no
+        // attacker-chosen component to defend against.
+        crate::webhook::ClaimKey::DeliveryId,
+    );
 
     // Deadbolt: the sink builds only against a validated/pinned host — a
     // private/metadata target or an unresolved one fails closed here (the

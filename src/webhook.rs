@@ -66,6 +66,35 @@ pub struct WebhookQueue {
     pool: Arc<Pool>,
 }
 
+/// WHICH PART OF THE DELIVERY THE REPLAY CLAIM IS KEYED ON.
+///
+/// The law is not one rule — it is whichever part the sender's SIGNATURE
+/// covers, because that is the part an attacker cannot re-pick.
+///
+/// * GitHub signs the BODY and nothing else, so `x-github-delivery` and `Date`
+///   are chosen by whoever replays it. Keying the claim on the delivery id
+///   alone made the whole replay defence a value the replayer picks: one
+///   captured body + signature could be replayed forever with a fresh uuid each
+///   time, and `receive_delivery`'s own comment says a replayed body is
+///   precisely what it must not re-reconcile ("reconciling it twice would mint a
+///   second plan intent for one mismatch"). On that lane the id must LEAVE the
+///   key — the payload is the authenticated thing, and it is what stays.
+/// * The Standard-Webhooks lanes bind `{id}.{timestamp}.{body}` into the MAC,
+///   so their id is already unforgeable and keying on it is both correct and
+///   lossless: two deliveries differing only by id ARE two distinct events.
+///
+/// The cost of `PayloadOnly` is the conservative direction — two genuinely
+/// distinct deliveries carrying a byte-identical body are treated as one. For a
+/// signature that covers only the body those are indistinguishable from the
+/// receiver, and deduplicating them is defensible against unbounded replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimKey {
+    /// The `webhook-id` is inside the signature — key on it.
+    DeliveryId,
+    /// Only the body is signed — key on the body, never on the id.
+    PayloadOnly,
+}
+
 /// Enforce the `webhook_seen` retention law: the claim table is bounded BY
 /// COUNT (oldest-rowid quarter eviction at the cap), never time-pruned.
 /// Time-pruning is what made replay protection expire with the freshness
@@ -176,6 +205,7 @@ impl WebhookQueue {
         event: &str,
         delivery_id: &str,
         payload: &[u8],
+        claim_key: ClaimKey,
     ) -> Result<EnqueueOutcome, HandlerError> {
         let conn = self
             .pool
@@ -189,8 +219,12 @@ impl WebhookQueue {
             return Ok(EnqueueOutcome::Full);
         }
 
-        let delivery_hash = format!("{:016x}", xxh3_64(delivery_id.as_bytes()));
+        // THE REPLAY CLAIM KEY FOLLOWS THE SIGNATURE — see [`ClaimKey`].
         let payload_hash = format!("{:016x}", xxh3_64(payload));
+        let delivery_hash = match claim_key {
+            ClaimKey::DeliveryId => format!("{:016x}", xxh3_64(delivery_id.as_bytes())),
+            ClaimKey::PayloadOnly => payload_hash.clone(),
+        };
 
         // Replay idempotency: the claim table retains by COUNT (never
         // time-pruned), so a delivery whose hash is present is a Duplicate
@@ -255,16 +289,26 @@ impl WebhookQueue {
     /// atomically claim the delivery id (true = first sight, false = replay).
     /// The Beacon kb-feedback receiver uses this — its payload is consumed
     /// synchronously into a findings row, so there is nothing to enqueue.
-    pub fn seen_claim(&self, delivery_id: &str) -> Result<bool, HandlerError> {
+    /// Synchronous claim, same law as [`Self::enqueue`] — see [`ClaimKey`].
+    pub fn seen_claim(
+        &self,
+        delivery_id: &str,
+        payload: &[u8],
+        claim_key: ClaimKey,
+    ) -> Result<bool, HandlerError> {
         let conn = self
             .pool
             .get()
             .map_err(|e| HandlerError::internal(format!("webhook pool: {e}")))?;
         evict_webhook_seen(&conn);
+        let key = match claim_key {
+            ClaimKey::DeliveryId => format!("{:016x}", xxh3_64(delivery_id.as_bytes())),
+            ClaimKey::PayloadOnly => format!("{:016x}", xxh3_64(payload)),
+        };
         let changed = conn
             .execute(
                 "INSERT OR IGNORE INTO webhook_seen(delivery_hash) VALUES (?1)",
-                params![format!("{:016x}", xxh3_64(delivery_id.as_bytes()))],
+                params![key],
             )
             .map_err(|e| HandlerError::internal(format!("webhook seen-write: {e}")))?;
         Ok(changed > 0)
@@ -283,6 +327,7 @@ impl WebhookQueue {
         delivery_id: &str,
         payload: &[u8],
         received_at: Option<SystemTime>,
+        claim_key: ClaimKey,
     ) -> Result<EnqueueOutcome, HandlerError> {
         if let Some(t) = received_at {
             let now = SystemTime::now();
@@ -293,7 +338,7 @@ impl WebhookQueue {
                 return Ok(EnqueueOutcome::Rejected);
             }
         }
-        self.enqueue(kind, event, delivery_id, payload)
+        self.enqueue(kind, event, delivery_id, payload, claim_key)
     }
 }
 
@@ -958,9 +1003,25 @@ mod tests {
     fn enqueue_then_duplicate_is_idempotent() {
         let pool = db();
         let q = WebhookQueue::new(pool.clone());
-        let first = q.enqueue("github", "push", "deliv-1", b"payload").unwrap();
+        let first = q
+            .enqueue(
+                "github",
+                "push",
+                "deliv-1",
+                b"payload",
+                ClaimKey::DeliveryId,
+            )
+            .unwrap();
         assert_eq!(first, EnqueueOutcome::Enqueued);
-        let second = q.enqueue("github", "push", "deliv-1", b"payload").unwrap();
+        let second = q
+            .enqueue(
+                "github",
+                "push",
+                "deliv-1",
+                b"payload",
+                ClaimKey::DeliveryId,
+            )
+            .unwrap();
         assert_eq!(second, EnqueueOutcome::Duplicate);
     }
 
@@ -974,8 +1035,14 @@ mod tests {
         let pool = db();
         let q = WebhookQueue::new(pool.clone());
         assert_eq!(
-            q.enqueue("github", "push", "deliv-old", b"payload")
-                .unwrap(),
+            q.enqueue(
+                "github",
+                "push",
+                "deliv-old",
+                b"payload",
+                ClaimKey::DeliveryId
+            )
+            .unwrap(),
             EnqueueOutcome::Enqueued
         );
         // Simulate the claim having aged far past any window (drain the
@@ -990,8 +1057,14 @@ mod tests {
             .unwrap();
         }
         assert_eq!(
-            q.enqueue("github", "push", "deliv-old", b"payload")
-                .unwrap(),
+            q.enqueue(
+                "github",
+                "push",
+                "deliv-old",
+                b"payload",
+                ClaimKey::DeliveryId
+            )
+            .unwrap(),
             EnqueueOutcome::Duplicate,
             "an aged claim row must still answer Duplicate — retention is \
              count-based, not window-based"
@@ -1011,7 +1084,8 @@ mod tests {
         for i in 0..=total {
             let id = format!("flood-{i}");
             assert_eq!(
-                q.enqueue("github", "push", &id, b"payload").unwrap(),
+                q.enqueue("github", "push", &id, b"payload", ClaimKey::DeliveryId)
+                    .unwrap(),
                 EnqueueOutcome::Enqueued,
                 "unique delivery {id} must enqueue (queue cap not reached)"
             );
@@ -1037,7 +1111,14 @@ mod tests {
             conn.execute("DELETE FROM webhook_queue", []).unwrap();
         }
         assert_eq!(
-            q.enqueue("github", "push", "flood-0", b"payload").unwrap(),
+            q.enqueue(
+                "github",
+                "push",
+                "flood-0",
+                b"payload",
+                ClaimKey::DeliveryId
+            )
+            .unwrap(),
             EnqueueOutcome::Enqueued,
             "the oldest quarter is the eviction victim — its replay re-enqueues \
              (the disclosed bound of count-based retention)"
@@ -1045,7 +1126,8 @@ mod tests {
         // The NEWEST claim survived — the flood count reads the recent hour.
         let last = format!("flood-{total}");
         assert_eq!(
-            q.enqueue("github", "push", &last, b"payload").unwrap(),
+            q.enqueue("github", "push", &last, b"payload", ClaimKey::DeliveryId)
+                .unwrap(),
             EnqueueOutcome::Duplicate,
             "the newest claim survived eviction"
         );
@@ -1067,9 +1149,13 @@ mod tests {
 
         let pool = db();
         let q = WebhookQueue::new(pool.clone());
-        let first = q.enqueue("alert", "alert", id, body).unwrap();
+        let first = q
+            .enqueue("alert", "alert", id, body, ClaimKey::DeliveryId)
+            .unwrap();
         assert_eq!(first, EnqueueOutcome::Enqueued);
-        let second = q.enqueue("alert", "alert", id, body).unwrap();
+        let second = q
+            .enqueue("alert", "alert", id, body, ClaimKey::DeliveryId)
+            .unwrap();
         assert_eq!(second, EnqueueOutcome::Duplicate);
     }
 
@@ -1079,7 +1165,14 @@ mod tests {
         let q = WebhookQueue::new(pool.clone());
         let future = SystemTime::now() + std::time::Duration::from_secs(400);
         let out = q
-            .enqueue_ts("github", "push", "deliv-future", b"payload", Some(future))
+            .enqueue_ts(
+                "github",
+                "push",
+                "deliv-future",
+                b"payload",
+                Some(future),
+                ClaimKey::DeliveryId,
+            )
             .unwrap();
         assert_eq!(out, EnqueueOutcome::Rejected);
     }
@@ -1090,7 +1183,14 @@ mod tests {
         let q = WebhookQueue::new(pool.clone());
         let stale = SystemTime::now() - std::time::Duration::from_secs(400);
         let out = q
-            .enqueue_ts("github", "push", "deliv-stale", b"payload", Some(stale))
+            .enqueue_ts(
+                "github",
+                "push",
+                "deliv-stale",
+                b"payload",
+                Some(stale),
+                ClaimKey::DeliveryId,
+            )
             .unwrap();
         assert_eq!(out, EnqueueOutcome::Rejected);
     }
@@ -1101,7 +1201,14 @@ mod tests {
         let q = WebhookQueue::new(pool.clone());
         let recent = SystemTime::now() - std::time::Duration::from_secs(10);
         let out = q
-            .enqueue_ts("github", "push", "deliv-recent", b"payload", Some(recent))
+            .enqueue_ts(
+                "github",
+                "push",
+                "deliv-recent",
+                b"payload",
+                Some(recent),
+                ClaimKey::DeliveryId,
+            )
             .unwrap();
         assert_eq!(out, EnqueueOutcome::Enqueued);
     }
@@ -1111,7 +1218,14 @@ mod tests {
         let pool = db();
         let q = WebhookQueue::new(pool.clone());
         let out = q
-            .enqueue_ts("github", "push", "deliv-none", b"payload", None)
+            .enqueue_ts(
+                "github",
+                "push",
+                "deliv-none",
+                b"payload",
+                None,
+                ClaimKey::DeliveryId,
+            )
             .unwrap();
         assert_eq!(out, EnqueueOutcome::Enqueued);
     }
@@ -1122,12 +1236,24 @@ mod tests {
         let q = WebhookQueue::new(pool.clone());
         for i in 0..WEBHOOK_QUEUE_MAX {
             let out = q
-                .enqueue("github", "push", &format!("deliv-{i}"), b"payload")
+                .enqueue(
+                    "github",
+                    "push",
+                    &format!("deliv-{i}"),
+                    b"payload",
+                    ClaimKey::DeliveryId,
+                )
                 .unwrap();
             assert_eq!(out, EnqueueOutcome::Enqueued);
         }
         let full = q
-            .enqueue("github", "push", "deliv-overflow", b"payload")
+            .enqueue(
+                "github",
+                "push",
+                "deliv-overflow",
+                b"payload",
+                ClaimKey::DeliveryId,
+            )
             .unwrap();
         assert_eq!(full, EnqueueOutcome::Full);
     }
@@ -1784,5 +1910,101 @@ mod tests {
         let mut pins = egress_pins().write().unwrap();
         assert!(pins.contains_key(HOST), "the winning pin landed");
         pins.remove(HOST);
+    }
+    /// THE REPLAY CLAIM MUST NOT BE KEYED ON A SENDER-CHOSEN ID ALONE.
+    ///
+    /// GitHub signs the BODY and nothing else, so on that lane
+    /// `x-github-delivery` and `Date` are chosen by whoever replays it — and
+    /// the delivery id WAS the entire replay defence. One captured body +
+    /// signature could be replayed forever with a fresh uuid each time, each
+    /// landing as `landed = true` and re-reconciling the `ObservedAuthority`,
+    /// which is exactly what `receive_delivery`'s own comment says must not
+    /// happen ("reconciling it twice would mint a second plan intent for one
+    /// mismatch").
+    ///
+    /// Red-first: reverting the key to `xxh3_64(delivery_id)` on this lane reds
+    /// the laundering arm below.
+    #[test]
+    fn a_fresh_delivery_id_cannot_launder_a_replayed_body_on_the_unsigned_id_lane() {
+        let pool = db();
+        let q = WebhookQueue::new(pool.clone());
+        let body = br#"{"ref":"refs/heads/main","after":"deadbeef"}"#;
+
+        assert_eq!(
+            q.enqueue("github", "push", "delivery-1", body, ClaimKey::PayloadOnly)
+                .unwrap(),
+            EnqueueOutcome::Enqueued
+        );
+        assert_eq!(
+            q.enqueue("github", "push", "delivery-1", body, ClaimKey::PayloadOnly)
+                .unwrap(),
+            EnqueueOutcome::Duplicate,
+            "the same id is the obvious duplicate"
+        );
+        assert_eq!(
+            q.enqueue(
+                "github",
+                "push",
+                "delivery-2-fresh-uuid",
+                body,
+                ClaimKey::PayloadOnly
+            )
+            .unwrap(),
+            EnqueueOutcome::Duplicate,
+            "THE LAUNDERING ARM: a sender-chosen id must not re-present a body \
+             already claimed. This used to enqueue."
+        );
+        assert_eq!(
+            q.enqueue(
+                "github",
+                "push",
+                "delivery-3",
+                b"{\"after\":\"cafe\"}",
+                ClaimKey::PayloadOnly
+            )
+            .unwrap(),
+            EnqueueOutcome::Enqueued,
+            "a genuinely different body still lands — the key is not a content filter"
+        );
+
+        // The synchronous claim path obeys the same law. A DIFFERENT body, so
+        // this arm is about the claim path and not about the enqueue above
+        // having already claimed these bytes.
+        let other = b"{\"after\":\"beef\"}";
+        assert!(
+            q.seen_claim("claim-a", other, ClaimKey::PayloadOnly)
+                .expect("first sight")
+        );
+        assert!(
+            !q.seen_claim("claim-a", other, ClaimKey::PayloadOnly)
+                .expect("replay")
+        );
+        assert!(
+            !q.seen_claim("claim-b", other, ClaimKey::PayloadOnly)
+                .expect("fresh id, same body")
+        );
+    }
+
+    /// THE OTHER LAW IS UNCHANGED. Standard Webhooks bind
+    /// `{id}.{timestamp}.{body}` into the MAC, so their id is unforgeable and
+    /// two deliveries differing only by id really ARE two distinct events —
+    /// keying that lane on the id is lossless, and this pin stops a well-
+    /// meant "make them all consistent" edit from collapsing them.
+    #[test]
+    fn a_signed_id_lane_keeps_two_distinct_deliveries_distinct() {
+        let pool = db();
+        let q = WebhookQueue::new(pool.clone());
+        let body = b"{\"id\":\"evt-1\"}";
+        assert_eq!(
+            q.enqueue("standard", "event", "svix-1", body, ClaimKey::DeliveryId)
+                .unwrap(),
+            EnqueueOutcome::Enqueued
+        );
+        assert_eq!(
+            q.enqueue("standard", "event", "svix-2", body, ClaimKey::DeliveryId)
+                .unwrap(),
+            EnqueueOutcome::Enqueued,
+            "on a signed-id lane the id is the identity, so this is a new delivery"
+        );
     }
 }

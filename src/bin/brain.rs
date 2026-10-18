@@ -4475,7 +4475,7 @@ fn cmd_token_rotate(_args: &[String]) -> Result<(), String> {
     println!("rotated bearer token in {path:?}");
     println!("the running server + file-reading consumers reload it within ~5s (rotation poll).");
     println!(
-        "keep the openclaw plugin in step: apply this token to BRAIN_SERVER_AUTH_TOKEN \
+        "keep the openclaw plugin in step: apply the AGENT line to BRAIN_SERVER_AUTH_TOKEN \
          (its auth source) if that is set."
     );
     Ok(())
@@ -4491,6 +4491,19 @@ fn rotate_token_file_at(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     check_secret_file_mode(path, "token", "rotating")?;
     let new_token = random_hex_token();
+    // PRESERVE THE OTHER LANE. The installer writes the agent token as a
+    // second line of this file; rewriting the file with one token destroyed
+    // it, and the printed advice then told the operator to give the fresh
+    // (operator) token to the plugin — silently collapsing the two-lane
+    // separation (audit). Rotate line 1 and keep every other line verbatim.
+    let existing = std::fs::read_to_string(path).map_err(|e| format!("read {path:?}: {e}"))?;
+    let mut lines: Vec<String> = existing.lines().map(str::to_string).collect();
+    if lines.is_empty() {
+        lines.push(new_token.clone());
+    } else {
+        lines[0] = new_token.clone();
+    }
+    let body = format!("{}\n", lines.join("\n"));
     // Atomic replace: create a sibling temp already at 0600 (never umask-
     // dependent — the secret must not exist with broader perms for even a
     // moment), write, fsync, then rename over the target so a reader never
@@ -4505,7 +4518,7 @@ fn rotate_token_file_at(path: &Path) -> Result<(), String> {
             .open(&tmp)
             .map_err(|e| format!("create {tmp:?}: {e}"))?;
         use std::io::Write;
-        f.write_all(new_token.as_bytes())
+        f.write_all(body.as_bytes())
             .map_err(|e| format!("write {tmp:?}: {e}"))?;
         f.sync_all().map_err(|e| format!("fsync {tmp:?}: {e}"))?;
     }
@@ -4513,7 +4526,7 @@ fn rotate_token_file_at(path: &Path) -> Result<(), String> {
     {
         use std::io::Write;
         let mut f = std::fs::File::create(&tmp).map_err(|e| format!("create {tmp:?}: {e}"))?;
-        f.write_all(new_token.as_bytes())
+        f.write_all(body.as_bytes())
             .map_err(|e| format!("write {tmp:?}: {e}"))?;
         f.sync_all().map_err(|e| format!("fsync {tmp:?}: {e}"))?;
     }
@@ -6504,12 +6517,18 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("auth-token");
-        std::fs::write(&path, "old-token").expect("write old");
+        // TWO-LANE FILE: line 1 is the operator, line 2 the agent. Rotation
+        // must replace line 1 and keep line 2 — rewriting one token collapsed
+        // the agent/operator split (audit).
+        std::fs::write(&path, "old-token\nagent-token\n").expect("write old");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("0600");
         assert!(rotate_token_file_at(&path).is_ok(), "rotate success");
         let new = std::fs::read_to_string(&path).expect("read new");
-        assert_eq!(new.trim().len(), 64, "fresh token is 64 hex");
-        assert_ne!(new.trim(), "old-token", "old value retired");
+        let lines: Vec<&str> = new.lines().collect();
+        assert_eq!(lines.len(), 2, "the agent lane survives rotation: {new:?}");
+        assert_eq!(lines[0].len(), 64, "fresh operator token is 64 hex");
+        assert_ne!(lines[0], "old-token", "old operator value retired");
+        assert_eq!(lines[1], "agent-token", "agent lane preserved verbatim");
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "rotated secret stays owner-only");
     }

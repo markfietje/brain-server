@@ -170,9 +170,14 @@ pub async fn receive_channel(
     let claim_id = format!("{}/{}:{}", cfg.kind, cfg.tenant, envelope.external_id);
     let queue = WebhookQueue::new(Arc::new(state.pool.clone()));
     let claim = claim_id.clone();
-    let first_sight = tokio::task::spawn_blocking(move || queue.seen_claim(&claim))
-        .await
-        .unwrap_or_else(|e| Err(HandlerError::internal(format!("{e}"))));
+    let claim_body = body.clone();
+    let first_sight = tokio::task::spawn_blocking(move || {
+        // Standard Webhooks bind `{id}.{timestamp}.{body}` into the MAC, so
+        // this id is unforgeable and keying the claim on it is lossless.
+        queue.seen_claim(&claim, &claim_body, crate::webhook::ClaimKey::DeliveryId)
+    })
+    .await
+    .unwrap_or_else(|e| Err(HandlerError::internal(format!("{e}"))));
     match first_sight {
         Ok(true) => {}
         Ok(false) => {
@@ -1179,12 +1184,17 @@ pub(crate) fn verify_bridge_mount(
             // (`timestamp_skew_ok` runs the deny/audit lane on both failure
             // arms itself, so the `?` loses nothing.)
             timestamp_skew_ok(state, &ts, &actor)?;
-            // Replay claim keyed on (bridge, delivery id): a replayed signed
-            // mount envelope claims once, and every replay is refused — the
-            // claim store failing closed, never admitting.
+            // Replay claim keyed on (bridge, delivery id, ENVELOPE BYTES): a
+            // replayed signed mount envelope claims once, and every replay is
+            // refused — the claim store failing closed, never admitting. The
+            // envelope rides the key because the signed headers are not the
+            // only thing a replayer would hold; the body is.
             let queue = WebhookQueue::new(Arc::new(state.pool.clone()));
             let claim = format!("bridge-mount/{}/{}:{}", cfg.kind, cfg.tenant, id);
-            if !queue.seen_claim(&claim).unwrap_or(false) {
+            if !queue
+                .seen_claim(&claim, body, crate::webhook::ClaimKey::DeliveryId)
+                .unwrap_or(false)
+            {
                 deny_channel(state, &actor, "replayed mount delivery");
                 return None;
             }

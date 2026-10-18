@@ -125,11 +125,18 @@ const WRITE_TOOLS: [&str; 5] = [
     "ump.feedback",
 ];
 
+/// The ADMIN verbs, which `WRITE_TOOLS` did not name — so a bridge running
+/// `BRAIN_MCP_SCOPE=read` still handed the model a full audit-chain read
+/// (`ump.audit`), an audit-chain VERIFY (`ump.audit.verify`), and the
+/// hard-erase arm of `ump.forget`. `read` meant "no writes" and the list read
+/// "the five that write", which is a different claim.
+const ADMIN_TOOLS: [&str; 2] = ["ump.audit", "ump.audit.verify"];
+
 /// Scope gate (pure): under `read`, a write verb refuses with the
 /// `tool_out_of_scope` message on the existing error seam (the tool name is
 /// client-controlled — hex-escaped like every echo; bodies never leak).
 fn check_tool_scope(s: McpScope, name: &str) -> Result<(), String> {
-    if s == McpScope::Read && WRITE_TOOLS.contains(&name) {
+    if s == McpScope::Read && (WRITE_TOOLS.contains(&name) || ADMIN_TOOLS.contains(&name)) {
         return Err(format!(
             "tool_out_of_scope: {} is denied under BRAIN_MCP_SCOPE=read",
             sanitize_echo(name)
@@ -219,14 +226,39 @@ struct ResolvedBearer {
 /// Pure: token source text + identity → the bearer to present. Split on
 /// whitespace, because that is what the server's own token set does (so a
 /// two-line file and a space-separated rotation list behave identically).
+///
+/// ## WHY THE AGENT LANE NO LONGER FALLS BACK TO LANE 0
+///
+/// `McpIdentity::Agent` is the DEFAULT (`BRAIN_MCP_IDENTITY` unset), and this
+/// used to resolve a single-lane source to `lanes.first()` — the OPERATOR
+/// bearer — while the bridge labelled itself `agent`. That is only safe if
+/// "agent" is a stricter class than "operator", and it is not: the operator
+/// bearer authenticates with NO principal at all, so on the server side
+///
+///   * `authorize(None, ..)` returns `Ok` — every scope gate passes,
+///   * `cap_gate(None, ..)` returns `Ok` — no capability is required,
+///   * `record_read_gate(&None)` is `unrestricted()`, and
+///   * `ump.get`'s redaction arms all no-op (they are gated on `owner.is_some()`),
+///
+/// which means the bridge presented MORE authority than the agent default
+/// claims, silently, and the only signal was one stderr line naming a posture
+/// ("ambient authority") an operator has no reason to read.
+///
+/// It is now a REFUSAL. An operator who wants the single token means it says
+/// `BRAIN_MCP_IDENTITY=operator`; an operator who wants the agent class
+/// installs the two-lane token file the installer already writes. Both are
+/// explicit acts, and the unsafe default is gone either way.
 fn resolve_bearer(source: &str, identity: McpIdentity) -> ResolvedBearer {
     let lanes: Vec<&str> = source.split_whitespace().collect();
     let picked = match identity {
         McpIdentity::Agent if lanes.len() >= 2 => lanes.get(1),
-        McpIdentity::Agent => lanes.first(),
+        // agent default on a single-lane source: NO bearer. See the header.
+        McpIdentity::Agent => None,
         McpIdentity::Operator => lanes.first(),
     };
     ResolvedBearer {
+        // "degraded" now means "the agent default found no agent lane and
+        // therefore has no bearer" — a refusal to run, not a quiet widening.
         degraded: identity == McpIdentity::Agent && lanes.len() < 2 && !lanes.is_empty(),
         token: picked.map(|t| (*t).to_string()),
         lanes: lanes.len(),
@@ -239,9 +271,13 @@ fn boot_receipt(identity: McpIdentity, resolved: &ResolvedBearer) -> String {
     let mut line = format!("mcp: identity={} lanes={}", identity.name(), resolved.lanes);
     if resolved.degraded {
         line.push_str(
-            " — single-token source, so the OPERATOR token is being presented under the \
-             agent default (ambient authority; set BRAIN_MCP_IDENTITY=operator to mean it, \
-             or BRAIN_MCP_SCOPE=read to bound it)",
+            " — REFUSING: the token source is single-lane and the identity default is `agent`, \
+             so there is no agent lane to present. This used to fall back to the OPERATOR \
+             token under an `agent` label, which is MORE authority than the label claims \
+             (that bearer authenticates with no principal, so every scope and record gate \
+             passes). Set BRAIN_MCP_IDENTITY=operator to mean the single token, or install \
+             the two-lane token file the installer writes (operator on line 1, agent on \
+             line 2).",
         );
     }
     line
@@ -359,15 +395,18 @@ fn main() {
     let _ = IDENTITY.set(boot_identity);
     eprintln!("mcp: scope={}", boot_scope.name());
     eprintln!("mcp: identity={}", boot_identity.name());
-    // Name the ceiling at boot when the resolved source turns out to be
-    // single-lane under the agent default.
-    if let Some(source) = configured_token_source()
-        && resolve_bearer(&source, boot_identity).degraded
-    {
-        eprintln!(
-            "{}",
-            boot_receipt(boot_identity, &resolve_bearer(&source, boot_identity))
-        );
+    // THE THIRD FAIL-CLOSED GATE, and the only one that stops the process: a
+    // token source with no lane this identity can present is a refusal, not a
+    // warning. Ordering matches the two above — an invalid env value refuses to
+    // start, and so does a source that cannot satisfy the declared identity,
+    // because both are "the operator asked for a posture this deployment
+    // cannot provide".
+    if let Some(source) = configured_token_source() {
+        let r = resolve_bearer(&source, boot_identity);
+        if r.degraded {
+            eprintln!("{}", boot_receipt(boot_identity, &r));
+            std::process::exit(1);
+        }
     }
     if http_mode_requested() {
         if let Err(e) = run_http() {
@@ -990,7 +1029,7 @@ fn method_tools_list_scoped(s: McpScope) -> Result<serde_json::Value, String> {
             let denied = tool
                 .get("name")
                 .and_then(|n| n.as_str())
-                .is_some_and(|n| WRITE_TOOLS.contains(&n));
+                .is_some_and(|n| WRITE_TOOLS.contains(&n) || ADMIN_TOOLS.contains(&n));
             if denied && let Some(obj) = tool.as_object_mut() {
                 obj.insert(
                     "x-brain-scope".to_string(),
@@ -1352,8 +1391,17 @@ fn sse_frame(body: &str) -> String {
 /// with no token configured the loopback-only default posture applies.
 /// The comparison is constant-time — a local timing oracle against an
 /// optional gate is still an oracle.
+/// ## WHY THIS IS FAIL-CLOSED
+///
+/// It returned `true` for EVERY request when `expected` was `None`
+/// (`expected.is_none_or(..)`), which made "no token configured" mean "no
+/// authentication". `run_http` now refuses to start in that state, so the
+/// `None` arm is unreachable — but the primitive itself was the defect, and a
+/// primitive that grants access when it cannot verify is the wrong shape to
+/// leave in the tree: the next caller that reaches it with `None` inherits the
+/// bypass. So `None` denies, here and at the gate.
 fn check_auth(provided: Option<&str>, expected: Option<&str>) -> bool {
-    expected.is_none_or(|want| {
+    expected.is_some_and(|want| {
         provided.is_some_and(|p| {
             p.strip_prefix("Bearer ")
                 .or_else(|| p.strip_prefix("bearer "))
@@ -1447,19 +1495,34 @@ fn run_http() -> Result<(), String> {
         },
         (a, _) => a,
     };
-    let has_token = expected_token.is_some();
-    let app = mcp_router(expected_token);
-    // Non-loopback binds are an explicit operator act AND require a token:
-    // an unauthenticated tool surface (ump.forget included) must never be
-    // LAN-reachable, whatever the operator's bind says.
+    let app = mcp_router(expected_token.clone());
+    // AN UNAUTHENTICATED TOOL SURFACE IS REFUSED, ON EVERY BIND.
+    //
+    // `check_auth` returns true for every request when `expected` is `None`, so
+    // loopback + no token meant any local process got the whole tool surface —
+    // `ump.forget` with its hard-erase arm included — proxied with whatever
+    // bearer the bridge resolved, which on a single-lane source is the
+    // OPERATOR's. "Loopback" is not an authentication boundary; it is a
+    // network reachability one, and every process on the host shares it.
+    //
+    // The check was previously "non-loopback AND no token", i.e. the LAN was
+    // protected and the host was not. Loopback binds now require the token too.
     {
         let parsed: std::net::SocketAddr = addr
             .parse()
             .map_err(|e| format!("MCP_HTTP_ADDR `{addr}`: {e}"))?;
-        if !is_loopback_addr(&parsed) && !has_token {
+        if expected_token.is_none() {
+            let scope = if is_loopback_addr(&parsed) {
+                "loopback is a reachability boundary, not an authentication one — every \
+                 process on this host shares it"
+            } else {
+                "a non-loopback bind is LAN-reachable"
+            };
             return Err(format!(
-                "refusing to serve MCP on non-loopback {addr} without MCP_HTTP_TOKEN — \
-                 fail-closed, set the token or bind 127.0.0.1"
+                "refusing to serve MCP on {addr} without MCP_HTTP_TOKEN: {scope}. An \
+                 unauthenticated MCP surface is the full tool surface, hard-erase \
+                 included. Set MCP_HTTP_TOKEN, or use the stdio transport (the default), \
+                 which needs no token because its caller is the parent process."
             ));
         }
     }
@@ -2076,15 +2139,26 @@ mod tests {
 
     // ── Streamable HTTP / SSE transport ────────────────────────────────
 
+    /// The token these HTTP tests present. `check_auth` is fail-CLOSED, so a
+    /// router built with `None` now denies everything — which is the point, and
+    /// `http_without_a_configured_token_denies` pins it. The happy-path tests
+    /// therefore build a GATED router and send the credential, which is the
+    /// only shape a running server can have.
+    const TEST_TOKEN: &str = "mcp-http-test-token";
+
     fn sse_app() -> axum::Router {
-        mcp_router(None)
+        mcp_router(Some(TEST_TOKEN.to_string()))
     }
 
     fn gated_app(token: &str) -> axum::Router {
         mcp_router(Some(token.to_string()))
     }
 
-    async fn post_json(app: axum::Router, body: &str, accept: &str) -> axum::response::Response {
+    async fn post_json_authed(
+        app: axum::Router,
+        body: &str,
+        accept: &str,
+    ) -> axum::response::Response {
         use tower::ServiceExt;
         app.oneshot(
             axum::http::Request::builder()
@@ -2092,6 +2166,7 @@ mod tests {
                 .uri("/mcp")
                 .header("content-type", "application/json")
                 .header("accept", accept)
+                .header("authorization", format!("Bearer {TEST_TOKEN}"))
                 .body(axum::body::Body::from(body.to_string()))
                 .unwrap(),
         )
@@ -2112,7 +2187,7 @@ mod tests {
     /// stdio line would — one transport, two framings.
     #[tokio::test]
     async fn http_post_roundtrips_jsonrpc() {
-        let res = post_json(sse_app(), TOOLS_LIST, "application/json").await;
+        let res = post_json_authed(sse_app(), TOOLS_LIST, "application/json").await;
         assert_eq!(res.status(), 200);
         assert_eq!(
             res.headers()["content-type"],
@@ -2132,7 +2207,7 @@ mod tests {
     #[tokio::test]
     async fn http_legacy_shaped_meta_dispatches_bare() {
         let body = r#"{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{"_meta":{"progressToken":1}}}"#;
-        let res = post_json(sse_app(), body, "application/json").await;
+        let res = post_json_authed(sse_app(), body, "application/json").await;
         assert_eq!(res.status(), 200);
         let raw = body_bytes(res).await;
         let text = String::from_utf8_lossy(&raw);
@@ -2146,7 +2221,7 @@ mod tests {
     /// response — `event: message` + one data line + blank terminator.
     #[tokio::test]
     async fn http_sse_negotiation_frames_the_response() {
-        let res = post_json(sse_app(), TOOLS_LIST, "text/event-stream").await;
+        let res = post_json_authed(sse_app(), TOOLS_LIST, "text/event-stream").await;
         assert_eq!(res.status(), 200);
         assert_eq!(res.headers()["content-type"], "text/event-stream");
         let raw = body_bytes(res).await;
@@ -2167,7 +2242,7 @@ mod tests {
     #[tokio::test]
     async fn http_notification_is_202_no_body() {
         let notification = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
-        let res = post_json(sse_app(), notification, "application/json").await;
+        let res = post_json_authed(sse_app(), notification, "application/json").await;
         assert_eq!(res.status(), 202);
         assert!(body_bytes(res).await.is_empty());
     }
@@ -2184,6 +2259,7 @@ mod tests {
                     axum::http::Request::builder()
                         .method(method)
                         .uri("/mcp")
+                        .header("authorization", format!("Bearer {TEST_TOKEN}"))
                         .body(axum::body::Body::empty())
                         .unwrap(),
                 )
@@ -2197,7 +2273,7 @@ mod tests {
     #[tokio::test]
     async fn http_body_cap_refused_413() {
         let huge = format!("{{\"pad\":\"{}\"}}", "x".repeat(MAX_LINE_BYTES + 1));
-        let res = post_json(sse_app(), &huge, "application/json").await;
+        let res = post_json_authed(sse_app(), &huge, "application/json").await;
         assert_eq!(res.status(), 413);
     }
 
@@ -2212,6 +2288,7 @@ mod tests {
                     .uri("/mcp")
                     .header("content-type", "text/plain")
                     .header("accept", "application/json")
+                    .header("authorization", format!("Bearer {TEST_TOKEN}"))
                     .body(axum::body::Body::from(TOOLS_LIST))
                     .unwrap(),
             )
@@ -2342,7 +2419,17 @@ mod tests {
         assert!(check_auth(Some("Bearer secret"), Some("secret")));
         assert!(check_auth(Some("bearer secret"), Some("secret")));
         // Unconfigured gate admits everything (loopback posture).
-        assert!(check_auth(None, None));
+        // FAIL-CLOSED, not fail-open: no configured token means no request is
+        // authenticated. `run_http` refuses to start without one, so this arm
+        // is the backstop, not the path.
+        assert!(
+            !check_auth(None, None),
+            "an unconfigured token must deny, not admit every request"
+        );
+        assert!(
+            !check_auth(Some("Bearer anything"), None),
+            "and it must deny even a presented credential it cannot verify"
+        );
 
         // Live through the router: missing header → 401; wrong → 401;
         // exact bearer → 200.
@@ -2425,8 +2512,6 @@ mod tests {
             "ump.capabilities",
             "ump.get",
             "ump.recall",
-            "ump.audit",
-            "ump.audit.verify",
         ] {
             assert!(
                 check_tool_scope(McpScope::Read, name).is_ok(),
@@ -2435,7 +2520,26 @@ mod tests {
         }
         // v1.28.76: the feedback upsert is a DURABLE write — denied under
         // read scope with the other write verbs.
-        assert!(check_tool_scope(McpScope::Read, "ump.feedback").is_err());
+        for name in [
+            "ump.feedback",
+            // THE ADMIN VERBS. `WRITE_TOOLS` named only the five tools that
+            // WRITE, so `BRAIN_MCP_SCOPE=read` still served a full audit-chain
+            // read and a chain verify. `read` meant "no writes" and the list
+            // read "the five that write" — a different claim, on a surface
+            // where the whole point is that the bridge cannot write memory.
+            "ump.audit",
+            "ump.audit.verify",
+        ] {
+            assert!(
+                check_tool_scope(McpScope::Read, name).is_err(),
+                "{name} must be denied under read scope"
+            );
+        }
+        // and they are never scope-gated under the default, which is the
+        // byte-identical compat posture.
+        for name in ADMIN_TOOLS {
+            assert!(check_tool_scope(McpScope::Full, name).is_ok());
+        }
     }
 
     #[test]
@@ -2462,14 +2566,19 @@ mod tests {
             .filter(|t| t.get("x-brain-scope").and_then(|v| v.as_str()) == Some("read-denied"))
             .count();
         assert_eq!(
-            denied, 5,
-            "the five write verbs (incl. ump.feedback since v1.28.76) are annotated"
+            denied,
+            WRITE_TOOLS.len() + ADMIN_TOOLS.len(),
+            "every write verb AND every admin verb is annotated (7 = 5 writes +              ump.audit + ump.audit.verify)"
         );
         let clean = tools
             .iter()
             .filter(|t| t.get("x-brain-scope").is_none())
             .count();
-        assert_eq!(clean, tools.len() - 5, "every other tool is untouched");
+        assert_eq!(
+            clean,
+            tools.len() - WRITE_TOOLS.len() - ADMIN_TOOLS.len(),
+            "every other tool is untouched"
+        );
     }
 
     // ── the identity the bridge presents ──────────────────────────────────
@@ -2513,23 +2622,34 @@ mod tests {
         );
     }
 
-    /// The single-token deployment has no agent lane to take. Today's behavior
-    /// is kept — the bridge still works — but the ceiling is NAMED rather than
-    /// discovered later: every call is the superuser, and only
-    /// `BRAIN_MCP_SCOPE=read` stands between it and Admin.
+    /// THE FIX. The single-token deployment under the DEFAULT `agent` identity
+    /// has no agent lane to take, and it no longer takes the operator's.
+    ///
+    /// This used to resolve `Some("only-token")` — the operator bearer — under
+    /// an `agent` label, which is MORE authority than the label claims: that
+    /// bearer authenticates with no principal, so `authorize`, `cap_gate` and
+    /// `record_read_gate` all pass unconditionally and `ump.get`'s redaction
+    /// arms all no-op. The two escape hatches are explicit: ask for
+    /// `BRAIN_MCP_IDENTITY=operator` and mean it, or install the two-lane file.
     #[test]
-    fn a_single_lane_source_keeps_working_and_names_the_ceiling() {
+    fn a_single_lane_source_refuses_the_agent_lane() {
         let resolved = resolve_bearer("only-token\n", McpIdentity::Agent);
         assert_eq!(
-            resolved.token.as_deref(),
-            Some("only-token"),
-            "a single-lane deployment must keep working"
+            resolved.token, None,
+            "the agent default must present NO bearer on a single-lane source — \
+             presenting the operator token here is a silent escalation"
         );
         assert_eq!(resolved.lanes, 1);
         assert!(
             resolved.degraded,
-            "a single-lane source under the agent identity IS the ambient-authority \
-             posture, and the resolution says so"
+            "and the resolution says so, so the boot gate can refuse to start"
+        );
+        // The operator identity is the explicit way to mean the single token.
+        assert_eq!(
+            resolve_bearer("only-token\n", McpIdentity::Operator)
+                .token
+                .as_deref(),
+            Some("only-token")
         );
     }
 
@@ -2557,10 +2677,17 @@ mod tests {
     #[test]
     fn bearer_resolution_tolerates_the_documented_token_shapes() {
         assert_eq!(
-            resolve_bearer("  solo-token  ", McpIdentity::Agent)
+            resolve_bearer("  solo-token  ", McpIdentity::Operator)
                 .token
                 .as_deref(),
             Some("solo-token")
+        );
+        // whitespace handling is unchanged on the two-lane path
+        assert_eq!(
+            resolve_bearer("  op  agent  ", McpIdentity::Agent)
+                .token
+                .as_deref(),
+            Some("agent")
         );
         assert!(
             resolve_bearer("   \n\t ", McpIdentity::Agent)
@@ -2582,8 +2709,15 @@ mod tests {
         let line = boot_receipt(McpIdentity::Agent, &degraded);
         assert!(line.contains("identity=agent"), "{line}");
         assert!(
-            line.contains("ambient authority"),
-            "the single-lane ceiling must be visible in the receipt, not only in a comment: {line}"
+            line.contains("REFUSING"),
+            "the single-lane refusal must be visible in the receipt, not only in a \
+             comment: {line}"
+        );
+        // and the receipt must name BOTH remedies — an operator who reads only
+        // this line must be able to fix it without reading the source.
+        assert!(
+            line.contains("BRAIN_MCP_IDENTITY=operator") && line.contains("two-lane"),
+            "the receipt names both ways out: {line}"
         );
         let clean = resolve_bearer("a\nb\n", McpIdentity::Agent);
         let line = boot_receipt(McpIdentity::Agent, &clean);
@@ -2760,6 +2894,36 @@ mod tests {
             replies[1].contains("\"id\":1") && replies[1].contains("result"),
             "the request riding after the oversized line still answered: {}",
             replies[1]
+        );
+    }
+    /// THE FAIL-CLOSED ARM. `check_auth` used to be
+    /// `expected.is_none_or(..)`, i.e. "no token configured" meant "no
+    /// authentication", so a router built without one admitted every request.
+    /// `run_http` now refuses to start in that state — but the primitive is
+    /// what matters: a `check_auth` that GRANTS when it cannot verify is the
+    /// wrong shape to leave in the tree, because the next caller that reaches
+    /// it with `None` inherits the bypass. It denies now.
+    #[tokio::test]
+    async fn http_without_a_configured_token_denies() {
+        use tower::ServiceExt;
+        let app = mcp_router(None);
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json")
+                    .header("authorization", "Bearer anything-at-all")
+                    .body(axum::body::Body::from(TOOLS_LIST))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            401,
+            "an unconfigured token must deny even a presented credential it cannot verify"
         );
     }
 }

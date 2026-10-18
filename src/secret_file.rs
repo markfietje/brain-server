@@ -91,6 +91,100 @@ pub fn read_provider_secret(
     Ok(value.to_string())
 }
 
+/// Read an owner-only bearer-token file, refusing the shapes the provider
+/// reader refuses.
+///
+/// ## WHY THIS EXISTS SEPARATELY FROM `read_provider_secret`
+///
+/// That one is scoped beneath a configured root, which a token file is not.
+/// But the token readers did the two things that matter and this fixes for
+/// both:
+///
+/// * **Symlinks were followed.** `check_secret_permissions` uses
+///   `std::fs::metadata`, which FOLLOWS a link, so `AUTH_TOKEN_FILE` /
+///   `AGENT_TOKEN_FILE` / the CLI token files accepted a symlink to any 0600
+///   file on the host. `symlink_metadata` is what distinguishes the link from
+///   its target, and it is checked first.
+/// * **The check and the read were two syscalls.** The mode was validated, then
+///   the path was re-opened for reading — a window in which the path can be
+///   swapped for a different file. `TokenStore::reload_if_changed` re-reads on
+///   every mtime advance, so a swap is picked up within one
+///   `TOKEN_ROTATION_POLL_SECS`. This reader opens ONCE and checks the
+///   opened handle (mode, length, and — on unix — the inode against the
+///   pre-open stat), so the bytes it validates are the bytes it returns.
+///
+/// There is no `O_NOFOLLOW` bind without a new dependency, so this is defence
+/// in depth rather than a single atomic open; the symlink refusal is what
+/// closes the substitution, and the mode is re-checked on the opened file.
+pub fn read_owner_only_token(path: &std::path::Path) -> Result<String, String> {
+    use std::io::Read;
+    // 1. symlink refusal — `symlink_metadata`, never `metadata`.
+    let link = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("cannot stat {}: {e}", path.display()))?;
+    if link.file_type().is_symlink() {
+        return Err(format!(
+            "token file {} is a symlink — refusing (the link target is not the file you              named)",
+            path.display()
+        ));
+    }
+    if !link.is_file() {
+        return Err(format!(
+            "token file {} is not a regular file",
+            path.display()
+        ));
+    }
+    // 2. ONE open. Every check below reads the OPENED handle, never the path
+    //    again: the old code validated the path, re-opened it, and re-stat'ed
+    //    the path — a writer of the directory could swap the file between
+    //    those syscalls and the bytes returned were never the bytes checked
+    //    (audit: "fd re-check" was documented but not implemented).
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+    let meta = file
+        .metadata()
+        .map_err(|e| format!("cannot stat opened {}: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // The pre-open stat and the opened inode must be the same file. A
+        // path swapped to a symlink/other file between the two shows up here.
+        if meta.ino() != link.ino() || meta.dev() != link.dev() {
+            return Err(format!(
+                "token file {} changed between stat and open — refusing",
+                path.display()
+            ));
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode();
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "secret file {} is group/world-accessible (mode {:o}) — expected owner-only \
+                 (0600/0400). chmod 600 {} and restart.",
+                path.display(),
+                mode & 0o777,
+                path.display()
+            ));
+        }
+    }
+    if meta.len() > MAX_PROVIDER_SECRET_BYTES as u64 {
+        return Err(format!(
+            "token file {} is {} bytes, over the {} byte cap",
+            path.display(),
+            meta.len(),
+            MAX_PROVIDER_SECRET_BYTES
+        ));
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.read_to_end(&mut bytes)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| format!("token file {} is not valid UTF-8", path.display()))?;
+    Ok(text.trim().to_string())
+}
+
 /// Refuse a secret file with group/world bits (mode & 0o077 != 0). A missing
 /// file errors too — it cannot be validated.
 pub fn check_secret_permissions(path: &std::path::Path) -> Result<(), String> {
@@ -201,5 +295,50 @@ mod tests {
             read_provider_secret(root.path(), Path::new("multiline")),
             Err(ProviderSecretError::Multiline)
         );
+    }
+    /// THE TOKEN READER REFUSES A SYMLINK. `check_secret_permissions` uses
+    /// `std::fs::metadata`, which FOLLOWS one, so `AUTH_TOKEN_FILE` /
+    /// `AGENT_TOKEN_FILE` / the CLI token files accepted a link to any 0600
+    /// file on the host — and the mode check and the read were two syscalls,
+    /// a window `TokenStore::reload_if_changed` re-opens on every mtime
+    /// advance.
+    ///
+    /// Red-first: dropping the `symlink_metadata` arm reds this.
+    #[cfg(unix)]
+    #[test]
+    fn a_token_file_that_is_a_symlink_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().expect("tmp");
+        let real = dir.path().join("real-token");
+        std::fs::write(&real, "the-real-token").expect("write");
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+
+        let link = dir.path().join("link-token");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let err = read_owner_only_token(&link).expect_err("a symlink must refuse");
+        assert!(
+            err.contains("symlink"),
+            "the refusal names the shape, not just the failure: {err}"
+        );
+        // and the real file still reads
+        assert_eq!(
+            read_owner_only_token(&real).expect("the real file reads"),
+            "the-real-token"
+        );
+    }
+
+    /// A group/world-readable token file is still refused — the 0600 law the
+    /// runtime readers enforce.
+    #[cfg(unix)]
+    #[test]
+    fn a_world_readable_token_file_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().expect("tmp");
+        let p = dir.path().join("wide-token");
+        std::fs::write(&p, "leaked").expect("write");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        let err = read_owner_only_token(&p).expect_err("a wide token file must refuse");
+        assert!(err.contains("group/world-accessible"), "{err}");
     }
 }

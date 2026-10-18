@@ -1219,9 +1219,16 @@ pub fn auth_token() -> Option<String> {
         // read — a leaked operator credential must not look like a working
         // configuration. The boot's misconfigured-fatal (below) names the
         // remedy when no env fallback exists.
-        if let Err(e) = crate::secret_file::check_secret_permissions(std::path::Path::new(path)) {
+        //
+        // `read_owner_only_token` refuses a SYMLINK and re-checks the mode on
+        // the file it actually opened, so a post-boot swap cannot re-admit the
+        // credential. `check_secret_permissions` alone used
+        // `std::fs::metadata`, which FOLLOWS a link, and validated the path
+        // before re-opening it for the read.
+        if let Err(e) = crate::secret_file::read_owner_only_token(std::path::Path::new(path)) {
             eprintln!("⚠️ refusing AUTH_TOKEN_FILE {path}: {e} — chmod 600 it");
-        } else if let Ok(s) = std::fs::read_to_string(path) {
+        } else if let Ok(s) = crate::secret_file::read_owner_only_token(std::path::Path::new(path))
+        {
             // Return the multi-token set as a single string; `auth_middleware`
             // splits on whitespace when comparing. Non-empty file => auth on.
             let s = s.trim();
@@ -1298,21 +1305,44 @@ pub fn auth_token_misconfigured() -> Option<String> {
         // so the arms below are the no-fallback refusal shapes only.
         return None;
     }
-    // A group/world-readable token file is the same misconfiguration class
-    // as a missing one: the read path refuses it, so boot must too (with the
-    // same remedy named) instead of degrading to no-auth silently.
-    if let Err(e) = crate::secret_file::check_secret_permissions(&path) {
-        return Some(format!(
-            "AUTH_TOKEN_FILE={} fails the secret-file law ({e}) — chmod 600 it, \
-             set AUTH_TOKEN, or unset AUTH_TOKEN_FILE.",
-            path.display()
-        ));
+    // A SET-BUT-BLANK source is a misconfiguration, not "no auth". The old
+    // filter treated `AUTH_TOKEN_FILE=" "` as unset, so the server booted with
+    // authentication silently OFF (audit). Refuse loudly instead.
+    if let Ok(raw) = std::env::var("AUTH_TOKEN_FILE")
+        && !raw.is_empty()
+        && raw.trim().is_empty()
+    {
+        return Some(
+            "AUTH_TOKEN_FILE is set but empty/whitespace — refusing to start with \
+             authentication silently disabled. Set a token, or unset it."
+                .to_string(),
+        );
     }
-    let file_ok = std::fs::read_to_string(&path)
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
-    if file_ok {
-        return None;
+    if let Ok(raw) = std::env::var("AUTH_TOKEN")
+        && !raw.is_empty()
+        && raw.trim().is_empty()
+    {
+        return Some(
+            "AUTH_TOKEN is set but empty/whitespace — refusing to start with \
+             authentication silently disabled. Set a token, or unset it."
+                .to_string(),
+        );
+    }
+    // The BOOT gate uses the SAME reader as the request path (audit: it used
+    // symlink-following metadata + a path re-read, so a symlinked token file
+    // passed boot and then 401'd every route). A group/world-readable,
+    // symlinked, non-regular or unreadable file is the same misconfiguration
+    // class as a missing one: refuse with the remedy named.
+    match crate::secret_file::read_owner_only_token(&path) {
+        Ok(token) if !token.is_empty() => return None,
+        Ok(_) => {}
+        Err(e) => {
+            return Some(format!(
+                "AUTH_TOKEN_FILE={} fails the secret-file law ({e}) — chmod 600 it, \
+                 replace the symlink, set AUTH_TOKEN, or unset AUTH_TOKEN_FILE.",
+                path.display()
+            ));
+        }
     }
     Some(format!(
         "AUTH_TOKEN_FILE={} is set but missing, unreadable, or empty, and AUTH_TOKEN \
@@ -1348,16 +1378,18 @@ fn agent_file_token() -> Option<String> {
     // operator lane: boot refuses a world-readable file, and
     // `reload_if_changed` re-reads HERE on mtime advance — a post-boot swap
     // that opens the mode must not re-admit the credential.
-    if let Err(e) = crate::secret_file::check_secret_permissions(&path) {
-        eprintln!(
-            "⚠️ refusing AGENT_TOKEN_FILE {}: {e} — chmod 600 it",
-            path.display()
-        );
-        return None;
-    }
-    std::fs::read_to_string(path)
+    //
+    // Same shape as the operator lane: a symlink is refused and the mode is
+    // re-checked on the opened file, so the `reload_if_changed` mtime sweep
+    // cannot be walked into a different credential.
+    crate::secret_file::read_owner_only_token(&path)
+        .map_err(|e| {
+            eprintln!(
+                "⚠️ refusing AGENT_TOKEN_FILE {}: {e} — chmod 600 it",
+                path.display()
+            );
+        })
         .ok()
-        .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
 
@@ -1407,7 +1439,15 @@ pub fn agent_token_misconfigured() -> Option<String> {
 /// the agent principal can never widen by collision.
 pub fn auth_token_sets() -> (Vec<String>, Option<String>) {
     if let Some(agent) = agent_file_token() {
-        return (auth_tokens(), Some(agent));
+        // The agent token MUST NOT be in the operator set. The installer
+        // writes the agent token as a line of AUTH_TOKEN_FILE, and the
+        // middleware checks operators FIRST with no Principal — so returning
+        // the whole file here made the agent bearer a superuser (audit).
+        let operators = auth_tokens()
+            .into_iter()
+            .filter(|t| t != &agent)
+            .collect::<Vec<_>>();
+        return (operators, Some(agent));
     }
     let file_source = std::env::var("AUTH_TOKEN_FILE")
         .ok()
@@ -2906,12 +2946,15 @@ pub(crate) mod tests {
         });
     }
 
-    /// `AGENT_TOKEN_FILE` wins as the agent source and the operator set is
-    /// the ENTIRE token-file content — the two sources never fight.
+    /// `AGENT_TOKEN_FILE` wins as the agent source, and the agent token is
+    /// REMOVED from the operator set. The installer writes the agent token as
+    /// a line of `AUTH_TOKEN_FILE`; keeping the whole file as operators made
+    /// the agent bearer a superuser (the middleware checks operators first
+    /// with no principal) — the collision the old comment called impossible.
     #[test]
     fn auth_token_sets_agent_file_overrides() {
         let f = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(f.path(), "op-token\n").unwrap();
+        std::fs::write(f.path(), "op-token\nagent-from-file\n").unwrap();
         let a = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(a.path(), "agent-from-file\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -2922,7 +2965,11 @@ pub(crate) mod tests {
             Some(a.path().to_str().unwrap()),
             || {
                 let (operators, agent) = auth_token_sets();
-                assert_eq!(operators, vec!["op-token".to_string()]);
+                assert_eq!(
+                    operators,
+                    vec!["op-token".to_string()],
+                    "the agent token must not remain in the operator set"
+                );
                 assert_eq!(agent, Some("agent-from-file".to_string()));
             },
         );

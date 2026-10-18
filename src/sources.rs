@@ -291,16 +291,29 @@ pub fn delete_source(tx: &Transaction<'_>, source_id: i64) -> Result<bool> {
 /// orphan vector is a partial erasure, not a retirement).
 fn sweep_source_chunks(tx: &Transaction<'_>, source_id: i64) -> Result<usize> {
     let ids = chunk_ids_for_source(tx, source_id)?;
-    // Active holds are tiny + partial-index-served; a missing legal_holds table
-    // (a unit-test schema) means no holds.
-    if let Err(e) = crate::legal_hold::refuse_if_held(tx, &ids)
-        && !(e.inner.code == "internal_error" && is_missing_table(&e.inner.message))
-    {
-        return Err(anyhow::anyhow!(
-            "source {source_id} sweep refused: {}",
+    // FAIL CLOSED, LIKE EVERY SIBLING.
+    //
+    // This used to swallow an unreadable hold store: `refuse_if_held` maps a
+    // read failure to `internal_error`, and any `internal_error` whose text
+    // contained "no such table" was read as "there are no holds" — so the
+    // `DELETE FROM knowledge` below proceeded. That made this the ONLY erasure
+    // path in the tree that treats "I could not check" as "nothing there", and
+    // the repo's own posture is the opposite (`backup.rs` refuses an entire
+    // restore when `legal_holds` cannot be read; `service::purge`,
+    // `handlers::forget`, `handlers::ump_ops`, `memory.rs`, `consolidate` and
+    // `domains_admin` all fail closed).
+    //
+    // The exemption existed for unit-test fixtures built without the table.
+    // Those fixtures build the real schema now, and an erasure path that needs
+    // a special exemption to run in a test is an erasure path that will take
+    // the exemption in production too.
+    crate::legal_hold::refuse_if_held(tx, &ids).map_err(|e| {
+        anyhow::anyhow!(
+            "source {source_id} sweep refused: {}: {}",
+            e.inner.code,
             e.inner.message
-        ));
-    }
+        )
+    })?;
     for id in &ids {
         tx.execute(
             "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
@@ -312,10 +325,6 @@ fn sweep_source_chunks(tx: &Transaction<'_>, source_id: i64) -> Result<usize> {
         n += tx.execute("DELETE FROM knowledge WHERE id = ?1", params![id])?;
     }
     Ok(n)
-}
-
-fn is_missing_table(msg: &str) -> bool {
-    msg.contains("no such table")
 }
 
 /// Extension trait so `query_row(...).optional()` works without importing the

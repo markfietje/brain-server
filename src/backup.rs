@@ -679,10 +679,17 @@ fn backup_inner(
     if let Some(parent) = out_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("mkdir {parent:?}"))?;
     }
-    fs::write(out_path, &out).with_context(|| format!("write {out_path:?}"))?;
+    // 0600, set IN THE SAME OPEN — not `fs::write`, which creates with
+    // `0666 & ~umask` and therefore leaves a backup (and its plaintext v2/v3
+    // header: connector config filenames, sizes, xxh3 digests) world-readable
+    // on any host with a permissive umask. Every other memory-bearing artifact
+    // in the tree uses this same idiom (`backup.rs` restore path, `standby.rs`,
+    // `integrity.rs`, `service/domains_admin.rs`) and the server enforces it at
+    // boot; the backup writer was the one that did not.
+    write_private(out_path, &out).with_context(|| format!("write {out_path:?}"))?;
 
     let sum_path = checksum_path(out_path);
-    fs::write(&sum_path, sha256_hex(&out))
+    write_private(&sum_path, sha256_hex(&out).as_bytes())
         .with_context(|| format!("write checksum {sum_path:?}"))?;
 
     audit_backup(
@@ -703,6 +710,48 @@ fn checksum_path(out_path: &Path) -> PathBuf {
     ))
 }
 
+/// Write `bytes` to `path` with mode 0600 on unix, created and written in ONE
+/// open so there is no window in which the file exists at a wider mode.
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    // CREATE_NEW + RENAME, never truncate-in-place (audit): the old open
+    // applied `mode(0600)` only when the file did not exist, so a pre-existing
+    // 0644 backup stayed world-readable after a rewrite, and a pre-planted
+    // symlink at `path` was FOLLOWED — the attacker's target received the
+    // ciphertext. A fresh sibling temp at 0600, renamed over the path, does
+    // neither: `rename` replaces the link itself.
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = parent.join(format!(".{name}.{}.{nonce}.tmp", std::process::id()));
+    let mut opts = fs::OpenOptions::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.write(true).create_new(true).open(&tmp)?;
+    let written = (|| -> std::io::Result<()> {
+        f.write_all(bytes)?;
+        f.flush()?;
+        f.sync_all()
+    })();
+    drop(f);
+    if let Err(e) = written {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
 fn split_header(data: &[u8]) -> Result<(&str, &[u8])> {
     if let Some(pos) = data.iter().position(|&b| b == b'\n') {
         let header = std::str::from_utf8(&data[..pos]).context("created_at header not utf-8")?;
@@ -711,10 +760,26 @@ fn split_header(data: &[u8]) -> Result<(&str, &[u8])> {
     anyhow::bail!("backup file missing created_at header")
 }
 
+/// ## A MISSING SIDECAR IS A REFUSAL, NOT A PASS
+///
+/// This returned `Ok` when the `.sha256` sidecar was absent, so anyone who can
+/// delete one file in the backup directory removed the out-of-band integrity
+/// check entirely — `rm backup.db.sha256` silences the "checksum mismatch"
+/// alarm without touching the ciphertext. The sidecar is written by every
+/// backup this module produces, so its absence means the set is incomplete or
+/// tampered with, and both are refusals.
+///
+/// GCM still authenticates the ciphertext, so this is availability and
+/// metadata-integrity rather than plaintext disclosure — but a control that can
+/// be switched off by deleting a file was not a control.
 fn verify_checksum(cipher_path: &Path, full: &[u8]) -> Result<()> {
     let sum_path = checksum_path(cipher_path);
     if !sum_path.is_file() {
-        return Ok(());
+        anyhow::bail!(
+            "checksum sidecar missing for {cipher_path:?} ({} not found) — refusing rather \
+             than verifying nothing",
+            sum_path.display()
+        );
     }
     let expected = fs::read_to_string(&sum_path)
         .with_context(|| format!("read checksum {sum_path:?}"))?
@@ -750,11 +815,21 @@ pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("mkdir {parent:?}"))?;
     }
-    let tmp = path.with_file_name(format!(
-        "{}.restore-tmp",
+    // A UNIQUE temp, created with create_new: the old predictable
+    // `<db>.restore-tmp` name could be pre-planted as a symlink, so the
+    // DECRYPTED database was written through the link and then renamed over
+    // the target (audit). No attacker-chosen path is ever opened.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let tmp = parent.join(format!(
+        ".{}.{}.{nonce}.restore-tmp",
         path.file_name()
             .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default()
+            .unwrap_or_default(),
+        std::process::id()
     ));
     // 0600 at creation (2026-09-11 fix): this helper lands DECRYPTED store
     // bytes (restore, standby promote) — the temp must never be world-
@@ -767,8 +842,7 @@ pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     }
     let mut f = opts
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .open(&tmp)
         .with_context(|| format!("create temp {tmp:?}"))?;
     use std::io::Write;
@@ -2385,5 +2459,79 @@ mod tests {
             err.contains("does not verify"),
             "error must name the verify failure: {err}"
         );
+    }
+    /// A CONTROL THAT CAN BE SWITCHED OFF BY DELETING A FILE WAS NOT A
+    /// CONTROL. `verify_checksum` returned `Ok` when the `.sha256` sidecar was
+    /// absent, so `rm backup.db.sha256` silenced the mismatch alarm without
+    /// touching the ciphertext. Every backup this module writes produces the
+    /// sidecar, so its absence is a refusal.
+    ///
+    /// Red-first: restoring the `return Ok(())` reds the first arm.
+    #[test]
+    fn a_missing_checksum_sidecar_is_a_refusal_not_a_pass() {
+        let dir = tempfile::TempDir::new().expect("tmp");
+        let cipher = dir.path().join("brain.db.bak");
+        let sum = checksum_path(&cipher);
+        fs::write(&cipher, b"ciphertext-bytes").expect("cipher");
+
+        let err = verify_checksum(&cipher, b"ciphertext-bytes")
+            .expect_err("an absent sidecar must refuse");
+        assert!(
+            err.to_string().contains("sidecar missing"),
+            "the refusal names the missing file: {err}"
+        );
+
+        // And the real pair still passes / still catches a mismatch.
+        fs::write(&sum, sha256_hex(b"ciphertext-bytes")).expect("sum");
+        verify_checksum(&cipher, b"ciphertext-bytes").expect("the real pair passes");
+        assert!(
+            verify_checksum(&cipher, b"tampered-bytes").is_err(),
+            "a mismatch still refuses"
+        );
+    }
+
+    /// The writer must not leave the payload at the process umask. A backup
+    /// carries an encrypted payload, but the PLAINTEXT v2/v3 header sits in the
+    /// same file — connector config filenames, sizes and xxh3 digests — and it
+    /// used to land world-readable on any host with a permissive umask.
+    #[cfg(unix)]
+    #[test]
+    fn private_writes_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().expect("tmp");
+        let p = dir.path().join("secret.bin");
+        write_private(&p, b"x").expect("write");
+        let mode = fs::metadata(&p).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "backup writes must be owner-only, got {mode:o}"
+        );
+
+        // REWRITE an existing 0644 file: `mode()` only applied at CREATE, so
+        // the old open-left-it-world-readable. The create_new+rename path
+        // replaces the inode, so the mode is 0600 every time.
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o644)).expect("chmod 644");
+        write_private(&p, b"y").expect("rewrite");
+        let mode = fs::metadata(&p).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "a rewrite must not keep the old 0644 mode");
+
+        // A PRE-PLANTED SYMLINK at the output path must not be followed; the
+        // rename replaces the link itself and the victim stays untouched.
+        let victim = dir.path().join("victim");
+        fs::write(&victim, b"original").expect("victim");
+        let link = dir.path().join("linked.bin");
+        std::os::unix::fs::symlink(&victim, &link).expect("symlink");
+        write_private(&link, b"ciphertext").expect("write over link");
+        assert_eq!(fs::read(&victim).expect("victim read"), b"original");
+        assert!(
+            !fs::symlink_metadata(&link)
+                .expect("lstat")
+                .file_type()
+                .is_symlink(),
+            "the output path must be a regular file after the atomic replace"
+        );
+        assert_eq!(fs::read(&link).expect("link read"), b"ciphertext");
+        let mode = fs::metadata(&link).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the replacement is owner-only");
     }
 }
