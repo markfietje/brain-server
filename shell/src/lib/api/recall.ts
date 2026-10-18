@@ -77,14 +77,24 @@ export interface Searched {
 }
 
 /**
- * The three answer-shaped states. `decision` is `ok` or `low_confidence` —
- * the kernel's published vocabulary, passed through verbatim. Plan 04 §2
- * writes `"answered" | "low_confidence"`; the published enum is
- * `[ok, low_confidence]` and this client does not invent a third spelling.
+ * The kernel's `decision`, verbatim from the published enum
+ * (`openapi.yaml` `/recall` 200: `enum: [ok, low_confidence]`).
+ *
+ * Named once, here, because two modules consume it: a union written out twice
+ * is two spellings one edit apart. Plan 04 §2 writes `"answered" |
+ * "low_confidence"`; the published enum is `[ok, low_confidence]` and this
+ * client does not invent a third spelling.
+ */
+export type RecallDecision = 'ok' | 'low_confidence';
+
+/**
+ * The three answer-shaped states. `decision` is always present — an outcome
+ * that cannot say how sure it is is not an outcome, it is a bug with a 200 on
+ * it.
  */
 export interface RecallAnswer {
 	state: 'answered' | 'absent' | 'abstained';
-	decision: 'ok' | 'low_confidence';
+	decision: RecallDecision;
 	passages: Passage[];
 	confidence: number | null;
 	searched: Searched;
