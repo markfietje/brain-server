@@ -970,6 +970,15 @@ pub fn run_migration_with_store_dim(
         }
     }
 
+    // The column exists only from here on, so this backfill belongs HERE and not
+    // with the other backfills: on a fresh DB `pii` does not exist yet above,
+    // and the ALTER has just given every pre-existing row the default 0 this
+    // recomputes away.
+    let pii_rows = backfill_pii_flag(db)?;
+    if pii_rows > 0 {
+        info!("pii backfill: {pii_rows} row(s) flagged for read-time redaction");
+    }
+
     // v1.20.19 "Vault": the v1.14 `pii_map` table was never written to (the
     // write-time placeholder mode it served was docs-only) and only `/export`
     // read it — a dead personal-data table. Drop it outright; `DROP TABLE IF
@@ -3386,6 +3395,48 @@ pub fn run_migration_with_store_dim(
 /// (main.rs `--re-embed` does exactly that). ponytail ceiling: no transaction
 /// gymnastics; this is an offline operator command, a crash mid-way is
 /// re-runnable (idempotent: stamp + DROP/CREATE + DELETE are all safe to repeat).
+/// Recompute the `pii` flag for every row.
+///
+/// Not an optimization: before this, only `service::ingest` wrote the column, so every
+/// row written by `/add`, `/ingest/memory`, `/ingest/markdown`, the proposal-approve
+/// promotion, the KCS draft, the anchors, the KB writer and the domain importer sat at
+/// the schema's `DEFAULT 0` — and `redact_content` short-circuits on `!pii`, so
+/// read-time PII redaction was INERT on those paths. `SECURITY.md` lists
+/// "deterministic PII output redaction" as the shipped control for PII egress.
+///
+/// Recomputing here also repairs rows already on disk, and it is idempotent: `pii` is a
+/// pure function of the stored title + content. Fail-CLOSED — an unreadable or
+/// unwritable row aborts the migration rather than being left silently unflagged.
+fn backfill_pii_flag(db: &Connection) -> Result<u64> {
+    let ids: Vec<i64> = {
+        let mut s = db.prepare("SELECT id FROM knowledge ORDER BY id")?;
+        s.query_map([], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?
+    };
+    let mut flagged = 0u64;
+    {
+        let mut stmt = db.prepare("UPDATE knowledge SET pii = ?1 WHERE id = ?2")?;
+        for id in ids {
+            let (title, content, heading): (Option<String>, String, Option<String>) = db
+                .query_row(
+                    "SELECT title, content, heading_path FROM knowledge WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?;
+            // Backfill the SAME fields the read seam emits. A markdown row's
+            // heading_path is stored apart from `content`, so scanning only
+            // title+content left a heading-only address unflagged (audit N3).
+            let flag = crate::gate::pii_flag(title.as_deref().unwrap_or(""), &content)
+                || crate::gate::pii_flag(heading.as_deref().unwrap_or(""), "");
+            if flag {
+                flagged += 1;
+            }
+            stmt.execute(rusqlite::params![flag as i64, id])?;
+        }
+    }
+    Ok(flagged)
+}
+
 pub fn rebuild_vec_store_at_dim(db: &mut Connection, store_dim: usize) -> Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT);")?;
     db.execute(

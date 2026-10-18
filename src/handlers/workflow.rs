@@ -148,9 +148,12 @@ pub async fn post_steering(
             "message must not be empty",
         ));
     }
-    // Steering text drives an engine state machine — screen it like any other
-    // untrusted ingest BEFORE it can reach the outbox (prompt-injection class).
-    if crate::screen::contains_suspicious_pattern(&body.message) {
+    // SCREEN THE FORM THAT IS STORED. Screening the raw bytes and then calling
+    // `sanitize_read` for storage manufactured the plant: a markdown label
+    // `[system: …](url)` or a C0-split marker was CLEAN raw and became a live
+    // line-anchored directive after the store transform (audit N4).
+    let sanitized = crate::gate::sanitize_read(&body.message, false, &principal);
+    if crate::screen::contains_suspicious_pattern(&sanitized) {
         return Err(HandlerError::bad_request(
             "steering_rejected",
             "steering message matches a blocked prompt-injection pattern",
@@ -180,7 +183,6 @@ pub async fn post_steering(
     super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
     super::authorize_role(&principal, &state.pool, "approve")?;
 
-    let sanitized = crate::gate::sanitize_read(&body.message, false, &principal);
     let payload = serde_json::json!({"message": sanitized}).to_string();
     let pool = state.pool.clone();
     let actor = super::recall::principal_label(&principal);
@@ -1490,7 +1492,9 @@ pub async fn post_answer(
             "answer must not be empty",
         ));
     }
-    if crate::screen::contains_suspicious_pattern(&body.answer) {
+    // Screen the SANITIZED form — the form that is stored (audit N4).
+    let answer = crate::gate::sanitize_read(&body.answer, false, &principal);
+    if crate::screen::contains_suspicious_pattern(&answer) {
         return Err(HandlerError::bad_request(
             "answer_rejected",
             "answer matches a blocked prompt-injection pattern",
@@ -1508,7 +1512,7 @@ pub async fn post_answer(
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     crate::handlers::authorize_role(&principal, &pool, "approve")?;
     let actor = super::recall::principal_label(&principal);
-    let answer = body.answer.clone();
+
     let result: Result<i64, String> = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let mut conn = pool.get().map_err(|e| format!("{e}"))?;
         let mut tx =

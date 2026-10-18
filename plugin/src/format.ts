@@ -412,6 +412,62 @@ export function stripHostileElements(s: string): string {
   return cur.replace(/</g, "");
 }
 
+/**
+ * The fixed-point bound for the markdown-ref strip, mirroring
+ * `FIXPOINT_PASSES` in `src/fence.rs`. A strip still changing after this many
+ * passes is under deliberate nesting attack.
+ */
+/**
+ * The markdown-ref strip, run to a FIXED POINT, plus a final weld-closer.
+ *
+ * ## WHY THE LOOP
+ *
+ * Both steps delete a ref's URL and keep its label, so a single pass HEALS a
+ * construct out of the surrounding prose: the label of an outer link is
+ * re-emitted UNSCANNED, so `[![a](inner) c](outer)` welds the label onto the
+ * outer URL. `src/fence.rs::strip_markdown_refs` runs its strip to a fixed
+ * point for exactly this reason; this mirror ran once, so plugin and server
+ * disagreed on identical bytes while the module claimed parity.
+ *
+ * ## WHY A WELD-CLOSER, AND WHAT IT IS NOT
+ *
+ * The Rust side is a nesting-aware SCANNER (`scan_link_construct`) that also
+ * handles reference-style links and `[id]: url` definitions. This is a regex
+ * approximation and stays one — it is defence in depth for the LLM-facing
+ * block, layered on top of the server's `sanitize_read`, which runs the real
+ * scanner on every recall hit. Duplicating the scanner here would create a
+ * second implementation to keep in step, which is the failure mode this whole
+ * finding is about.
+ *
+ * So the approximation closes the WELD specifically: any residual `](...)`
+ * after the loop is a URL that survived next to a bracket, which is the shape
+ * the loop could not fully reduce. Dropping the URL and keeping the label is
+ * the conservative direction — it can only remove more, never less.
+ *
+ * The loop terminates because each pass only deletes bytes.
+ */
+function stripRefsToFixpoint(input: string): string {
+  let cur = input;
+  for (let pass = 0; pass < FIXPOINT_PASSES; pass++) {
+    const next = cur
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, "[$1]")
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+      // the weld-closer, inside the loop so a welded result is re-reduced
+      .replace(/\]\([^)]*\)/g, "]")
+      .replace(/\s+/g, " ");
+    if (next === cur) {
+      return next;
+    }
+    cur = next;
+  }
+  // FIXPOINT-PASSES EXHAUSTED: the input is under deliberate nesting attack.
+  // Fail CLOSED the way the Rust overflow arm does — drop the ref syntax
+  // trigger bytes entirely, so no `[`/`]`/`!` means no link or image syntax.
+  return cur.replace(/[[\]!]/g, "");
+}
+
+const FIXPOINT_PASSES = 64;
+
 export function sanitizeForBlock(text: string): string {
   // Ordering is the unforgeability argument (see stripSentinels): every step
   // that can synthesize a marker (invisible-strip, whitespace collapse,
@@ -429,16 +485,28 @@ export function sanitizeForBlock(text: string): string {
   out = stripSentinels(out);
   // D. Markdown image/link refs: URL dropped, text kept. Images first so the
   //    resulting `[alt]` isn't re-matched by the link pass.
-  out = out
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "[$1]")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\s+/g, " ");
-  // E. Hostile elements + attributes — the server-canonical position
-  //    (after the ref strip, before the final sentinel strip, mirroring the
-  //    Rust read seam's ordering). The mirror was fixture-pinned but never
-  //    INVOKED — enforcement for the element class rode the server seam
-  //    alone, leaving raw tool `details` fields unwired.
-  out = stripHostileElements(out);
+  //
+  //    TO A FIXED POINT, matching `src/fence.rs::strip_markdown_refs`. A single
+  //    pass heals a construct out of the surrounding prose: the label of an
+  //    outer link is re-emitted UNSCANNED, so `[![a](inner) c](outer)` welds
+  //    the label onto the outer URL into a live `![a c](outer)` image. The
+  //    Rust counterpart runs this loop explicitly and pins the second pass;
+  //    this mirror did not, so the plugin and the server disagreed about the
+  //    same bytes. Each pass only deletes bytes, so a changed pass strictly
+  //    shortens the input and the loop terminates on its own.
+  out = stripRefsToFixpoint(out);
+  // E. Hostile elements + attributes, THEN the ref strip again: deleting a tag
+  //    can WELD a markdown image/link back together
+  //    (`![x]<script></script>(url)` → a live ref), which the one-pass order
+  //    shipped (audit N5). Alternate the delete-only transforms to a fixed
+  //    point, mirroring the Rust read seam.
+  for (let i = 0; i < 4; i++) {
+    const next = stripRefsToFixpoint(stripSentinels(stripHostileElements(out)));
+    if (next === out) {
+      break;
+    }
+    out = next;
+  }
   // F. FINAL strip — only trim follows, so no marker can synthesize after it.
   return stripSentinels(out).trim();
 }

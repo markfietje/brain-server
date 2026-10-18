@@ -81,14 +81,15 @@ pub(crate) fn store_procedure(
     // Root chunk: memory_kind = 'procedure'.
     let content_hash = crate::audit::hash(&format!("{title}|{content}"));
     tx.execute(
-        "INSERT INTO knowledge (title, content, content_hash, source, domain, node_kind, origin)
-         VALUES (?1, ?2, ?3, 'manual', ?4, 'procedure', ?5)",
+        "INSERT INTO knowledge (title, content, content_hash, source, domain, node_kind, origin, pii)
+         VALUES (?1, ?2, ?3, 'manual', ?4, 'procedure', ?5, ?6)",
         params![
             title,
             content,
             content_hash,
             domain.unwrap_or("global"),
-            origin
+            origin,
+            crate::gate::pii_flag(title, content) as i64,
         ],
     )
     .map_err(|e| ProcedureError::Storage(format!("procedure insert failed: {e}")))?;
@@ -114,8 +115,8 @@ pub(crate) fn store_procedure(
         let hash = crate::audit::hash(&format!("{root_id}|{idx}|{step_title}|{step_content}"));
         let kind_str = step_kind.as_str();
         tx.execute(
-            "INSERT INTO knowledge (title, content, content_hash, source, domain, node_kind, parent_id, origin)
-             VALUES (?1, ?2, ?3, 'manual', ?4, ?5, ?6, ?7)",
+            "INSERT INTO knowledge (title, content, content_hash, source, domain, node_kind, parent_id, origin, pii)
+             VALUES (?1, ?2, ?3, 'manual', ?4, ?5, ?6, ?7, ?8)",
             params![
                 step_title,
                 step_content,
@@ -123,7 +124,8 @@ pub(crate) fn store_procedure(
                 domain.unwrap_or("global"),
                 kind_str,
                 root_id,
-                origin
+                origin,
+                crate::gate::pii_flag(step_title, step_content) as i64,
             ],
         )
         .map_err(|e| ProcedureError::Storage(format!("step insert failed: {e}")))?;

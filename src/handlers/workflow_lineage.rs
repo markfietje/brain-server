@@ -197,13 +197,14 @@ pub async fn post_rewind(
             "reason must be 1..=4000 characters",
         ));
     }
-    if crate::screen::contains_suspicious_pattern(&body.reason) {
+    // Screen the SANITIZED form — the form that is stored (audit N4).
+    let reason = crate::gate::sanitize_read(&body.reason, false, &principal);
+    if crate::screen::contains_suspicious_pattern(&reason) {
         return Err(HandlerError::bad_request(
             "reason_rejected",
             "reason matches a blocked prompt-injection pattern",
         ));
     }
-    let reason = body.reason.clone();
     let to_event = body.to_event_id;
     let domain = run_domain(&state, id).await?;
     crate::handlers::authorize(&principal, crate::auth::Action::Write, "", &domain)?;

@@ -97,8 +97,8 @@ pub(crate) fn kcs_draft_insert(
 ) -> Result<i64, GateError> {
     conn.execute(
         "INSERT INTO knowledge(content, title, source, content_hash, authority,
-                               observed_at, node_kind, assertion_kind, confidence, owner, origin, flagged, kcs_state)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'fact', 'stated', 0.8, ?7, ?8, ?9, 'draft')",
+                               observed_at, node_kind, assertion_kind, confidence, owner, origin, flagged, kcs_state, pii)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'fact', 'stated', 0.8, ?7, ?8, ?9, 'draft', ?10)",
         rusqlite::params![
             content,
             title,
@@ -109,6 +109,7 @@ pub(crate) fn kcs_draft_insert(
             owner,
             crate::gate::origin_for_source(Some("agent")),
             flagged,
+            crate::gate::pii_flag(title.unwrap_or(""), content) as i64,
         ],
     )
     .map_err(|e| GateError::Database(format!("insert failed: {e}")))?;
@@ -185,6 +186,12 @@ pub(crate) struct Promotion<'a> {
     /// UNIQUE(content_hash, domain) pair then collides with whatever the
     /// identical content already has in `global`.
     pub domain: &'a str,
+    /// The read-time redaction bit. This struct had NO `pii` field at all, so
+    /// every human-approved promotion landed at the schema's `DEFAULT 0` and
+    /// `redact_content` — which short-circuits on `!pii` — never masked it.
+    /// HITL is a *review* gate, not a privacy one: a reviewer approving a
+    /// proposal does not un-disclose the PAN in it.
+    pub pii: bool,
 }
 
 /// The generic promote: the knowledge row for an approved proposal. The vec
@@ -192,8 +199,8 @@ pub(crate) struct Promotion<'a> {
 pub(crate) fn promote_chunk_insert(conn: &Connection, p: &Promotion<'_>) -> Result<i64, GateError> {
     conn.execute(
         "INSERT INTO knowledge(content, title, source, content_hash, authority,
-                               observed_at, node_kind, assertion_kind, confidence, owner, origin, flagged, domain)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                               observed_at, node_kind, assertion_kind, confidence, owner, origin, flagged, domain, pii)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         rusqlite::params![
             p.content,
             None::<String>,
@@ -208,6 +215,7 @@ pub(crate) fn promote_chunk_insert(conn: &Connection, p: &Promotion<'_>) -> Resu
             p.origin,
             p.flagged,
             p.domain,
+            p.pii as i64,
         ],
     )
     .map_err(|e| GateError::Database(format!("insert failed: {e}")))?;
@@ -420,6 +428,7 @@ mod tests {
                 origin: "human",
                 flagged,
                 domain: "global",
+                pii: false,
             },
         )
         .expect("insert");
@@ -506,6 +515,7 @@ mod tests {
                 origin: "human",
                 flagged,
                 domain: "global",
+                pii: false,
             },
         )
         .expect("insert");
@@ -552,6 +562,7 @@ mod tests {
                     origin: "human",
                     flagged: 0,
                     domain,
+                    pii: false,
                 },
             )
             .expect("promote must succeed: the domain leg makes the pair distinct");

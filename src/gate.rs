@@ -30,6 +30,31 @@ pub enum PiiKind {
 /// Structural pattern matching only (the repo's injection-quarantine posture:
 /// a control, not a classifier, auditable). `Luhn`-check card numbers use the
 /// standard Luhn checksum so random digit runs aren't flagged as cards.
+/// The single write-time PII decision: 1 when the scanner flags `content` OR
+/// `title`.
+///
+/// One function, because the flag was previously computed at exactly one of
+/// six production write sites — `POST /add`, `/ingest/memory`,
+/// `/ingest/markdown`, the proposal-approve promotion, the KCS capture draft,
+/// anchors, the KB writer and the domain importer all omitted the column and
+/// took the schema's `DEFAULT 0`. `redact_content` short-circuits on `!pii`,
+/// so on every one of those paths read-time redaction was INERT: `SECURITY.md`
+/// lists "deterministic PII output redaction" as the shipped control for PII
+/// egress, and on five of six write paths it was a no-op.
+///
+/// A contact record's title IS frequently just an address, so the title is
+/// scanned too, not only the body.
+pub fn pii_flag(title: &str, content: &str) -> bool {
+    // Scan the form the READ seam will emit, not the raw bytes. A zero-width
+    // or C0 byte inside `alice\u{200b}@example.com` made the detector miss a
+    // value that the seam then welded into a live address (audit N1): the
+    // strip that the reader performs must be the form the detector judges.
+    let norm = |s: &str| {
+        crate::strip_invisible::strip_control_chars(&crate::strip_invisible::strip_invisible(s))
+    };
+    !scan_pii(&norm(content)).is_empty() || !scan_pii(&norm(title)).is_empty()
+}
+
 pub fn scan_pii(text: &str) -> Vec<PiiKind> {
     let mut kinds = Vec::new();
     if has_email(text) {
@@ -46,39 +71,37 @@ pub fn scan_pii(text: &str) -> Vec<PiiKind> {
 
 fn has_email(text: &str) -> bool {
     // Scan each '@'; check the immediate local-part (the contiguous
-    // non-whitespace token before it) and a dotted domain after it. Only the
-    // token boundary matters — text before the local-part ("reach me at
-    // bob@...") is irrelevant. Conservative + minimal.
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'@' {
-            // Local-part: walk back over the contiguous email-char run ending at i.
-            let mut s = i;
-            while s > 0 && is_local_char(bytes[s - 1]) {
-                s -= 1;
-            }
-            let local_ok = i > s && s > 0; // non-empty, preceded by a boundary
-            let domain = &text[i + 1..];
-            let dot = domain
-                .find('.')
-                .is_some_and(|d| d > 0 && d < domain.len() - 1);
-            // A domain must not contain whitespace before its dot (otherwise
-            // "at bob@example.com or" is fine but "bob@example .com" is not).
-            let domain_ok = dot
-                && !domain[..domain.find('.').expect("dot verified present by `dot`")]
-                    .contains(char::is_whitespace);
-            if local_ok && domain_ok {
-                return true;
-            }
+    // non-whitespace token before it) and a dotted domain after it.
+    //
+    // CHAR-based, not byte-based: a local part may be `josé` or `用户`, and a
+    // byte walk back over ASCII-only chars split the UTF-8 sequence (audit
+    // 3b). `mask_email` already used a char predicate; the detector now uses
+    // the SAME one, so the two cannot disagree about what an address is.
+    for (i, _) in text.match_indices('@') {
+        let head = &text[..i];
+        let local = head
+            .rsplit(|c: char| !is_local_char(c))
+            .next()
+            .unwrap_or("");
+        // `head.len() == local.len()` means the local part starts at the
+        // beginning of the field — the strongest boundary there is.
+        let local_ok = !local.is_empty();
+        let domain = &text[i + 1..];
+        let dot = domain
+            .find('.')
+            .is_some_and(|d| d > 0 && d < domain.len() - 1);
+        let domain_ok = dot
+            && !domain[..domain.find('.').expect("dot verified present by `dot`")]
+                .contains(char::is_whitespace);
+        if local_ok && domain_ok {
+            return true;
         }
-        i += 1;
     }
     false
 }
 
-fn is_local_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+')
+fn is_local_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '.' | '_' | '-' | '+')
 }
 
 fn has_phone(text: &str) -> bool {
@@ -103,31 +126,137 @@ fn has_phone(text: &str) -> bool {
     (10..=15).contains(&digits)
 }
 
-fn has_luhn_card(text: &str) -> bool {
-    // Collect runs of 13-19 digits (card lengths) and Luhn-check them.
-    let bytes: Vec<u8> = text.bytes().filter(|b| b.is_ascii_digit()).collect();
-    let mut start = 0;
-    while start < bytes.len() {
-        // A "run" is contiguous digits; card numbers are usually contiguous
-        // (16 digits). Check any 13..=19 length suffix window starting at a
-        // digit that is preceded by a non-digit or start.
-        if start > 0 && bytes[start - 1].is_ascii_digit() {
-            // We're mid-run; the Luhn check happens at the run start below.
-            start += 1;
+/// The card-candidate spans in `text`, as `[start, end)` byte ranges over the
+/// ORIGINAL string. ONE scanner, two callers — [`has_luhn_card`] asks "any?"
+/// and [`mask_card`] asks "where?" — because a detector and a masker that
+/// disagree are a leak in whichever direction they differ.
+///
+/// ## WHAT COUNTS
+///
+/// A card is a 13..=19-digit Luhn-valid window. Cards are printed in groups
+/// (`4111 1111 1111 1111`, `4111-1111-1111-1111`, `4111.1111.1111.1111`), so
+/// the scanner builds a CHAIN of digit groups joined by a single separator
+/// (space, hyphen, dot, tab; a newline only between two 4-digit groups, the
+/// printed-card shape) and examines every window inside it.
+///
+/// The first implementation treated the WHOLE chain as the only candidate, so
+/// a card followed by another number (`4111 1111 1111 1111 1234`, one
+/// 20-digit chain) was a false negative, and a card embedded in a longer run
+/// (`9994111111111111111`) was invisible (audit N2). Window scanning closes
+/// both, at the cost of accepting a Luhn-valid 13..=19-digit window inside a
+/// longer number as a candidate — the fail-closed direction for redaction.
+/// Windows are taken LONGEST first and accepted only when they do not overlap
+/// an already-accepted span, so two adjacent PANs are both masked and a card
+/// is never covered twice.
+fn card_candidate_runs(text: &str) -> Vec<(usize, usize)> {
+    let b = text.as_bytes();
+    let sep = |c: u8| matches!(c, b' ' | b'-' | b'.' | b'\t' | b'\n' | b'\r');
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if !b[i].is_ascii_digit() {
+            i += 1;
             continue;
         }
-        let run_end = bytes[start..]
-            .iter()
-            .position(|b| !b.is_ascii_digit())
-            .map(|d| start + d)
-            .unwrap_or(bytes.len());
-        let run = &bytes[start..run_end];
-        if (13..=19).contains(&run.len()) && luhn_ok(run) {
-            return true;
+        // Build one chain of digit groups.
+        let mut groups: Vec<(usize, usize)> = Vec::new();
+        let mut j = i;
+        loop {
+            let gs = j;
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            groups.push((gs, j));
+            let mut k = j;
+            while k < b.len() && sep(b[k]) {
+                k += 1;
+            }
+            if k == j || k >= b.len() || !b[k].is_ascii_digit() {
+                break;
+            }
+            // A line break joins only a printed 4-digit group to the next:
+            // joining arbitrary numbers across lines would make every date
+            // column a card candidate.
+            if b[j..k].iter().any(|&c| c == b'\n' || c == b'\r') {
+                let prev_len = j - gs;
+                let next_len = b[k..].iter().take_while(|c| c.is_ascii_digit()).count();
+                if prev_len != 4 || next_len != 4 {
+                    break;
+                }
+            }
+            j = k;
         }
-        start = run_end + 1;
+        // Flatten the chain, remembering where each digit came from.
+        let mut digits: Vec<u8> = Vec::new();
+        let mut starts: Vec<usize> = Vec::new();
+        let mut group_starts: Vec<usize> = Vec::new();
+        let mut group_ends: Vec<usize> = Vec::new();
+        for &(gs, ge) in &groups {
+            group_starts.push(digits.len());
+            for (offset, &byte) in b[gs..ge].iter().enumerate() {
+                digits.push(byte);
+                starts.push(gs + offset);
+            }
+            group_ends.push(digits.len());
+        }
+        let chain_end = j;
+        let total = digits.len();
+        if total >= 13 {
+            let mut accepted: Vec<(usize, usize)> = Vec::new();
+            let overlaps = |accepted: &[(usize, usize)], s0: usize, e0: usize| {
+                accepted.iter().any(|&(a, z)| s0 < z && a < e0)
+            };
+            // PASS 1 — GROUP-ALIGNED windows only. A Luhn-valid 19-digit
+            // window can start mid-card and span into the next one; accepting
+            // it first masked the middle of two adjacent cards and left their
+            // edges raw. A window that begins at a group start and ends at a
+            // group end is the printed-card shape, so it wins.
+            for len in (13..=19.min(total)).rev() {
+                for s0 in 0..=(total - len) {
+                    let e0 = s0 + len;
+                    if !group_starts.contains(&s0) || !group_ends.contains(&e0) {
+                        continue;
+                    }
+                    if !luhn_ok(&digits[s0..e0]) || overlaps(&accepted, s0, e0) {
+                        continue;
+                    }
+                    accepted.push((s0, e0));
+                }
+            }
+            // PASS 2 — a card embedded in a SINGLE longer run (`9994…`) has
+            // no aligned window. Only a 16-digit PREFIX or SUFFIX of that run
+            // is considered: a 16-digit non-card id (`4111…1112`) must stay
+            // untouched, and sliding 13..19 windows inside it manufactures a
+            // Luhn-valid sub-run out of an id. A multi-group chain is handled
+            // entirely by the aligned pass; sliding inside it is what masked
+            // the middle of two adjacent cards.
+            if groups.len() == 1 {
+                for s0 in 0..=(total - 16) {
+                    let e0 = s0 + 16;
+                    if s0 != 0 && e0 != total {
+                        continue;
+                    }
+                    if !luhn_ok(&digits[s0..e0]) || overlaps(&accepted, s0, e0) {
+                        continue;
+                    }
+                    accepted.push((s0, e0));
+                }
+            }
+            accepted.sort();
+            for (s0, e0) in accepted {
+                let start = starts[s0];
+                let end = if e0 < total { starts[e0] } else { chain_end };
+                out.push((start, end));
+            }
+        }
+        i = j;
     }
-    false
+    out.sort();
+    out
+}
+
+fn has_luhn_card(text: &str) -> bool {
+    !card_candidate_runs(text).is_empty()
 }
 
 /// Luhn checksum (ISO/IEC 7812). Standard double-every-second-digit-from-right
@@ -1101,12 +1230,27 @@ fn strip_hostile_elements_once(s: &str) -> String {
 /// artifacts, never clean prose). Release discipline: any `sanitize_read`
 /// change must disclose digest invalidation.
 pub fn sanitize_read(s: &str, pii: bool, principal: &Option<crate::auth::Principal>) -> String {
-    crate::fence::strip_sentinels(&strip_hostile_elements(
-        &crate::strip_invisible::strip_control_chars(&strip_markdown_refs(
-            &crate::strip_invisible::strip_invisible(&redact_content(s, pii, principal)),
-        )),
-    ))
-    .into_owned()
+    // NORMALIZE FIRST (audit N1): redaction used to run before the invisible/
+    // control strip, so `alice\u{200b}@example.com` was not detected (the
+    // detector saw the split), and the strip then welded a live address for
+    // the reader. The detector/masker and the reader now judge the same bytes.
+    let normalized =
+        crate::strip_invisible::strip_control_chars(&crate::strip_invisible::strip_invisible(s));
+    let mut out = redact_content(&normalized, pii, principal);
+    // DELETIONS CAN WELD A MARKDOWN REF (audit N5): `![x]<script></script>(url)`
+    // becomes a live image after the hostile-element strip. Alternate the
+    // deletion transforms to a fixed point; every pass only removes bytes, so
+    // the loop terminates and the bound is a guard, not a policy.
+    for _ in 0..4 {
+        let next =
+            crate::fence::strip_sentinels(&strip_hostile_elements(&strip_markdown_refs(&out)))
+                .into_owned();
+        if next == out {
+            break;
+        }
+        out = next;
+    }
+    out
 }
 
 /// borrow-preserving variant of [`sanitize_read`].
@@ -1187,7 +1331,7 @@ fn mask_email(out: &mut String) {
         // Walk back over the local part (contiguous email chars).
         let head = &rest[..idx];
         let local = head
-            .rsplit(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+')))
+            .rsplit(|c: char| !is_local_char(c))
             .next()
             .unwrap_or("");
         let local_len = local.len();
@@ -1266,25 +1410,11 @@ fn count_digits(s: &str) -> usize {
 /// re-Luhn-check here (not just match digit length) so we don't redact a
 /// non-card 16-digit id by accident.
 fn mask_card(out: &mut String) {
-    let bytes = out.as_bytes();
-    let mut i = 0;
-    let mut ranges_to_mask: Vec<(usize, usize)> = Vec::new();
-    while i < bytes.len() {
-        if bytes[i].is_ascii_digit() {
-            let start = i;
-            let mut digit_run: Vec<u8> = Vec::new();
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                digit_run.push(bytes[i]);
-                i += 1;
-            }
-            // Only runs in card range (13–19) that pass Luhn are cards.
-            if (13..=19).contains(&digit_run.len()) && luhn_ok(&digit_run) {
-                ranges_to_mask.push((start, i));
-            }
-        } else {
-            i += 1;
-        }
-    }
+    // The SAME scanner the detector uses (`card_candidate_runs`) — this used to
+    // walk CONTIGUOUS digit runs only, so it declined to mask the space-grouped
+    // form `4111 1111 1111 1111` that `has_luhn_card` flagged. Detector and
+    // masker agreeing is the property, not each one's private rule.
+    let ranges_to_mask = card_candidate_runs(out);
     if ranges_to_mask.is_empty() {
         return;
     }
@@ -1292,6 +1422,9 @@ fn mask_card(out: &mut String) {
     let mut final_out = String::with_capacity(out.len());
     let mut cursor = 0usize;
     for (start, end) in &ranges_to_mask {
+        if *start < cursor {
+            continue; // overlapping chain — the first match already covered it
+        }
         final_out.push_str(&out[cursor..*start]);
         final_out.push_str("[redacted:card]");
         cursor = *end;
@@ -1323,6 +1456,51 @@ mod tests {
         );
         // Luhn-valid card 16 digits.
         assert_eq!(scan_pii("card 4111 1111 1111 1111"), vec![PiiKind::Card]);
+    }
+
+    #[test]
+    /// DETECTOR AND MASKER MUST AGREE, and the detector gates the masker, so a
+    /// disagreement is a leak in the read seam. These are the two shapes real
+    /// content has and a single-word fixture does not.
+    ///
+    /// Red-first: restoring `s > 0` in `has_email` reds the email arm; restoring
+    /// the digits-first filter in `has_luhn_card` reds the card arm. Both arms
+    /// end at `redact_content` — a detector that misses means the mask never
+    /// runs, because `redact_content` short-circuits on `!pii`.
+    fn pii_scan_covers_a_value_that_is_the_whole_field() {
+        // offset 0 IS the field boundary, and it used to be rejected.
+        assert_eq!(
+            scan_pii("alice.chen@hospital.example"),
+            vec![PiiKind::Email]
+        );
+        assert!(scan_pii("escalation owner: see ticket 4821").is_empty());
+
+        // A card is almost never the only number on a line. The pre-filter bug
+        // concatenated every digit in the field, so any second number defeated
+        // detection entirely.
+        for line in [
+            "card 4111 1111 1111 1111 expires 12/27",
+            "charged 4111 1111 1111 1111 on 2026-10-01",
+            "order 12345 card 4111 1111 1111 1111 ref 88213",
+        ] {
+            assert!(
+                scan_pii(line).contains(&PiiKind::Card),
+                "card missed in realistic line: {line:?}"
+            );
+        }
+        // and the masker now agrees with the detector on the same inputs
+        let mut masked = "alice.chen@hospital.example".to_string();
+        mask_email(&mut masked);
+        assert!(
+            masked.contains("[redacted"),
+            "masker must agree: {masked:?}"
+        );
+        let mut masked = "card 4111 1111 1111 1111 expires 12/27".to_string();
+        mask_card(&mut masked);
+        assert!(
+            masked.contains("[redacted:card]"),
+            "masker must agree: {masked:?}"
+        );
     }
 
     #[test]
@@ -1421,6 +1599,87 @@ mod tests {
         assert_eq!(redact_content(text, true, &admin()), text);
         // Non-flagged content passes through unmasked for everyone.
         assert_eq!(redact_content("plain text", false, &none), "plain text");
+    }
+
+    /// THE SECOND-PASS BYPASSES, each one a shape the first pass missed.
+    ///
+    /// Every assertion here failed before the fixes: invisible-split PII was
+    /// not detected (the detector saw the split) and the strip then welded a
+    /// live value; a card followed by a second number was one over-long chain;
+    /// a card inside a longer digit run was invisible; adjacent cards leaked
+    /// the first; and the read seam welded a markdown ref around a deleted tag.
+    #[test]
+    fn pii_and_read_seam_bypasses_are_closed() {
+        let p = |sub: &str| crate::auth::Principal {
+            sub: sub.into(),
+            tenant: "alpha".into(),
+            scopes: vec![crate::auth::Scope {
+                action: crate::auth::Action::Read,
+                team: "alpha".into(),
+                domain: "alpha".into(),
+            }],
+            jti: "t".into(),
+            roles: vec![],
+            manages: vec![],
+            kind: crate::auth::PrincipalKind::Jwt,
+        };
+        // Invisible/control bytes INSIDE a value: detected on the emitted form,
+        // and masked before the strip can weld it.
+        assert!(
+            pii_flag("", "alice\u{200b}@example.com"),
+            "split email flag"
+        );
+        let out = sanitize_read("alice\u{200b}@example.com", true, &Some(p("u")));
+        assert!(
+            out.contains("[redacted:email]"),
+            "split email masked: {out:?}"
+        );
+        assert!(
+            !out.contains("alice@example.com"),
+            "split email leaked: {out:?}"
+        );
+        assert!(
+            pii_flag("", "4111\u{200b}1111\u{200b}1111\u{200b}1111"),
+            "split card"
+        );
+        // Unicode local parts are addresses.
+        assert!(pii_flag("", "josé@example.com"), "unicode local part");
+        // Card shapes: dotted, a trailing group, embedded in a longer run.
+        for line in [
+            "4111.1111.1111.1111",
+            "4111 1111 1111 1111 1234",
+            "9994111111111111111",
+            "4111\t1111\t1111\t1111",
+        ] {
+            assert!(
+                pii_flag("", line),
+                "card shape missed: {line:?} -> {:?}",
+                card_candidate_runs(line)
+            );
+        }
+        let out = sanitize_read("4111 1111 1111 1111 1234", true, &Some(p("u")));
+        assert!(!out.contains("4111"), "card prefix leaked: {out:?}");
+        // TWO cards in one chain: both masked, not just the first.
+        let out = sanitize_read(
+            "4111 1111 1111 1111 5500 0000 0000 0004",
+            true,
+            &Some(p("u")),
+        );
+        assert!(!out.contains("4111"), "first adjacent card leaked: {out:?}");
+        assert!(
+            !out.contains("5500"),
+            "second adjacent card leaked: {out:?}"
+        );
+        // The read seam must not weld a live ref around a deleted tag.
+        let out = sanitize_read(
+            "![x]<script></script>(https://attacker.example/p.png)",
+            false,
+            &None,
+        );
+        assert!(
+            !out.contains("](http"),
+            "read seam welded a live image: {out:?}"
+        );
     }
 
     /// a reviewer-facing `source_prompt` is screened at
