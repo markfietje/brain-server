@@ -36,56 +36,55 @@ import { sanitizeForBlock } from "../src/format.js";
 const LIVE_REF = /!?\[[^\]]*\]\([^)]*\)/;
 
 describe("sanitizeForBlock — markdown-ref parity with the Rust core", () => {
-	it("strips a plain remote image ref and keeps its alt text", () => {
-		expect(sanitizeForBlock("before ![alt](https://evil.example/p.png) after")).toBe(
-			"before [alt] after"
-		);
-	});
+  it("strips a plain remote image ref and keeps its alt text", () => {
+    expect(sanitizeForBlock("before ![alt](https://evil.example/p.png) after")).toBe(
+      "before [alt] after",
+    );
+  });
 
-	it("strips a plain link ref but keeps its label", () => {
-		expect(sanitizeForBlock("see [the doc](https://example.com/a?b=c) now")).toBe(
-			"see the doc now"
-		);
-	});
+  it("strips a plain link ref but keeps its label", () => {
+    expect(sanitizeForBlock("see [the doc](https://example.com/a?b=c) now")).toBe(
+      "see the doc now",
+    );
+  });
 
-	it("a_single_pass_would_heal_a_nested_ref_into_a_live_image", () => {
-		const plant = "x [![a](https://inner.example/i.png) c](https://outer.example/leak.png) y";
-		const out = sanitizeForBlock(plant);
+  it("a_single_pass_would_heal_a_nested_ref_into_a_live_image", () => {
+    const plant = "x [![a](https://inner.example/i.png) c](https://outer.example/leak.png) y";
+    const out = sanitizeForBlock(plant);
 
-		expect(out).not.toContain("outer.example");
-		expect(out).not.toContain("inner.example");
-		// No ref syntax of either kind survives — the shape the Rust strip emits.
-		expect(out).not.toMatch(LIVE_REF);
-	});
+    expect(out).not.toContain("outer.example");
+    expect(out).not.toContain("inner.example");
+    // No ref syntax of either kind survives — the shape the Rust strip emits.
+    expect(out).not.toMatch(LIVE_REF);
+  });
 
-	it("survives a deeply nested plant with no ref left behind", () => {
-		// Each layer re-emits the inner label unscanned, so nesting DEPTH is
-		// exactly the input a fixed point is for.
-		const plant =
-			"[![a](https://inner.example/i.png) b]".repeat(20) +
-			"(https://outer.example/leak.png)";
-		const out = sanitizeForBlock(plant);
-		expect(out).not.toContain("http");
-		expect(out).not.toMatch(LIVE_REF);
-	});
+  it("survives a deeply nested plant with no ref left behind", () => {
+    // Each layer re-emits the inner label unscanned, so nesting DEPTH is
+    // exactly the input a fixed point is for.
+    const plant =
+      "[![a](https://inner.example/i.png) b]".repeat(20) + "(https://outer.example/leak.png)";
+    const out = sanitizeForBlock(plant);
+    expect(out).not.toContain("http");
+    expect(out).not.toMatch(LIVE_REF);
+  });
 
-	it("leaves plain prose with bare brackets and parens untouched", () => {
-		expect(sanitizeForBlock("a plain sentence with [brackets] and (parens)")).toBe(
-			"a plain sentence with [brackets] and (parens)"
-		);
-	});
+  it("leaves plain prose with bare brackets and parens untouched", () => {
+    expect(sanitizeForBlock("a plain sentence with [brackets] and (parens)")).toBe(
+      "a plain sentence with [brackets] and (parens)",
+    );
+  });
 
-	it("does not weld a live ref around a deleted hostile element", () => {
-		// The ref strip ran BEFORE the hostile-element strip, so deleting a tag
-		// between a label and its `(url)` welded the two into a live remote
-		// image (audit N5). Both shapes are the SAME primitive as the nested
-		// heal above, reached through a different deletion.
-		for (const plant of [
-			"![x]<script></script>(https://attacker.example/p.png)",
-			"![x]<img src=x>(https://attacker.example/p.png)",
-		]) {
-			const out = sanitizeForBlock(plant);
-			expect(LIVE_REF.test(out), `welded a live ref: ${out}`).toBe(false);
-		}
-	});
+  it("does not weld a live ref around a deleted hostile element", () => {
+    // The ref strip ran BEFORE the hostile-element strip, so deleting a tag
+    // between a label and its `(url)` welded the two into a live remote
+    // image (audit N5). Both shapes are the SAME primitive as the nested
+    // heal above, reached through a different deletion.
+    for (const plant of [
+      "![x]<script></script>(https://attacker.example/p.png)",
+      "![x]<img src=x>(https://attacker.example/p.png)",
+    ]) {
+      const out = sanitizeForBlock(plant);
+      expect(LIVE_REF.test(out), `welded a live ref: ${out}`).toBe(false);
+    }
+  });
 });
