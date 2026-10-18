@@ -223,10 +223,21 @@ async fn stored_ump_id(pool: &crate::Pool, id: i64) -> Result<String, HandlerErr
 /// sanitization pass missed). It mutates a CLONE of the row, then `emit_record` hashes the
 /// sanitized text — so the emitted record's `integrity.content_hash` stays
 /// self-consistent and `verify_record` still passes (§2.8/§5.3 unaffected).
-fn sanitize_ump_row_for_read(row: Value) -> Value {
+pub(crate) fn sanitize_ump_row_for_read(row: serde_json::Value) -> serde_json::Value {
     let mut row = row;
     let none: Option<crate::auth::Principal> = None;
-    for field in ["content", "title", "source", "assertion_kind"] {
+    // Every free-text field the record emits. `owner` is deliberately NOT here
+    // (the redact DECISION is made on the raw owner; the renderer sanitizes it
+    // after that decision), and `visibility`/`origin` are labels that still
+    // reach a renderer.
+    for field in [
+        "content",
+        "title",
+        "source",
+        "assertion_kind",
+        "visibility",
+        "origin",
+    ] {
         if let Some(v) = row[field].as_str() {
             row[field] = json!(crate::gate::sanitize_stored(v, false, &none));
         }
@@ -240,7 +251,7 @@ fn sanitize_ump_row_for_read(row: Value) -> Value {
 /// an LLM-facing surface, so they pass the same read seam. The RAW owner still
 /// drives the redact decision before this runs (a sanitized owner must not
 /// change who sees what).
-fn sanitize_ump_meta_for_read(meta: &ump::UmpMeta) -> ump::UmpMeta {
+pub(crate) fn sanitize_ump_meta_for_read(meta: &ump::UmpMeta) -> ump::UmpMeta {
     let none: Option<crate::auth::Principal> = None;
     let s = |o: &Option<String>| {
         o.as_ref()
@@ -258,7 +269,7 @@ fn sanitize_ump_meta_for_read(meta: &ump::UmpMeta) -> ump::UmpMeta {
 
 /// Recursively apply the read seam to every string leaf of a stored JSON blob
 /// (`provenance` is arbitrary client JSON). Structure is preserved verbatim.
-fn sanitize_json_strings(v: &Value) -> Value {
+pub(crate) fn sanitize_json_strings(v: &Value) -> Value {
     match v {
         Value::String(s) => {
             let none: Option<crate::auth::Principal> = None;

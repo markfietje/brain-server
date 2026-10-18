@@ -338,11 +338,21 @@ pub async fn run_recall(
                     let m = Arc::clone(&model);
                     m.encode_one(&query)
                 };
-                let prototypes =
-                    crate::domain_router::read_prototypes(&state.pool).unwrap_or_default();
+                let proto_pool = state.pool.clone();
+                let prototypes = task::spawn_blocking(move || {
+                    crate::domain_router::read_prototypes(&proto_pool)
+                })
+                .await
+                .map_err(|e| HandlerError::internal(format!("prototype read join: {e}")))?
+                .unwrap_or_default();
                 if prototypes.is_empty() {
-                    let centroids =
-                        crate::domain_router::read_centroids(&state.pool).unwrap_or_default();
+                    let centroid_pool = state.pool.clone();
+                    let centroids = task::spawn_blocking(move || {
+                        crate::domain_router::read_centroids(&centroid_pool)
+                    })
+                    .await
+                    .map_err(|e| HandlerError::internal(format!("centroid read join: {e}")))?
+                    .unwrap_or_default();
                     routed = crate::domain_router::route(&qvec, &centroids);
                 } else {
                     routed = crate::domain_router::route_multi(&qvec, &prototypes);
@@ -491,7 +501,21 @@ pub async fn run_recall(
     // The composite record gate: no-role JWTs carry their subject as
     // the owner predicate, so recall cannot drop the owner condition that
     // by-id reads enforce. Role bundles resolve inside the same gate.
-    let record_gate = crate::handlers::gate::record_read_gate(principal, &state.pool);
+    // Both reads touch SQLite (role resolution + the profile map), so they run
+    // on the blocking pool: /recall must never hold a tokio worker on a
+    // `pool.get()` (the audit's finding 15).
+    let gate_pool = state.pool.clone();
+    let gate_principal = principal.clone();
+    let (record_gate, bound_profiles) = task::spawn_blocking(move || {
+        let gate = crate::handlers::gate::record_read_gate(&gate_principal, &gate_pool);
+        let profiles = gate_pool
+            .get()
+            .map(|conn| crate::profile::domain_profiles(&conn).unwrap_or_default())
+            .unwrap_or_default();
+        (gate, profiles)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("recall gate join: {e}")))?;
     base_filters.access_scopes = record_gate.access_scopes.clone().map(std::sync::Arc::new);
     base_filters.owner_in = record_gate.owner_in.clone().map(std::sync::Arc::new);
     // The scope-violation signal stays role-scoped (a no-role owner bound is
@@ -516,11 +540,6 @@ pub async fn run_recall(
     // search closure; an exhausted pool degrades to the server-wide policy
     // (transient, availability-first). The map also carries the audit_level
     // for the read-event decision below.
-    let bound_profiles = state
-        .pool
-        .get()
-        .map(|conn| crate::profile::domain_profiles(&conn).unwrap_or_default())
-        .unwrap_or_default();
     let profile_retention: std::collections::HashMap<String, Vec<(String, i64)>> = bound_profiles
         .iter()
         .filter_map(|(d, p)| {
@@ -616,7 +635,15 @@ pub async fn run_recall(
         tel.packed_tokens = Some(packed.packed_tokens);
         tel.packing_candidates = Some(packed.candidates);
         tel.answer_in_context = packed.answer_in_context;
-        tagged = packed.results.into_iter().zip(domains).collect();
+        // Carry each candidate's domain THROUGH the pack, by input index.
+        // Zipping against the pre-pack `domains` labelled a reordered hit with
+        // another domain (audit): packing selects by coverage/representative-
+        // ness, so its output order is not the input order.
+        tagged = packed
+            .results
+            .into_iter()
+            .zip(packed.order.into_iter().map(|i| domains[i].clone()))
+            .collect();
     }
 
     // post-fusion relevance-tier filter (min_relevance drops

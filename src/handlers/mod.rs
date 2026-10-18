@@ -700,7 +700,10 @@ pub(crate) const APPROVAL_CAPABILITIES: [&str; 2] = ["approve", "reject"];
 ///    role-less principal, which is what `docs/configuration.md` has always
 ///    promised. `pass` (the shipped default) leaves this arm byte-identical to
 ///    before, because roles stay *additional* restrictions rather than a
-///    default-deny for a deployment whose IdP omits the claim.
+///    default-deny for a deployment whose IdP omits the claim. The ONE
+///    exception is enumerated and explicit: a role carrying the `shared_pool`
+///    capability drops the record gate's `owner` half, and only the presets in
+///    `role::SHARED_POOL_ROLES` carry it (`role.rs`'s header records why).
 /// 2. **Approval is a role act.** `approve`/`reject` are refused for a
 ///    role-less principal under BOTH postures. Without this, the chain is:
 ///    role-less write token → `/ingest/proposal` (a Write) →

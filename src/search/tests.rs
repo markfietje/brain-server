@@ -780,8 +780,16 @@ fn client_safe_uri_deny_list_blocks_renderer_sinks() {
 /// flag instead of hardcoded `false`.
 fn legacy_db() -> rusqlite::Connection {
     let c = rusqlite::Connection::open_in_memory().unwrap();
+    // The columns the fallback's predicate + projection now read. The real
+    // schema supplies all of them; a minimal fixture that omits one is not
+    // exercising the fallback, it is exercising a different query.
     c.execute_batch(
-        "CREATE TABLE knowledge(id INTEGER PRIMARY KEY, title TEXT, content TEXT, flagged INTEGER NOT NULL DEFAULT 0);
+        "CREATE TABLE knowledge(id INTEGER PRIMARY KEY, title TEXT, content TEXT,
+            flagged INTEGER NOT NULL DEFAULT 0, domain TEXT NOT NULL DEFAULT 'global',
+            owner TEXT, access_scope TEXT NOT NULL DEFAULT 'private',
+            valid_from TEXT, valid_to TEXT, expires_at INTEGER, node_kind TEXT,
+            created_at TEXT NOT NULL DEFAULT '2026-01-01', revision_id INTEGER,
+            pii INTEGER NOT NULL DEFAULT 0, origin TEXT);
          CREATE TABLE embeddings(knowledge_id INTEGER PRIMARY KEY, vector TEXT);",
     )
     .unwrap();
@@ -805,10 +813,152 @@ fn legacy_db() -> rusqlite::Connection {
     c
 }
 
+/// The fallback is a RETRIEVAL PATH, not a bypass: it must apply the same
+/// record gate, domain predicate and valid-time window as the vec0 leg it
+/// replaces. Red-first — reverting `perform_search_legacy` to the
+/// `include_flagged`-only signature turns all four arms red.
+#[test]
+fn legacy_fallback_applies_the_record_gate_and_domain() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let c = rusqlite::Connection::open(dir.path().join("l.db")).unwrap();
+    c.execute_batch(
+        "CREATE TABLE knowledge(id INTEGER PRIMARY KEY, title TEXT, content TEXT,
+            flagged INTEGER DEFAULT 0, domain TEXT DEFAULT 'global',
+            owner TEXT, access_scope TEXT DEFAULT 'private',
+            valid_from TEXT, valid_to TEXT, expires_at INTEGER, node_kind TEXT,
+            created_at TEXT DEFAULT '2026-01-01', revision_id INTEGER, pii INTEGER DEFAULT 0,
+            origin TEXT);
+         CREATE TABLE embeddings(knowledge_id INTEGER PRIMARY KEY, vector TEXT);",
+    )
+    .unwrap();
+    // ana's own private row; bob's private row; a superseded row; a
+    // cross-domain row. The gate must admit only the first.
+    for (id, content, owner, domain, valid_to) in [
+        (1i64, "own private alpha", Some("ana"), "global", None),
+        (2, "bob private alpha", Some("bob"), "global", None),
+        (
+            3,
+            "superseded alpha",
+            Some("ana"),
+            "global",
+            Some("2026-01-01"),
+        ),
+        (4, "other tenant", Some("ana"), "acme", None),
+    ] {
+        c.execute(
+            "INSERT INTO knowledge(id, title, content, owner, domain, access_scope, valid_to)
+             VALUES (?1, ?2, ?2, ?3, ?4, 'private', ?5)",
+            rusqlite::params![id, content, owner, domain, valid_to],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO embeddings(knowledge_id, vector) VALUES (?1, '[1.0, 0.0]')",
+            rusqlite::params![id],
+        )
+        .unwrap();
+    }
+
+    let gate = super::SearchFilters {
+        domain: Some("global".to_string()),
+        owner_in: Some(Arc::new(vec!["ana".to_string()])),
+        access_scopes: Some(Arc::new(vec!["private".to_string()])),
+        ..Default::default()
+    };
+    let hits = super::perform_search_legacy(&c, &[1.0, 0.0], 10, &gate).unwrap();
+    let ids: Vec<i64> = hits.iter().map(|h| h.id).collect();
+    assert_eq!(
+        ids,
+        vec![1],
+        "the fallback must admit exactly ana's own row"
+    );
+
+    // An empty permit matches nothing (never `IN ()`), on the fallback too.
+    let empty = super::SearchFilters {
+        owner_in: Some(Arc::new(vec![])),
+        ..gate.clone()
+    };
+    assert!(
+        super::perform_search_legacy(&c, &[1.0, 0.0], 10, &empty)
+            .unwrap()
+            .is_empty(),
+        "the empty permit must fail CLOSED on the fallback, not admit the table"
+    );
+
+    // A historical `at=` window restores the superseded row and nothing else.
+    let historical = super::SearchFilters {
+        at: Some("2025-01-01".to_string()),
+        ..gate.clone()
+    };
+    let ids: Vec<i64> = super::perform_search_legacy(&c, &[1.0, 0.0], 10, &historical)
+        .unwrap()
+        .iter()
+        .map(|h| h.id)
+        .collect();
+    assert_eq!(
+        ids,
+        vec![1, 3],
+        "?at= window must admit the superseded row: {ids:?}"
+    );
+
+    // `include_decayed=true` with NO other gate filter used to emit an empty
+    // gate clause and join it, leaving a trailing `AND` — SQLite "incomplete
+    // input" (audit N5). The predicate must simply omit the clause.
+    let decayed = super::SearchFilters {
+        include_decayed: true,
+        ..Default::default()
+    };
+    let hits = super::perform_search_legacy(&c, &[1.0, 0.0], 10, &decayed)
+        .expect("an empty gate clause must not produce a trailing AND");
+    assert!(
+        !hits.is_empty(),
+        "the no-gate fallback must still search, not 503"
+    );
+}
+
+/// The predicate's placeholders and its bound parameters must stay in lockstep
+/// — a mismatch here silently swaps an `owner_in` value for a domain string,
+/// which is a cross-tenant read that no other assertion would catch.
+#[test]
+fn legacy_predicate_placeholders_match_their_parameter_order() {
+    for f in [
+        super::SearchFilters::default(),
+        super::SearchFilters {
+            domain: Some("d".into()),
+            owner_in: Some(Arc::new(vec!["o1".into(), "o2".into()])),
+            access_scopes: Some(Arc::new(vec!["private".into()])),
+            memory_kind: Some("fact".into()),
+            include_flagged: true,
+            include_decayed: true,
+            ..Default::default()
+        },
+        super::SearchFilters {
+            at: Some("2025-01-01".into()),
+            since: Some("2026-01-01".into()),
+            ..Default::default()
+        },
+        super::SearchFilters {
+            access_scopes: Some(Arc::new(vec![])),
+            owner_in: Some(Arc::new(vec![])),
+            ..Default::default()
+        },
+    ] {
+        let sql = super::legacy_predicate_sql(&f);
+        let mut params = Vec::new();
+        super::legacy_predicate_params(&f, &mut params);
+        assert_eq!(
+            sql.matches('?').count(),
+            params.len(),
+            "placeholder/parameter count drift for {sql:?} ({} params)",
+            params.len()
+        );
+    }
+}
+
 #[test]
 fn legacy_search_excludes_quarantined() {
     let c = legacy_db();
-    let hits = super::perform_search_legacy(&c, &[1.0, 0.0], 10, false).unwrap();
+    let hits = super::perform_search_legacy(&c, &[1.0, 0.0], 10, &super::SearchFilters::default())
+        .unwrap();
     assert_eq!(
         hits.len(),
         1,
@@ -821,7 +971,16 @@ fn legacy_search_excludes_quarantined() {
 #[test]
 fn legacy_hits_carry_real_flag() {
     let c = legacy_db();
-    let hits = super::perform_search_legacy(&c, &[1.0, 0.0], 10, true).unwrap();
+    let hits = super::perform_search_legacy(
+        &c,
+        &[1.0, 0.0],
+        10,
+        &super::SearchFilters {
+            include_flagged: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert_eq!(
         hits.len(),
         2,
@@ -1175,4 +1334,175 @@ fn audit_bitemporal_stamp_normalization_is_idempotent_and_preserves_space_format
         Some("not-a-timestamp"),
         "an unparseable stamp must be preserved, not nulled"
     );
+}
+
+/// THE GRAPH LEG MUST HONOUR THE SAME VISIBILITY PREDICATE AS THE OTHER TWO.
+///
+/// `graph_ppr` applied `domain`, `include_flagged` and `push_gate_filters`, and
+/// ignored `as_of`, `at` and `since`. On the DEFAULT recall path (`graph: true`)
+/// that meant a point-in-time query got CURRENT rows back — and `enrich_evidence`
+/// then stamped them `lifecycle: "historical"`, whose own definition is
+/// "superseded AFTER `as_of`". A caller using `as_of` for a point-in-time
+/// disclosure check therefore got post-`as_of` content, correctly labelled.
+///
+/// Red-first: removing the `as_of`/`at`/`since` arms from `graph_retrieve`'s
+/// fetch reds this.
+#[test]
+fn the_graph_leg_honours_as_of_and_the_bitemporal_window() {
+    use super::SearchFilters;
+    let dir = tempfile::TempDir::new().unwrap();
+    let conn = rusqlite::Connection::open(dir.path().join("g.db")).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE knowledge(id INTEGER PRIMARY KEY, title TEXT, content TEXT,
+        flagged INTEGER DEFAULT 0, domain TEXT DEFAULT 'global', owner TEXT,
+        access_scope TEXT DEFAULT 'private', valid_from TEXT, valid_to TEXT,
+        expires_at INTEGER, node_kind TEXT, created_at TEXT DEFAULT '2026-01-01',
+        revision_id INTEGER, pii INTEGER DEFAULT 0, origin TEXT, source TEXT);
+     CREATE TABLE source_revisions(id INTEGER PRIMARY KEY, source_id INTEGER,
+        state TEXT, fetched_at TEXT);
+     CREATE TABLE embeddings(knowledge_id INTEGER PRIMARY KEY, vector TEXT);
+     CREATE TABLE entities(id INTEGER PRIMARY KEY, name TEXT);
+     CREATE TABLE relationships(from_entity_id INTEGER, to_entity_id INTEGER,
+        relation_type TEXT, knowledge_id INTEGER, superseded_at TEXT);",
+    )
+    .unwrap();
+    // row 1: never superseded. row 2: superseded in 2026-06. row 3: created
+    // AFTER the as_of instant, so it must not appear in a point-in-time query.
+    for (id, valid_to, created, src) in [
+        (1i64, None::<&str>, "2026-01-01", "structured"),
+        (2, Some("2026-06-01"), "2026-01-01", "structured"),
+        (3, None, "2026-09-01", "markdown"),
+    ] {
+        conn.execute(
+            "INSERT INTO knowledge(id, title, content, source, valid_to, created_at)
+             VALUES(?1, ?5, ?6, ?4, ?2, ?3)",
+            rusqlite::params![
+                id,
+                valid_to,
+                created,
+                src,
+                format!("t{id}"),
+                format!("body {id}")
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO entities(id, name) VALUES(?1, ?2)",
+            rusqlite::params![id, format!("e{id}")],
+        )
+        .unwrap();
+    }
+    // A connected triangle, one edge per chunk, so a seed reaches all three
+    // vertices and each vertex expands to its own chunk.
+    conn.execute_batch(
+        "INSERT INTO relationships(from_entity_id, to_entity_id, relation_type, knowledge_id) VALUES
+           (1, 2, 'relates_to', 1),
+           (2, 3, 'relates_to', 2),
+           (3, 1, 'relates_to', 3);",
+    )
+    .unwrap();
+
+    let base = SearchFilters {
+        domain: Some("global".to_string()),
+        ..Default::default()
+    };
+    let ids = |r: Vec<super::SearchResult>| {
+        let mut v: Vec<i64> = r.iter().map(|h| h.id).collect();
+        v.sort();
+        v
+    };
+
+    // Current recall: row 2 is superseded, so it must not surface.
+    let hits = super::graph_retrieve(&conn, "e1", 10, &base).expect("graph leg");
+    assert_eq!(
+        ids(hits),
+        vec![1, 3],
+        "default recall excludes superseded rows"
+    );
+
+    // A bi-temporal `at=` BEFORE the supersession restores row 2 — the whole
+    // point of the `at` parameter, which this leg used to ignore.
+    let historical = SearchFilters {
+        at: Some("2025-01-01".to_string()),
+        ..base.clone()
+    };
+    let hits = super::graph_retrieve(&conn, "e1", 10, &historical).expect("graph leg");
+    assert_eq!(
+        ids(hits),
+        vec![1, 2, 3],
+        "a bi-temporal window before the supersession must admit the old row"
+    );
+
+    // `since=` must actually filter on creation.
+    let since = SearchFilters {
+        since: Some("2026-08-01".to_string()),
+        ..base.clone()
+    };
+    let hits = super::graph_retrieve(&conn, "e1", 10, &since).expect("graph leg");
+    assert_eq!(
+        ids(hits),
+        vec![3],
+        "since= must exclude rows created before it"
+    );
+
+    // `as_of=` is transaction time on `source_revisions.fetched_at`. Row 1 gets
+    // a revision fetched at 12:00; an as_of of 09:00 must exclude it (the
+    // lexical `T`-vs-space skew admitted it before normalization), and an
+    // as_of of 13:00 must admit it.
+    conn.execute_batch(
+        "UPDATE knowledge SET revision_id = 10 WHERE id = 1;
+         INSERT INTO source_revisions(id, source_id, state, fetched_at)
+         VALUES (10, 1, 'active', '2026-10-11 12:00:00');",
+    )
+    .unwrap();
+    // The HANDLER normalizes RFC-3339 to SQLite's space format before the
+    // search; this direct call passes the normalized form. The normalizer is
+    // asserted separately below (it is the layer that closed the `T` > space
+    // skew).
+    let before = SearchFilters {
+        as_of: Some("2026-10-11 09:00:00".to_string()),
+        ..base.clone()
+    };
+    let hits = super::graph_retrieve(&conn, "e1", 10, &before).expect("graph leg");
+    assert_eq!(
+        ids(hits),
+        Vec::<i64>::new(),
+        "a revision fetched AFTER as_of must not appear"
+    );
+    let after = SearchFilters {
+        as_of: Some("2026-10-11 13:00:00".to_string()),
+        ..base.clone()
+    };
+    let hits = super::graph_retrieve(&conn, "e1", 10, &after).expect("graph leg");
+    assert_eq!(
+        ids(hits),
+        vec![1],
+        "a revision fetched BEFORE as_of appears"
+    );
+
+    // `source`/`sources` must narrow the graph leg exactly as the other two.
+    let markdown = SearchFilters {
+        source: Some("markdown".to_string()),
+        ..base.clone()
+    };
+    let hits = super::graph_retrieve(&conn, "e1", 10, &markdown).expect("graph leg");
+    assert_eq!(
+        ids(hits),
+        vec![3],
+        "source= markdown excludes structured rows"
+    );
+    let structured = SearchFilters {
+        sources: vec!["structured".to_string()].into(),
+        ..base.clone()
+    };
+    let hits = super::graph_retrieve(&conn, "e1", 10, &structured).expect("graph leg");
+    assert_eq!(ids(hits), vec![1], "sources= excludes the markdown row");
+
+    // The layer that makes the route safe: RFC-3339 is normalized to the
+    // space format the stored column uses, and garbage is refused.
+    assert_eq!(
+        super::normalize_since("2026-10-11T09:00:00Z").unwrap(),
+        "2026-10-11 09:00:00"
+    );
+    assert!(super::normalize_since("zzz").is_err());
 }

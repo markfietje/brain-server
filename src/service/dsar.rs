@@ -9,8 +9,9 @@
 //! - the locate walk (`knowledge` by `owner` + transitive `derived_from`
 //!   descendants, bounded by [`DERIVED_MAX_DEPTH`]);
 //! - the portable export bundle (Art 15) — the same query the live purge
-//!   runs, so what the certificate erases and what the bundle discloses
-//!   stay symmetric, `channel_notes[]` included;
+//!   runs — but the DISCLOSURE match is authored/addressed only, a strict
+//!   subset of the purge's erase match (`content LIKE` over-matches by
+//!   design when erasing and over-discloses when disclosing);
 //! - one pool's erasure ([`run_pool`]): the remanence posture (secure_delete
 //!   pragma ATTEMPT — certificate-owned, never asserted untried), the purge
 //!   tx (held-id deferral, knowledge purge via `service::purge`, trace and
@@ -457,11 +458,19 @@ pub fn build_export_bundle(
                 "valid_to": row.get::<_, Option<String>>(8)?,
                 // the lawful-basis + purpose
                 // tags surfaced on the export/DSAR bundle (Art 5/6 evidence).
-                "lawful_basis": row.get::<_, Option<String>>(9)?,
-                "purpose": row.get::<_, Option<String>>(10)?,
+                // Free text, so it rides the read seam: a DPO's ticketing
+                // or mail tool renders what it receives.
+                "lawful_basis": row
+                    .get::<_, Option<String>>(9)?
+                    .map(|s| crate::gate::sanitize_read(&s, false, &None)),
+                "purpose": row
+                    .get::<_, Option<String>>(10)?
+                    .map(|s| crate::gate::sanitize_read(&s, false, &None)),
                 // the taint label: the subject/DPO sees which shipped rows
                 // were captured from channel traffic (export parity).
-                "origin": row.get::<_, Option<String>>(11)?,
+                "origin": row
+                    .get::<_, Option<String>>(11)?
+                    .map(|s| crate::gate::sanitize_read(&s, false, &None)),
             }))
         })?;
         for v in q.flatten() {
@@ -479,36 +488,37 @@ pub fn build_export_bundle(
             m
         },
     );
-    // Channel rows the subject can access under Art 15 — the SAME three
-    // match arms the purge's sweep erases (author / addressee / content),
-    // so what the certificate erases and what the bundle discloses stay
-    // symmetric. Raw text matches the knowledge rows' posture (the bundle
-    // goes to the subject or their DPO, never to a public surface).
+    // Channel rows DISCLOSED under Art 15: authored by or addressed to the
+    // subject, and nothing else. The purge's third arm (`content LIKE`) is
+    // deliberately NOT here: over-matching is safe when ERASING and is
+    // over-disclosure when DISCLOSING — a note that merely mentions the
+    // subject was written by someone else, and its body is not the subject's
+    // to receive. The certificate therefore erases a SUPERSET of what the
+    // bundle discloses; that asymmetry is the correct direction and is
+    // pinned.
     let mut notes: Vec<serde_json::Value> = Vec::new();
     let mut note_stmt = tx.prepare(
         "SELECT id, run_id, kind, author, content, addressed_to, created_at
          FROM case_notes
-          WHERE author = ?1 OR addressed_to = ?1 OR content LIKE ?2 ESCAPE '\\'
+          WHERE author = ?1 OR addressed_to = ?1
           ORDER BY id",
     )?;
-    let q = note_stmt.query_map(
-        params![
-            subject,
-            crate::workflow::kcs::like_contains_pattern(subject)
-        ],
-        |row| {
-            let content: String = row.get(4)?;
-            Ok(serde_json::json!({
-                "id": row.get::<_, i64>(0)?,
-                "run_id": row.get::<_, i64>(1)?,
-                "kind": row.get::<_, String>(2)?,
-                "author": row.get::<_, String>(3)?,
-                "content": crate::gate::sanitize_read(&content, false, &None),
-                "addressed_to": row.get::<_, Option<String>>(5)?,
-                "created_at": row.get::<_, i64>(6)?,
-            }))
-        },
-    )?;
+    let q = note_stmt.query_map(params![subject], |row| {
+        let content: String = row.get(4)?;
+        let author: String = row.get(3)?;
+        Ok(serde_json::json!({
+            "id": row.get::<_, i64>(0)?,
+            "run_id": row.get::<_, i64>(1)?,
+            "kind": row.get::<_, String>(2)?,
+            // Free text from a channel: sanitized like the body.
+            "author": crate::gate::sanitize_read(&author, false, &None),
+            "content": crate::gate::sanitize_read(&content, false, &None),
+            "addressed_to": row
+                .get::<_, Option<String>>(5)?
+                .map(|s| crate::gate::sanitize_read(&s, false, &None)),
+            "created_at": row.get::<_, i64>(6)?,
+        }))
+    })?;
     for v in q.flatten() {
         notes.push(v);
     }
@@ -1413,17 +1423,52 @@ mod tests {
         // Same per-row shape the live handler relies on.
         assert!(k[0].get("content").is_some());
         assert!(k[0].get("memory_kind").is_some());
-        // Art-15 symmetry: the bundle discloses exactly what the purge
-        // erases — author + addressee + content arms, never the unrelated row.
+        // Art-15 is a STRICT SUBSET of erasure: authored + addressed-to are
+        // disclosed; the content-bearing row (someone else's note that merely
+        // names the subject) is NOT. Over-matching is safe when erasing and
+        // is over-disclosure when disclosing, and the purge still erases it.
         let notes = v["channel_notes"].as_array().unwrap();
         assert_eq!(
             notes
                 .iter()
                 .map(|n| n["id"].as_i64().unwrap())
                 .collect::<Vec<_>>(),
-            vec![1, 2, 3],
-            "authored + addressed-to + content-bearing; unrelated excluded"
+            vec![1, 2],
+            "authored + addressed-to; the content-bearing row must not be disclosed"
         );
+    }
+
+    /// The bundle's free text is not a renderer's problem: `author`,
+    /// `lawful_basis`, `purpose` and `origin` ride the read seam alongside
+    /// `content`. A hostile author tag or a bidi override must not reach the
+    /// DPO's tool as live markup/instructions.
+    #[test]
+    fn dsar_bundle_sanitizes_every_free_text_field() {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::migration::run_migration(&mut conn, 1).unwrap();
+        conn.execute_batch(
+            "INSERT INTO knowledge(id, content, content_hash, owner, lawful_basis, purpose, origin)
+             VALUES (1, 'alice root', 'h1', 'alice@example.com',
+                     '<img src=x onerror=alert(1)>consent', '\u{202E}service', 'operator');
+             INSERT INTO workflow_runs(id, domain, kind, state_json, status, created_at, updated_at)
+             VALUES (7,'acme','interview','{}','active',1,1);
+             INSERT INTO case_notes(domain, run_id, author, kind, content, addressed_to, state, created_at)
+             VALUES ('acme', 7, 'alice@example.com', 'note',
+                     '<img src=x onerror=alert(1)>hello', NULL, 'visible', 1);",
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        let bundle = build_export_bundle(&tx, "alice@example.com", &[1], &[]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&bundle).unwrap();
+        let row = &v["knowledge"][0];
+        assert!(!row["lawful_basis"].as_str().unwrap().contains("<img"));
+        assert!(!row["purpose"].as_str().unwrap().contains('\u{202E}'));
+        let note = &v["channel_notes"][0];
+        // The MATCH field is the raw subject (a tag would not match), so the
+        // sanitizer is observed on the body and on the knowledge free text.
+        assert_eq!(note["author"].as_str().unwrap(), "alice@example.com");
+        assert!(!note["content"].as_str().unwrap().contains("<img"));
     }
 
     /// a multi-domain DSAR purges the subject in EVERY
@@ -1692,6 +1737,7 @@ mod tests {
                 origin: "human",
                 flagged: 0,
                 domain: "global",
+                pii: false,
             },
         )
         .expect("promote");

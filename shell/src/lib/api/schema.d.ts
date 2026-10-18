@@ -5179,20 +5179,14 @@ export interface components {
             /** @description The capture taint label (additive): `channel-capture` on rows captured from channel traffic, so a by-id/batch consumer sees the taint without going through recall. */
             origin?: string | null;
         };
-        /** @description Result of `/verify` (v1.5.0). `supported` is true when at least one case-insensitive occurrence of the claim was found in the chunk text. */
+        /** @description Result of `/verify` (v1.5.0). `supported` is true when at least one case-insensitive occurrence of the claim was found in the chunk text; at most 100 occurrences are reported, and further occurrences do not change `supported`. */
         VerifyResponse: {
             chunk_id?: number;
             supported?: boolean;
             /** @enum {string} */
             decision?: "supported" | "unsupported_claim";
-            /**
-             * @description `[start, end)` byte offsets within chunk `content`. Capped at 100; further matches are not reported but do not change `supported`. items:
-             *       type: array
-             *       items: { type: integer }
-             *       minItems: 2
-             *       maxItems: 2
-             */
-            match_ranges?: unknown[];
+            /** @description `[start, end)` byte offsets within chunk `content`, covering the original characters whose case-folded forms matched. Capped at 100; further matches are not reported but do not change `supported`. */
+            match_ranges?: number[][];
         };
         /** @description One ordered step of a procedure (`GET /procedure/{id}/steps`). */
         StepView: {

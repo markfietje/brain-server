@@ -819,37 +819,105 @@ pub(crate) fn apply_translation_approval(
 /// revision advanced past the pinned `based_revision`. These land on Evolve's
 /// content-health worklist (the same freshness discipline, no second
 /// mechanism). Deterministic order (by translation id).
-pub(crate) fn stale_translations(conn: &Connection) -> rusqlite::Result<Vec<serde_json::Value>> {
-    let mut stmt = conn.prepare(
+/// One stale translation, returned raw. The JSON projection — and the read
+/// seam — belong to the handler, which holds the caller's principal.
+#[derive(Debug, Clone)]
+pub(crate) struct StaleTranslation {
+    pub translation_id: i64,
+    pub article_id: i64,
+    pub locale: String,
+    pub title: String,
+    pub domain: String,
+}
+
+/// ## WHY THIS CARRIES ITS OWN FILTERS
+///
+/// It used to take none, and the handler `extend`ed its output into the same
+/// array as the per-row-filtered worklist — so the loop's `can_read_domain`
+/// check never touched these rows. `GET /kcs/articles?stale` therefore returned
+/// translation titles (and their domain labels) for EVERY domain to a principal
+/// scoped to one. It also sanitized with `principal = None`, which disables the
+/// PII arm independently of the domain bug.
+///
+/// The gate is applied here for the same reason as `article_worklist`: the rows
+/// must be narrowed before they are read. The read seam is applied handler-side
+/// with the CALLER's principal, which is the whole point of the seam.
+pub(crate) fn stale_translations(
+    conn: &Connection,
+    domain: Option<&str>,
+    access_scopes: Option<&[String]>,
+    owner_in: Option<&[String]>,
+) -> rusqlite::Result<Vec<StaleTranslation>> {
+    let mut sql = String::from(
         "SELECT t.id, t.knowledge_id, t.locale, t.title, k.domain
          FROM kcs_translations t JOIN knowledge k ON k.id = t.knowledge_id
-         WHERE t.state = 'approved' AND t.based_revision != COALESCE(k.content_hash, '')
-         ORDER BY t.id LIMIT 200",
-    )?;
+         WHERE t.state = 'approved' AND t.based_revision != COALESCE(k.content_hash, '')",
+    );
+    if domain.is_some() {
+        sql.push_str(" AND k.domain = ?");
+    }
+    if let Some(sc) = access_scopes {
+        if sc.is_empty() {
+            sql.push_str(" AND 1 = 0");
+        } else {
+            sql.push_str(&format!(
+                " AND k.access_scope IN ({})",
+                sc.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+            ));
+        }
+    }
+    if let Some(owners) = owner_in {
+        if owners.is_empty() {
+            sql.push_str(" AND 1 = 0");
+        } else {
+            sql.push_str(&format!(
+                " AND k.owner IN ({})",
+                owners.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+            ));
+        }
+    }
+    sql.push_str(" ORDER BY t.id LIMIT 200");
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    if let Some(d) = domain {
+        params.push(Box::new(d.to_string()));
+    }
+    if let Some(sc) = access_scopes {
+        params.extend(
+            sc.iter()
+                .map(|s| Box::new(s.clone()) as Box<dyn rusqlite::ToSql>),
+        );
+    }
+    if let Some(owners) = owner_in {
+        params.extend(
+            owners
+                .iter()
+                .map(|o| Box::new(o.clone()) as Box<dyn rusqlite::ToSql>),
+        );
+    }
+    // Every placeholder this arm pushed needs a bound value, IN ORDER.
+    assert_eq!(
+        sql.matches('?').count(),
+        params.len(),
+        "stale_translations placeholder/parameter drift"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-            ))
+        .query_map(refs.as_slice(), |r| {
+            Ok(StaleTranslation {
+                translation_id: r.get(0)?,
+                article_id: r.get(1)?,
+                locale: r.get(2)?,
+                title: r.get(3)?,
+                domain: r.get(4)?,
+            })
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows
-        .into_iter()
-        .map(|(id, knowledge_id, locale, title, domain)| {
-            serde_json::json!({
-                "translation_id": id,
-                "article_id": knowledge_id,
-                "locale": locale,
-                "title": crate::gate::sanitize_read(&title, false, &None),
-                "domain": domain,
-                "kind": "translation_stale",
-            })
-        })
-        .collect())
+    // The title is returned RAW and the handler rides the read seam with the
+    // CALLER's principal — `sanitize_read(&title, false, &None)` here used
+    // `principal = None`, which is the loopback posture and therefore disables
+    // the PII arm outright.
+    Ok(rows)
 }
 
 // ── the article lifecycle: the handler surfaces' reads + writes ───────────
@@ -859,6 +927,10 @@ pub(crate) type LifecycleRow = (String, String);
 
 /// One worklist row: (id, title, content, kcs_state, freshness_review_due,
 /// domain, open_flags).
+/// One worklist row. `pii` is the row's OWN read-time redaction bit — the
+/// listing handler used to pass a hardcoded `false`, which short-circuits
+/// `redact_content` entirely, so KCS content went out unmasked.
+#[allow(clippy::type_complexity)]
 pub(crate) type WorklistRow = (
     i64,
     Option<String>,
@@ -866,6 +938,7 @@ pub(crate) type WorklistRow = (
     String,
     Option<i64>,
     String,
+    i64,
     i64,
 );
 
@@ -916,16 +989,75 @@ pub(crate) fn approve_article(
 /// improve-flag count, newest first, bounded at 500. Stored forms — the
 /// per-row domain filter, the state/stale narrowing, and the read seam all
 /// stay handler-side.
-pub(crate) fn article_worklist(conn: &Connection) -> rusqlite::Result<Vec<WorklistRow>> {
-    let mut stmt = conn.prepare(
+///
+/// ## THE RECORD GATE IS APPLIED HERE, NOT HANDLER-SIDE
+///
+/// This listing returned every KCS-tracked row's title plus 200 characters of
+/// body with a DOMAIN predicate but no `(owner, access_scope)` predicate — so a
+/// role-less read token, which the composite gate in `handlers::gate` makes
+/// owner-bound on every other read surface, saw the whole corpus's KCS content
+/// here. The handler-side `can_read_domain` loop cannot close it: the rows must
+/// be narrowed before they are read, not filtered after.
+///
+/// The gate arrives as `Option<Vec<String>>` allowlists — `None` = no
+/// record-level narrowing (admin / loopback), `Some` = a deny-by-default `IN`.
+pub(crate) fn article_worklist(
+    conn: &Connection,
+    access_scopes: Option<&[String]>,
+    owner_in: Option<&[String]>,
+) -> rusqlite::Result<Vec<WorklistRow>> {
+    let mut sql = String::from(
         "SELECT k.id, k.title, k.content, k.kcs_state, k.freshness_review_due, k.domain,
                 (SELECT COUNT(*) FROM findings f
-                  WHERE f.claim = 'kcs_flag' AND f.evidence = 'article:' || k.id) AS open_flags
+                  WHERE f.claim = 'kcs_flag' AND f.evidence = 'article:' || k.id) AS open_flags,
+                k.pii
          FROM knowledge k
-         WHERE k.kcs_state != 'none'
-         ORDER BY k.id DESC LIMIT 500",
-    )?;
-    let it = stmt.query_map([], |r| {
+         WHERE k.kcs_state != 'none'",
+    );
+    // The empty permit is `1 = 0`, never `IN ()` (a SQLite syntax error).
+    if let Some(sc) = access_scopes {
+        if sc.is_empty() {
+            sql.push_str(" AND 1 = 0");
+        } else {
+            sql.push_str(&format!(
+                " AND k.access_scope IN ({})",
+                sc.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+            ));
+        }
+    }
+    if let Some(owners) = owner_in {
+        if owners.is_empty() {
+            sql.push_str(" AND 1 = 0");
+        } else {
+            sql.push_str(&format!(
+                " AND k.owner IN ({})",
+                owners.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+            ));
+        }
+    }
+    sql.push_str(" ORDER BY k.id DESC LIMIT 500");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    if let Some(sc) = access_scopes {
+        params.extend(
+            sc.iter()
+                .map(|s| Box::new(s.clone()) as Box<dyn rusqlite::ToSql>),
+        );
+    }
+    if let Some(owners) = owner_in {
+        params.extend(
+            owners
+                .iter()
+                .map(|o| Box::new(o.clone()) as Box<dyn rusqlite::ToSql>),
+        );
+    }
+    assert_eq!(
+        sql.matches('?').count(),
+        params.len(),
+        "article_worklist placeholder/parameter drift"
+    );
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let it = stmt.query_map(refs.as_slice(), |r| {
         Ok((
             r.get::<_, i64>(0)?,
             r.get::<_, Option<String>>(1)?,
@@ -934,6 +1066,7 @@ pub(crate) fn article_worklist(conn: &Connection) -> rusqlite::Result<Vec<Workli
             r.get::<_, Option<i64>>(4)?,
             r.get::<_, String>(5)?,
             r.get::<_, i64>(6)?,
+            r.get::<_, i64>(7)?,
         ))
     })?;
     it.collect()
@@ -1502,20 +1635,154 @@ mod tests {
             .expect("content");
         apply_translation_approval(&conn, &content, 2000).expect("apply");
         // Fresh: based_revision matches.
-        assert!(stale_translations(&conn).expect("fresh check").is_empty());
+        assert!(
+            stale_translations(&conn, None, None, None)
+                .expect("fresh check")
+                .is_empty()
+        );
         // The source advances (an edit → new content_hash).
         conn.execute(
             "UPDATE knowledge SET content = 'art v2', content_hash = 'hash-v2' WHERE id = ?1",
             params![id],
         )
         .expect("advance");
-        let stale = stale_translations(&conn).expect("stale check");
+        let stale = stale_translations(&conn, None, None, None).expect("stale check");
         assert_eq!(
             stale.len(),
             1,
             "the advanced source lands the translation on the worklist"
         );
-        assert_eq!(stale[0]["locale"], "fr");
-        assert_eq!(stale[0]["kind"], "translation_stale");
+        assert_eq!(stale[0].locale, "fr");
+    }
+
+    /// THE RECORD GATE, AND WHY IT IS IN SQL.
+    ///
+    /// `GET /kcs/articles` applied a domain predicate and no
+    /// `(owner, access_scope)` predicate, so a role-less read token — which
+    /// `record_read_gate` makes owner-bound on `/recall`, `/search`, `/get`,
+    /// `/multi-get`, `/verify` and `/graph/*` — read every KCS-tracked row's
+    /// title plus 200 characters of body here. The handler-side
+    /// `can_read_domain` loop cannot close it: rows must be narrowed BEFORE
+    /// they are read, which means the predicate belongs in this core.
+    ///
+    /// Red-first: dropping either `access_scopes` or `owner_in` from
+    /// `article_worklist`'s signature reds the first test outright.
+    #[test]
+    fn article_worklist_applies_the_record_gate() {
+        let conn = db();
+        for (id, owner, domain) in [
+            (1i64, "ana", "global"),
+            (2, "bob", "global"),
+            (3, "ana", "acme"),
+            (4, "bob", "other"),
+        ] {
+            conn.execute(
+                "INSERT INTO knowledge(id, title, content, content_hash, source, domain, owner,
+                                        access_scope, kcs_state)
+                 VALUES(?1, ?4, ?5, ?6, 'manual', ?2, ?3, 'private', 'approved')",
+                rusqlite::params![
+                    id,
+                    domain,
+                    owner,
+                    format!("t{id}"),
+                    format!("body {id}"),
+                    format!("h{id}")
+                ],
+            )
+            .unwrap();
+        }
+        let ids = |rows: Vec<WorklistRow>| rows.iter().map(|r| r.0).collect::<Vec<i64>>();
+        let owners = vec!["ana".to_string()];
+
+        // The record gate narrows OWNER (bob's rows 2 and 4 are gone). It does
+        // not narrow domain — that is the handler-side `can_read_domain` loop,
+        // which is why ana's `acme` row (3) legitimately comes back here and is
+        // filtered by the caller. What must NOT come back is bob's row 2, in
+        // the SAME domain as ana's row 1.
+        assert_eq!(
+            ids(article_worklist(&conn, Some(&["private".to_string()]), Some(&owners)).unwrap()),
+            vec![3, 1],
+            "the record gate must drop bob's rows even inside a shared domain"
+        );
+        assert_eq!(
+            ids(article_worklist(&conn, None, None).unwrap()).len(),
+            4,
+            "unrestricted (admin/loopback) still sees everything"
+        );
+        // The EMPTY PERMIT must fail closed — never `IN ()` (a SQLite syntax
+        // error) and never "no filter at all".
+        assert!(
+            article_worklist(&conn, Some(&[]), Some(&owners))
+                .unwrap()
+                .is_empty(),
+            "an empty access_scope permit matches nothing"
+        );
+        assert!(
+            article_worklist(&conn, Some(&["private".to_string()]), Some(&[]))
+                .unwrap()
+                .is_empty(),
+            "an empty owner permit matches nothing"
+        );
+    }
+
+    /// `stale_translations` was `extend`ed into the same array as the
+    /// domain-filtered worklist AFTER that loop ran, so it never saw the
+    /// filter — and it projected its title with `sanitize_read(&t, false,
+    /// &None)`, the loopback posture, which disables the PII arm. Both the
+    /// domain placeholder and its bound value are pinned here: the placeholder
+    /// used to be pushed with NO parameter behind it, so a caller passing a
+    /// label would have failed at runtime rather than at compile time.
+    #[test]
+    fn stale_translations_applies_the_record_gate_and_binds_its_domain() {
+        let conn = db();
+        for (id, owner, domain, hash) in [(1i64, "ana", "global", "h1"), (2, "bob", "other", "h2")]
+        {
+            conn.execute(
+                "INSERT INTO knowledge(id, title, content, content_hash, source, domain, owner,
+                                        access_scope, kcs_state)
+                 VALUES(?1, ?5, ?6, ?4, 'manual', ?3, ?2, 'private', 'published')",
+                rusqlite::params![
+                    id,
+                    owner,
+                    domain,
+                    hash,
+                    format!("t{id}"),
+                    format!("body {id}")
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO kcs_translations(knowledge_id, locale, title, body_md, state, based_revision, created_at, updated_at)
+                 VALUES(?1, 'fr', ?2, ?3, 'approved', 'stale-rev', 1000, 1000)",
+                rusqlite::params![id, format!("fr t{id}"), "body"],
+            )
+            .unwrap();
+        }
+        let owners = vec!["ana".to_string()];
+        let rows = stale_translations(
+            &conn,
+            Some("global"),
+            Some(&["private".to_string()]),
+            Some(&owners),
+        )
+        .expect("a domain placeholder with no bound value used to fail right here");
+        let ids: Vec<i64> = rows.iter().map(|r| r.article_id).collect();
+        assert_eq!(
+            ids,
+            vec![1],
+            "only ana's translation, and only in her domain"
+        );
+
+        assert_eq!(
+            stale_translations(&conn, None, None, None).unwrap().len(),
+            2,
+            "no gate = the old behaviour, kept for admin/loopback"
+        );
+        assert!(
+            stale_translations(&conn, None, Some(&[]), Some(&owners))
+                .unwrap()
+                .is_empty(),
+            "the empty permit fails closed"
+        );
     }
 }

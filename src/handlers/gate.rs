@@ -1596,6 +1596,9 @@ pub async fn approve_proposal(
                 // authorized (Write on `row_domain`, re-checked in this tx)
                 // is the row the promote must file — not the column default.
                 domain: &row_domain,
+                // HITL approves the CLAIM; it does not un-disclose the PII in
+                // it. Without this the promoted row took `DEFAULT 0`.
+                pii: crate::gate::pii_flag("", &content),
             },
         )
         .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -2776,7 +2779,13 @@ pub async fn export(
     // restore it). The operator signer is not yet wired here.
     if let Some(fmt) = q.format.as_deref() {
         if fmt == "ump" || fmt == "ump-md" {
-            let rendered = render_ump(&body, redact_owner.as_deref(), None);
+            // SIGN THE EXPORT when an operator key is configured. The previous
+            // call passed `None` unconditionally, so `?format=ump` never
+            // emitted an Ed25519 signature at all (audit): the "signed" UMP
+            // export was hash-only. L2 (no key) stays hash-only, documented.
+            let operator_key = crate::handlers::ump::operator_signing_key();
+            let signer = operator_key.as_ref().map(|(did, sk)| (did.as_str(), sk));
+            let rendered = render_ump(&body, redact_owner.as_deref(), signer);
             if fmt == "ump-md" {
                 // §6.3: the markdown projection per record,
                 // records joined by the `\n---\n` separator.
@@ -2841,10 +2850,12 @@ fn render_ump(
             if let (Some(from), Some(to)) =
                 (e["from_entity_id"].as_i64(), e["to_entity_id"].as_i64())
             {
+                let none: Option<crate::auth::Principal> = None;
+                let seam = |s: &str| crate::gate::sanitize_stored(s, false, &none);
                 m.entry(kid).or_default().push(serde_json::json!({
-                    "from": name_of.get(&from).cloned().unwrap_or_default(),
-                    "to": name_of.get(&to).cloned().unwrap_or_default(),
-                    "type": e["relation_type"].as_str().unwrap_or("relates_to"),
+                    "from": seam(&name_of.get(&from).cloned().unwrap_or_default()),
+                    "to": seam(&name_of.get(&to).cloned().unwrap_or_default()),
+                    "type": seam(e["relation_type"].as_str().unwrap_or("relates_to")),
                 }));
             }
         }
@@ -2858,11 +2869,35 @@ fn render_ump(
         .map(|row| {
             let id = row["id"].as_i64().unwrap_or(0);
             let rels = graph_by_chunk.get(&id).cloned().unwrap_or_default();
+            // THE READ SEAM. `?format=ump` builds the SAME `emit_record` shape
+            // the rest of the codebase treats as agent-safe, and it used to feed
+            // it the RAW row and the RAW `ump_meta` overlay — so the export
+            // carried unstripped fence sentinels, bidi controls, markdown image
+            // refs and hostile HTML, plus the free-form `provenance`/`consent`
+            // blobs, and then SIGNED them. A signature gives the bytes an air of
+            // authority, which is exactly the wrong property for content that
+            // has not been through the seam.
+            //
+            // The RAW owner still drives the redact decision — a sanitized owner
+            // must not change who sees what — so the row is sanitized AFTER
+            // `row_owner` is read off it.
+            let mut row = crate::handlers::ump_ops::sanitize_ump_row_for_read(row.clone());
             let meta = crate::handlers::ump::UmpMeta::parse(row["ump_meta"].as_str());
-            let row_owner = row["owner"].as_str().or(meta.owner.as_deref());
-            let redact = should_redact(row_owner, redact_owner);
+            // The RAW owner drives the decision; the owner VALUE is sanitized
+            // right after, so the record does not carry hostile text in a
+            // signed field, and the decision cannot be changed by sanitizing.
+            let row_owner = row["owner"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| meta.owner.clone());
+            let redact = should_redact(row_owner.as_deref(), redact_owner);
+            let none: Option<crate::auth::Principal> = None;
+            if let Some(o) = row["owner"].as_str() {
+                row["owner"] = serde_json::json!(crate::gate::sanitize_stored(o, false, &none));
+            }
+            let meta = crate::handlers::ump_ops::sanitize_ump_meta_for_read(&meta);
             crate::handlers::ump::emit_record(
-                row,
+                &row,
                 "global",
                 &serde_json::json!([]),
                 &serde_json::json!(rels),

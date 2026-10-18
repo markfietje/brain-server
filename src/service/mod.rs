@@ -74,6 +74,7 @@ pub mod ingest;
 pub mod lifecycle;
 pub mod procedure;
 pub mod purge;
+pub mod quarantine;
 pub mod recall;
 pub mod register;
 pub mod reindex;
@@ -368,6 +369,200 @@ mod pins {
              still gets a core — the core opens it, the handler calls the core:\n{}",
             violations.join("\n")
         );
+    }
+
+    /// THE `pii` ANTI-RECURRENCE GUARD.
+    ///
+    /// `redact_content` short-circuits on `!pii`, so a write path that omits the
+    /// column does not merely "not redact" — it turns read-time PII redaction
+    /// off entirely for every row it writes, and does so silently, because the
+    /// schema's `DEFAULT 0` is a perfectly valid value. That is exactly how five
+    /// of six production write paths came to store `pii = 0` (`POST /add`,
+    /// `/ingest/memory`, `/ingest/markdown`, the proposal-approve promotion, the
+    /// anchors/KB/domain importers) while `SECURITY.md` listed "deterministic
+    /// PII output redaction" as the shipped control for PII egress.
+    ///
+    /// So the invariant is structural rather than social: every production
+    /// `INSERT INTO knowledge` must NAME the `pii` column. The only exemptions
+    /// are the enumerated ones below, each with its reason, and an
+    /// `INSERT OR IGNORE`-free fixture inside a `#[cfg(test)]` region is already
+    /// blanked out by `blank_cfg_test_regions`.
+    ///
+    /// Red-first: adding a sixth writer that omits `pii` reds this.
+    #[test]
+    fn every_knowledge_insert_names_the_pii_column() {
+        // WHOLE-FILE exemptions are limited to modules that cannot contain a
+        // production writer: the schema/DDL file (whose triggers INSERT), the
+        // rehearsal binary, and the one whole-file test module included under
+        // `#[cfg(test)]`. Everything else is scanned in its PRODUCTION region
+        // only (`blank_cfg_test_regions`), so a fixture cannot hide a writer.
+        const EXEMPT: &[(&str, &str)] = &[
+            (
+                "migration.rs",
+                "schema DDL + FTS triggers + the pii backfill itself",
+            ),
+            ("bin/brain_migrate_rehearse.rs", "rehearsal fixture binary"),
+            (
+                "search/tests.rs",
+                "whole-file test module included under cfg(test)",
+            ),
+        ];
+        let exempt: Vec<&str> = EXEMPT.iter().map(|(p, _)| *p).collect();
+
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let files = collect_src_rs_files();
+
+        // Every insert that targets `knowledge`, however it is spelled:
+        // optional `OR REPLACE/IGNORE/…`, schema qualification, quoted
+        // identifiers, and arbitrary whitespace between tokens. The scanner
+        // works on an ASCII-uppercased COPY (same byte length) and reports the
+        // byte offset so line numbers stay true.
+        fn knowledge_inserts(text: &str) -> Vec<(usize, String)> {
+            let mut up = Vec::with_capacity(text.len());
+            for b in text.bytes() {
+                up.push(if b.is_ascii_lowercase() { b - 32 } else { b });
+            }
+            let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+            let skip_ws = |mut j: usize| {
+                while j < up.len() && up[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                j
+            };
+            let mut out = Vec::new();
+            let mut i = 0usize;
+            while let Some(rel) = up[i..].windows(6).position(|w| w == b"INSERT") {
+                let start = i + rel;
+                let mut j = skip_ws(start + 6);
+                // OR REPLACE / OR IGNORE / OR ABORT / OR FAIL / OR ROLLBACK
+                if up[j..].starts_with(b"OR ") {
+                    j = skip_ws(j + 3);
+                    while j < up.len() && is_ident(up[j]) {
+                        j += 1;
+                    }
+                    j = skip_ws(j);
+                }
+                if !up[j..].starts_with(b"INTO") {
+                    i = start + 6;
+                    continue;
+                }
+                j = skip_ws(j + 4);
+                // The first identifier is the TABLE unless it is followed by a
+                // dot, in which case it is the schema and the next identifier
+                // is the table (`main.knowledge`). Consuming it unconditionally
+                // made every plain `INSERT INTO knowledge` invisible.
+                let first_start = j;
+                while j < up.len() && is_ident(up[j]) {
+                    j += 1;
+                }
+                if up.get(j) == Some(&b'.') {
+                    j = skip_ws(j + 1);
+                } else {
+                    j = first_start;
+                }
+                // optional quoted table name
+                if matches!(up.get(j), Some(b'"') | Some(b'`') | Some(b'[')) {
+                    j += 1;
+                }
+                if !up[j..].starts_with(b"KNOWLEDGE") {
+                    i = start + 6;
+                    continue;
+                }
+                j += 9;
+                if matches!(up.get(j), Some(b'"') | Some(b'`') | Some(b']')) {
+                    j += 1;
+                }
+                let end = (j + 3000).min(up.len());
+                let seg = &up[j..end];
+                let paren = seg.iter().position(|&c| c == b'(');
+                let values = seg
+                    .windows(6)
+                    .position(|w| w == b"VALUES")
+                    .or_else(|| seg.windows(6).position(|w| w == b"SELECT"));
+                match (paren, values) {
+                    (Some(p), Some(v)) if p < v => {
+                        let close = seg[p..]
+                            .iter()
+                            .position(|&c| c == b')')
+                            .map(|c| p + c)
+                            .unwrap_or(seg.len());
+                        out.push((start, String::from_utf8_lossy(&seg[p..close]).into_owned()));
+                    }
+                    _ => {
+                        // No column list before the source (`INSERT INTO
+                        // knowledge SELECT …`): it cannot name `pii`.
+                        out.push((start, String::new()));
+                    }
+                }
+                i = start + 6;
+            }
+            out
+        }
+
+        let mut violations: Vec<String> = Vec::new();
+        let mut checked = 0usize;
+        for f in &files {
+            let rel = f
+                .strip_prefix(&dir)
+                .unwrap_or(f)
+                .to_string_lossy()
+                .to_string();
+            if exempt.contains(&rel.as_str()) {
+                continue;
+            }
+            let text = crate::spire_inventory::blank_cfg_test_regions(
+                &std::fs::read_to_string(f).expect("source file must be readable"),
+            );
+            for (offset, cols) in knowledge_inserts(&text) {
+                checked += 1;
+                let has_pii = cols
+                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .any(|w| w.eq_ignore_ascii_case("pii"));
+                if has_pii {
+                    continue;
+                }
+                let lineno = text[..offset].bytes().filter(|&b| b == b'\n').count() + 1;
+                violations.push(format!(
+                    "  src/{rel}:{lineno} INSERT INTO knowledge omits `pii` (columns: {})",
+                    cols.trim()
+                ));
+            }
+        }
+        assert!(
+            checked >= 8,
+            "sanity: the guard found only {checked} INSERT INTO knowledge statements — the \
+             known production writers alone are 8, so a scan this small is looking at nothing"
+        );
+        assert!(
+            violations.is_empty(),
+            "PII-COLUMN VIOLATION — `redact_content` short-circuits on `!pii`, so an INSERT \
+             that omits the column stores `pii = 0` via the schema default and turns read-time \
+             PII redaction OFF for every row it writes, silently. Write the flag with \
+             `crate::gate::pii_flag(title, content)`. If this insert genuinely cannot carry \
+             PII, add its path to EXEMPT with the reason — do not leave it silent:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    /// Recursive `.rs` walk over `src/`, used by the `pii` guard above.
+    #[cfg(test)]
+    fn collect_src_rs_files() -> Vec<std::path::PathBuf> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("src must exist") {
+                let entry = entry.expect("readable dir entry");
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().map(|x| x == "rs").unwrap_or(false) {
+                    out.push(path);
+                }
+            }
+        }
+        walk(&dir, &mut files);
+        files.sort();
+        files
     }
 
     /// The enforcing flip's self-pin: the counter the guard runs is the

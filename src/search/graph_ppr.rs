@@ -399,18 +399,86 @@ pub fn graph_retrieve(
     };
     let mut sql = format!(
         "SELECT k.id, k.title, k.content, k.pii \
-         FROM knowledge k \
+         FROM knowledge k {revisions_join} \
          WHERE k.id IN ({placeholders}) \
-           AND k.valid_to IS NULL \
-           AND {flag_clause}"
+           AND {flag_clause}",
+        // `as_of` reads `source_revisions.fetched_at`, so the join rides the
+        // leg exactly as it does in `vec0_knn`. Without it the `as_of` arm
+        // below would be a syntax error rather than a wrong answer, so the two
+        // must move together.
+        revisions_join = if filters.as_of.is_some() {
+            "LEFT JOIN source_revisions sr ON k.revision_id = sr.id"
+        } else {
+            ""
+        },
     );
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = ids
         .iter()
         .map(|&id| Box::new(id) as Box<dyn rusqlite::ToSql>)
         .collect();
+    // THE VISIBILITY PREDICATE IS THE OTHER TWO LEGS' PREDICATE.
+    //
+    // This leg honoured `domain`, `include_flagged` and everything in
+    // `push_gate_filters`, and silently IGNORED `as_of`, `at`, `since` and
+    // `source`/`sources` — so on the DEFAULT recall path (`graph: true`) a
+    // point-in-time query got current rows back:
+    //
+    // * `?as_of=` (transaction-time) returned current rows, and the caller
+    //   stamped them `lifecycle: "historical"` — a row that did not exist at
+    //   `as_of` labelled as a revision superseded after it. A caller using
+    //   `as_of` for a point-in-time disclosure check got post-`as_of` content.
+    // * `?at=` (valid time) was hardcoded to `valid_to IS NULL`, so a
+    //   bi-temporal query for a past instant got only currently-valid rows.
+    // * a `source`-restricted recall still received graph hits of other kinds.
+    //
+    // The fix is to mirror `vec0_knn` exactly, including the `source_revisions`
+    // join `as_of` needs.
+    if filters.as_of.is_some() {
+        sql.push_str(
+            " AND sr.fetched_at <= ? AND NOT EXISTS (\
+                SELECT 1 FROM source_revisions sr2 \
+                WHERE sr2.source_id = sr.source_id \
+                  AND sr2.state = 'active' \
+                  AND sr2.fetched_at > sr.fetched_at \
+                  AND sr2.fetched_at <= ?)",
+        );
+        params_vec.push(Box::new(filters.as_of.clone().unwrap()));
+        params_vec.push(Box::new(filters.as_of.clone().unwrap()));
+    }
+    match &filters.at {
+        Some(at) => {
+            sql.push_str(
+                " AND (k.valid_from IS NULL OR k.valid_from <= ?) \
+                   AND (k.valid_to IS NULL OR k.valid_to > ?)",
+            );
+            params_vec.push(Box::new(at.clone()));
+            params_vec.push(Box::new(at.clone()));
+        }
+        None => sql.push_str(" AND k.valid_to IS NULL"),
+    }
+    if let Some(since) = &filters.since {
+        sql.push_str(" AND k.created_at > ?");
+        params_vec.push(Box::new(since.clone()));
+    }
     if let Some(domain) = &filters.domain {
         sql.push_str(" AND k.domain = ?");
         params_vec.push(Box::new(domain.clone()));
+    }
+    // THE SOURCE PREDICATE, mirrored from `vec0_knn`/`fts`: a source-scoped
+    // recall must not receive graph hits of other kinds (audit 16). It was
+    // absent from this leg only, so `graph: true` (the default) silently
+    // widened a `sources`-restricted query.
+    if !filters.sources.is_empty() {
+        let ph = std::iter::repeat_n("?", filters.sources.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        sql.push_str(&format!(" AND k.source IN ({ph})"));
+        for s in filters.sources.iter() {
+            params_vec.push(Box::new(s.clone()));
+        }
+    } else if let Some(src) = &filters.source {
+        sql.push_str(" AND k.source = ?");
+        params_vec.push(Box::new(src.clone()));
     }
     super::push_gate_filters(&mut sql, &mut params_vec, filters);
     let mut stmt = conn.prepare_cached(&sql)?;

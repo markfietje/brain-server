@@ -146,38 +146,81 @@ pub async fn verify(
 /// offsets of case-insensitive occurrences of `claim` within `content`.
 /// Capped at [`MAX_MATCH_RANGES`]. Empty `claim` returns an empty vec.
 ///
+/// ## THE OFFSETS ARE INTO `content`, OR THEY ARE INTO NOTHING
+///
 /// Kept pure so the contract (case-insensitive, non-overlapping, bounded) can
 /// be unit-tested without AppState or a database.
+///
+/// The obvious implementation lowercases both sides and reports offsets into
+/// the LOWERCASED haystack — which is a different string. Rust's
+/// `to_lowercase` is full Unicode and can change a character's byte length:
+/// `İ` (U+0130) is 2 bytes and lowercases to `i` + U+0307 at 3 bytes, `ẞ`
+/// (U+1E9E) is 3 bytes and lowercases to `ß` at 2. Every offset after such a
+/// character is skewed, so for `"İstanbul"` (9 bytes) a match of `"stanbul"`
+/// in the lowercased buffer at `[3, 10)` is **out of range for `content`** —
+/// and a consumer doing the documented `&content[start..end]` panics.
+///
+/// (The skew was known and disclosed at
+/// `crates/brain-evidence-core/src/lib.rs`, which warns against feeding these
+/// offsets to its byte-exact resolver — but `openapi.yaml` publishes
+/// "`[start, end)` byte offsets within chunk `content`" to every consumer, and
+/// a wrong published contract is a bug whether or not one crate documented it.)
+///
+/// So the folded haystack is built WITH a per-byte map back to the original
+/// char span. A match in the folded string maps to `[starts[s], ends[e-1])`:
+/// the whole original characters whose folded bytes it covers. A partial-fold
+/// match (folded `i` inside `İ`'s `i`+U+0307) therefore returns the whole
+/// `İ`, never a mid-char offset, and an EXACT match of a length-changing fold
+/// is reported as supported rather than silently omitted.
+///
+/// The bound is O(content + claim) plus the matches, over inputs already
+/// bounded by `MAX_CONTENT` at ingest and `MAX_QUERY` on the claim.
 pub fn verify_claim(content: &str, claim: &str) -> Vec<[usize; 2]> {
     if claim.is_empty() {
         return Vec::new();
     }
-    // ponytail: `str::match_indices` operates on bytes and is the stdlib
-    // primitive for this — no regex dep needed. Case-folding both sides
-    // allocates two lowercased Strings; bounded by MAX_QUERY on the claim
-    // side and MAX_CONTENT on the content side (enforced at ingest), so this
-    // is bounded work.
-    let hay = content.to_lowercase();
     let needle = claim.to_lowercase();
-    let nlen = needle.len();
-    if nlen > hay.len() {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    // Build the case-folded haystack WITH a map from every folded byte to the
+    // original char's span. Lowercasing can change a char's byte length
+    // (`İ` 2→3, `ẞ` 3→2), so a folded offset is not a content offset; the map
+    // is what makes the published `[start,end)` contract true for EVERY
+    // occurrence (audit: the previous scan-forward locator reported an exact
+    // `İstanbul`/`İstanbul` match as UNSUPPORTED).
+    let mut hay = String::with_capacity(content.len());
+    let mut starts: Vec<usize> = Vec::with_capacity(content.len());
+    let mut ends: Vec<usize> = Vec::with_capacity(content.len());
+    for (off, ch) in content.char_indices() {
+        let end = off + ch.len_utf8();
+        for lc in ch.to_lowercase() {
+            for _ in 0..lc.len_utf8() {
+                starts.push(off);
+                ends.push(end);
+            }
+            hay.push(lc);
+        }
+    }
+    if needle.len() > hay.len() {
         return Vec::new();
     }
     let mut out = Vec::new();
-    let mut start = 0usize;
-    while start + nlen <= hay.len() {
-        if let Some(rel) = hay[start..].find(&needle) {
-            let abs = start + rel;
-            out.push([abs, abs + nlen]);
-            if out.len() >= MAX_MATCH_RANGES {
-                break;
-            }
-            // Non-overlapping: advance past this match. Overlapping matches
-            // add no information for support detection.
-            start = abs + nlen;
-        } else {
+    let mut from = 0usize;
+    while out.len() < MAX_MATCH_RANGES {
+        let Some(rel) = hay[from..].find(&needle) else {
             break;
-        }
+        };
+        let s = from + rel;
+        let e = s + needle.len();
+        // `e - 1` is the last folded byte of the match; `ends` maps it to the
+        // end of the original char that produced it. A multi-byte fold that
+        // matched only its first byte therefore still returns the whole
+        // original char, never a mid-char offset.
+        out.push([starts[s], ends[e - 1]]);
+        // Non-overlapping in folded space; the standard matcher is linear per
+        // call and the total is O(content + claim).
+        from = e;
     }
     out
 }
@@ -242,5 +285,78 @@ mod tests {
         for r in &ranges {
             let _ = content[r[0]..r[1]].to_string(); // panics if not char-aligned
         }
+    }
+
+    /// EVERY RETURNED RANGE MUST INDEX `content`. This is the published
+    /// contract (`openapi.yaml`: "`[start, end)` byte offsets within chunk
+    /// `content`"), and a consumer doing the documented
+    /// `&content[start..end]` panics when it is false.
+    ///
+    /// Red-first: restoring the direct push of `abs` (an offset into the
+    /// LOWERCASED haystack) reds this on every character whose `to_lowercase`
+    /// changes its byte length.
+    #[test]
+    fn verify_claim_ranges_always_index_content() {
+        for prefix in [
+            "",
+            "İ",
+            "ẞ",
+            "İstanbul",
+            "İİİ",
+            "aİ",
+            "ẞİx",
+            "plain İstanbul tail",
+            "İİ",
+        ] {
+            for claim in ["stanbul", "x", "tanbul", "a", "i", "ss", "İ", "İstanbul"] {
+                let ranges = verify_claim(prefix, claim);
+                assert!(
+                    ranges.len() <= MAX_MATCH_RANGES,
+                    "cap respected for {prefix:?}/{claim:?}"
+                );
+                // THE SUPPORT ARM (audit): if the folded claim occurs in the
+                // folded content, the matcher MUST report at least one range.
+                // The previous test asserted only INSIDE the loop, so zero
+                // ranges passed — the exact reason `İstanbul`/`İstanbul` was
+                // reported unsupported while the pin stayed green.
+                if !claim.is_empty() && prefix.to_lowercase().contains(&claim.to_lowercase()) {
+                    assert!(
+                        !ranges.is_empty(),
+                        "content={prefix:?} claim={claim:?} folds to a match but returned no range"
+                    );
+                }
+                let mut prev_end = 0usize;
+                for r in &ranges {
+                    assert!(
+                        r[1] <= prefix.len(),
+                        "content={prefix:?} ({}) claim={claim:?} range={r:?} is OUT OF RANGE",
+                        prefix.len()
+                    );
+                    assert!(
+                        prefix.is_char_boundary(r[0]) && prefix.is_char_boundary(r[1]),
+                        "content={prefix:?} claim={claim:?} range={r:?} splits a character"
+                    );
+                    assert!(r[0] >= prev_end, "ranges must stay non-overlapping");
+                    prev_end = r[1];
+                    // The documented slice must work, and the folded claim must
+                    // be COVERED by it (a partial-fold match may include the
+                    // whole original char, e.g. `İ` for the folded `i`).
+                    let sliced = &prefix[r[0]..r[1]];
+                    assert!(
+                        sliced.to_lowercase().contains(&claim.to_lowercase()),
+                        "content={prefix:?} claim={claim:?} range={r:?} slices to {sliced:?}"
+                    );
+                }
+            }
+        }
+        // The exact match the audit found reported UNSUPPORTED.
+        let c = "İstanbul";
+        let exact = verify_claim(c, c);
+        assert_eq!(exact.len(), 1, "an exact İstanbul match must be supported");
+        assert_eq!(&c[exact[0][0]..exact[0][1]], c);
+        assert_eq!(verify_claim("İ", "İ"), vec![[0, 2]]);
+        // The specific 9-byte suffix case stays safe.
+        let ranges = verify_claim(c, "stanbul");
+        assert_eq!(&c[ranges[0][0]..ranges[0][1]], "stanbul");
     }
 }

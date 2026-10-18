@@ -653,13 +653,14 @@ pub async fn add_chunk(
         };
 
         if let Err(e) = tx.execute(
-            "INSERT INTO knowledge(content, title, source, content_hash, owner, origin)
-             VALUES(?, ?, ?, ?, ?, ?)",
+            "INSERT INTO knowledge(content, title, source, content_hash, pii, owner, origin)
+             VALUES(?, ?, ?, ?, ?, ?, ?)",
             params![
                 text,
                 title,
                 source,
                 content_hash,
+                crate::gate::pii_flag(title.as_deref().unwrap_or(""), &text),
                 &owner,
                 crate::gate::origin_for_source(Some(&source)),
             ],
@@ -863,6 +864,19 @@ pub async fn search(
 
     let task_filters = filters.clone();
     let task_q = qtext.clone();
+    // THE ENRICHMENT CONNECTION COMES FROM THE SAME POOL THE HITS CAME FROM.
+    //
+    // The search ran against `pool` (the domain's own database) and the
+    // enrichment then joined against `s.pool` — the GLOBAL `brain.db`. Ids are
+    // per-database, so an id collision attached the GLOBAL database's
+    // `heading_path`, `source.uri`, `revision_id`, `valid_from`/`valid_to`,
+    // `authority` and `evidence_links` to a hit that was retrieved from another
+    // domain's database: metadata and attribution bleed ACROSS the domain
+    // boundary, and `source.uri` is a stored path the caller never scoped.
+    //
+    // `/recall` gets this right (it takes the connection from the target pool),
+    // so the two surfaces disagreed. `enrich_pool` closes it.
+    let enrich_pool = pool.clone();
     let search_future = task::spawn_blocking(move || {
         perform_search_with_prf(&pool, &*model, task_q.clone(), k, &task_filters).map(
             |(mut results, tel)| {
@@ -886,7 +900,7 @@ pub async fn search(
             Ok(Ok(Ok((mut results, tel, snippet_q)))) => {
                 // Enrich each hit with span + source link + highlights via one
                 // batched join (best-effort; enrichment failure must not fail search).
-                if let Ok(conn) = s.pool.get() {
+                if let Ok(conn) = enrich_pool.get() {
                     let _ = crate::search::SearchResult::enrich_evidence(
                         &conn,
                         &mut results,
@@ -1217,13 +1231,14 @@ pub async fn ingest_memory(
 
             if tx
                 .execute(
-                    "INSERT INTO knowledge(content, title, source, content_hash, owner, origin)
-                     VALUES(?, ?, ?, ?, ?, ?6)",
+                    "INSERT INTO knowledge(content, title, source, content_hash, pii, owner, origin)
+                     VALUES(?, ?, ?, ?, ?, ?, ?)",
                     params![
                         text,
                         title,
                         "memory",
                         content_hash,
+                        crate::gate::pii_flag(title.as_deref().unwrap_or(""), &text),
                         &owner,
                         // derive, never hardcode: the origin is a function of
                         // the source kind (the Seatbelt posture label truth).
@@ -2164,8 +2179,8 @@ pub fn write_markdown_ingest(
         tx.execute(
             "INSERT INTO knowledge
                (title, content, source, content_hash, document_id, chunk_index,
-                heading_path, line_start, line_end, source_path, owner)
-             VALUES (?1, ?2, 'markdown', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                heading_path, line_start, line_end, source_path, pii, owner)
+             VALUES (?1, ?2, 'markdown', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 doc_title,
                 &chunk.text,
@@ -2176,6 +2191,16 @@ pub fn write_markdown_ingest(
                 chunk.line_start as i64,
                 chunk.line_end as i64,
                 source_path,
+                // a whole imported document lands unflagged without this, so an
+                // operator's customer-notes import leaked every PAN in the file.
+                //
+                // `heading_path` IS STORED ON THE ROW but the chunker removes
+                // the heading bytes from `chunk.text`, so scanning only
+                // title+text missed a heading that is itself an address
+                // (audit N3). The read sites emit `heading_path` under this
+                // flag, so the flag must cover every stored free-text field.
+                crate::gate::pii_flag(doc_title, &chunk.text)
+                    || crate::gate::pii_flag(&chunk.heading_path, ""),
                 owner,
             ],
         )
@@ -2761,36 +2786,79 @@ pub(crate) async fn list_quarantined(
 pub(crate) async fn release_quarantine(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
+    headers: axum::http::HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // AuthZ admin gate (operator action).
-    crate::handlers::authorize(&principal.0, crate::auth::Action::Admin, "", "global")
+    // The domain the caller's OWN scope admits. Previously this route authorized
+    // against the literal "global" and then wrote with no domain predicate, so
+    // a tenant-A admin could un-quarantine tenant-B's flagged rows in shim mode
+    // — and clearing the flag re-admits a payload the injection screen had
+    // quarantined. The list surface beside it already scoped by header; these
+    // two by-id routes were strictly weaker than the list they hang off.
+    let domain = handlers::domain_from_headers(&headers);
+    crate::handlers::authorize(
+        &principal.0,
+        crate::auth::Action::Admin,
+        "",
+        domain.as_deref().unwrap_or("global"),
+    )
+    .map_err(|e| AppError::Forbidden(e.inner.message))?;
+    // THE PRIVILEGE ARM, part one of two. `release_quarantine` is a declared
+    // capability (`role::CAN_ACTIONS`, granted by four shipped presets) that no
+    // gate ever READ — `authorize_role` was only ever called with `approve`,
+    // `reject`, `workflow`, `publish`, `calibrate`, `purge` and `dsar_export`, so
+    // the capability could not restrict anything at all. Clearing the quarantine
+    // flag re-admits a payload the injection screen rejected, which is a
+    // containment act and not merely an admin one, so the capability is read
+    // here.
+    //
+    // Part two is the record gate + domain predicate, inside the core.
+    crate::handlers::authorize_role(&principal.0, &state.pool, "release_quarantine")
         .map_err(|e| AppError::Forbidden(e.inner.message))?;
-    let pool = state.pool.clone();
+    let record_gate = handlers::gate::record_read_gate(&principal.0, &state.pool);
+    let shim_label = if state.registry.is_multi_db() {
+        None
+    } else {
+        Some(
+            domain
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("global")
+                .to_string(),
+        )
+    };
+    let actor =
+        handlers::gate::principal_to_owner(&principal.0).unwrap_or_else(|| "operator".to_string());
+    // Resolve the pool from the SAME header the authorize above used. In
+    // multi-db the header domain is the trust boundary and `state.pool` is the
+    // GLOBAL db: using it here let an Admin-for-domain-A token release/purge a
+    // flagged row in the global database (audit N3). The sibling by-id read
+    // (`get_chunk`) already resolves this way.
+    let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
+        .unwrap_or(state.pool.clone());
     let released = task::spawn_blocking(move || -> Result<usize, AppError> {
-        let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
-        let n = conn
-            .execute(
-                "UPDATE knowledge SET flagged = 0 WHERE id = ?1 AND flagged = 1",
-                params![id],
-            )
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-        // Provenance: record the operator approval (hash-only, best-effort).
-        if n > 0 {
-            audit::record(
-                &conn,
-                audit::AuditKind::Ingest,
-                "operator",
-                &id.to_string(),
-                audit::AuditStatus::Ok,
-                "quarantine-release",
-            );
+        let mut conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
+        let scope = crate::service::quarantine::QuarantineScope {
+            domain: shim_label.as_deref(),
+            access_scopes: record_gate.access_scopes.clone(),
+            owner_in: record_gate.owner_in.clone(),
+            purge_granted: false,
+        };
+        match crate::service::quarantine::release_flagged(&mut conn, id, &scope, &actor) {
+            Ok(n) => Ok(n),
+            Err(crate::service::quarantine::QuarantineError::NotFound) => Ok(0),
+            Err(crate::service::quarantine::QuarantineError::PurgeForbidden) => Ok(0),
+            Err(crate::service::quarantine::QuarantineError::Held(m)) => Err(AppError::Conflict(m)),
+            Err(crate::service::quarantine::QuarantineError::Storage(e)) => {
+                Err(AppError::Internal(e))
+            }
         }
-        Ok(n)
     })
     .await
     .map_err(|_| AppError::Internal("Task join error".into()))??;
 
+    // One answer for "no such id", "another domain", "another owner" and "not
+    // flagged" — so this route is not an existence oracle (the module header).
     if released == 0 {
         return Err(AppError::NotFound("no quarantined chunk with that id"));
     }
@@ -2804,48 +2872,67 @@ pub(crate) async fn release_quarantine(
 pub async fn delete_quarantine(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
+    headers: axum::http::HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // AuthZ admin gate (operator action).
-    crate::handlers::authorize(&principal.0, crate::auth::Action::Admin, "", "global")
+    // Domain-scoped, same reason as `release_quarantine` above.
+    let domain = handlers::domain_from_headers(&headers);
+    crate::handlers::authorize(
+        &principal.0,
+        crate::auth::Action::Admin,
+        "",
+        domain.as_deref().unwrap_or("global"),
+    )
+    .map_err(|e| AppError::Forbidden(e.inner.message))?;
+    // THE PRIVILEGE ARM. This is the `/purge` act on a quarantined row, and it
+    // was reachable with `Admin` scope ALONE — so the shipped `supervisor`
+    // preset (which has `release_quarantine` and deliberately NOT `purge`) was
+    // correctly refused at `/purge` and reached the same hard delete here. The
+    // grant is resolved server-side from the roles store, exactly as
+    // `authorize_role` does everywhere else.
+    crate::handlers::authorize_role(&principal.0, &state.pool, "purge")
         .map_err(|e| AppError::Forbidden(e.inner.message))?;
-    let pool = state.pool.clone();
+    let record_gate = handlers::gate::record_read_gate(&principal.0, &state.pool);
+    let shim_label = if state.registry.is_multi_db() {
+        None
+    } else {
+        Some(
+            domain
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("global")
+                .to_string(),
+        )
+    };
+    let actor =
+        handlers::gate::principal_to_owner(&principal.0).unwrap_or_else(|| "operator".to_string());
+    // Same resolution as release: the header domain's pool, never the global
+    // db in multi-db mode (audit N3).
+    let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
+        .unwrap_or(state.pool.clone());
     let deleted = task::spawn_blocking(move || -> Result<usize, AppError> {
         let mut conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
-        let tx = conn
-            .transaction()
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-        // a held chunk refuses any erasure,
-        // including the quarantine delete path (a held id can be flagged).
-        crate::legal_hold::refuse_if_held(&tx, &[id])
-            .map_err(|e| AppError::Conflict(format!("{}: {}", e.inner.code, e.inner.message)))?;
-        // vec0 has no FK cascade — clean the index entry explicitly.
-        // was `let _ =` — a lingering vec0 row would
-        // surface a deleted chunk's vector in retrieval.
-        tx.execute(
-            "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
-            params![id],
-        )
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-        // Only delete if still flagged, so this endpoint can't purge live rows.
-        let n = tx
-            .execute(
-                "DELETE FROM knowledge WHERE id = ?1 AND flagged = 1",
-                params![id],
-            )
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-        if n > 0 {
-            audit::record(
-                &tx,
-                audit::AuditKind::Ingest,
-                "operator",
-                &id.to_string(),
-                audit::AuditStatus::Ok,
-                "quarantine-delete",
-            );
+        let scope = crate::service::quarantine::QuarantineScope {
+            domain: shim_label.as_deref(),
+            access_scopes: record_gate.access_scopes.clone(),
+            owner_in: record_gate.owner_in.clone(),
+            purge_granted: true, // authorize_role resolved it above
+        };
+        match crate::service::quarantine::delete_flagged(&mut conn, id, &scope, &actor) {
+            Ok(n) => Ok(n),
+            // The core checks the grant before it reads the row, so this 403
+            // cannot be used to probe which ids are quarantined.
+            Err(crate::service::quarantine::QuarantineError::PurgeForbidden) => {
+                Err(AppError::Forbidden("purge capability required".into()))
+            }
+            Err(crate::service::quarantine::QuarantineError::NotFound) => Ok(0),
+            // A held chunk refuses any erasure, including this path (a held id
+            // can be flagged). 409 matches `/purge`'s envelope.
+            Err(crate::service::quarantine::QuarantineError::Held(m)) => Err(AppError::Conflict(m)),
+            Err(crate::service::quarantine::QuarantineError::Storage(e)) => {
+                Err(AppError::Internal(e))
+            }
         }
-        tx.commit().map_err(|e| AppError::Internal(e.to_string()))?;
-        Ok(n)
     })
     .await
     .map_err(|_| AppError::Internal("Task join error".into()))??;

@@ -156,15 +156,29 @@ pub async fn get_kcs_articles(
     // Explicit gate (guard-table contract); the per-row domain filter below
     // is defense-in-depth for principals scoped to non-global domains.
     super::authorize(&principal, crate::auth::Action::Read, "", "global")?;
+    // THE RECORD GATE. This listing applied a domain predicate but no
+    // `(owner, access_scope)` predicate, so a role-less read token — which the
+    // composite gate makes owner-bound on `/recall`, `/search`, `/get`,
+    // `/multi-get`, `/verify` and `/graph/*` — saw every KCS-tracked row's
+    // title plus 200 characters of body here. The gate is resolved OUTSIDE the
+    // blocking task (it reads the role store through the pool) and bound INTO
+    // the core's SQL, because rows must be narrowed before they are read.
+    let record_gate = super::gate::record_read_gate(&principal, &state.pool);
+    let gate_scopes = record_gate.access_scopes.clone();
+    let gate_owners = record_gate.owner_in.clone();
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     let rows: Vec<serde_json::Value> = tokio::task::spawn_blocking(move || {
         let Ok(conn) = pool.get() else { return vec![] };
-        let Ok(rows) = crate::workflow::kcs::article_worklist(&conn) else {
+        let Ok(rows) = crate::workflow::kcs::article_worklist(
+            &conn,
+            gate_scopes.as_deref(),
+            gate_owners.as_deref(),
+        ) else {
             return vec![];
         };
         let now = chrono::Utc::now().timestamp();
         let mut out = Vec::new();
-        for (id, title, content, kcs_state, fresh_due, domain, flags) in rows {
+        for (id, title, content, kcs_state, fresh_due, domain, flags, pii_flag) in rows {
             if !super::can_read_domain(&principal, &domain) {
                 continue;
             }
@@ -177,12 +191,16 @@ pub async fn get_kcs_articles(
             if want_stale && !stale {
                 continue;
             }
+            // The row's OWN pii flag. It was hardcoded `false`, and
+            // `redact_content` short-circuits on `!pii` — so the mask could not
+            // run even for a row the scanner had flagged, and the corpus's
+            // KCS content went out unmasked to every non-admin reader.
             out.push(serde_json::json!({
                 "id": id,
                 "title": title
                     .as_deref()
-                    .map(|t| crate::gate::sanitize_read(t, false, &principal)),
-                "snippet": crate::gate::sanitize_read(&content, false, &principal)
+                    .map(|t| crate::gate::sanitize_read(t, pii_flag != 0, &principal)),
+                "snippet": crate::gate::sanitize_read(&content, pii_flag != 0, &principal)
                     .chars()
                     .take(200)
                     .collect::<String>(),
@@ -196,8 +214,43 @@ pub async fn get_kcs_articles(
         // past their pinned `based_revision` land on the SAME worklist — one
         // freshness discipline, no second mechanism. Only when the caller is
         // asking for stale rows (the content-health view).
-        if want_stale && let Ok(trs) = crate::workflow::kcs::stale_translations(&conn) {
-            out.extend(trs);
+        // Same two gates as the worklist, and the JSON + read seam are built
+        // HERE with the caller's principal. The projection used to be built in
+        // the core with `sanitize_read(..., &None)` — the loopback posture,
+        // which disables the PII arm — and it was `extend`ed into `out` AFTER
+        // the per-row `can_read_domain` loop, so that loop never touched it.
+        if want_stale
+            && let Ok(trs) = crate::workflow::kcs::stale_translations(
+                &conn,
+                None,
+                gate_scopes.as_deref(),
+                gate_owners.as_deref(),
+            )
+        {
+            // THE MISSING PER-ROW DOMAIN FILTER (audit N4). `None` above means
+            // the core scans every domain; the worklist's `can_read_domain`
+            // loop never saw these rows because they were extended AFTER it.
+            // A principal scoped to one tenant therefore saw every domain's
+            // stale translation title. Filter each row here, before it is
+            // serialized.
+            out.extend(
+                trs.into_iter()
+                    .filter(|t| super::can_read_domain(&principal, &t.domain))
+                    .map(|t| {
+                        serde_json::json!({
+                            "translation_id": t.translation_id,
+                            "article_id": t.article_id,
+                            "locale": t.locale,
+                            "title": crate::gate::sanitize_read(
+                                &t.title,
+                                crate::gate::pii_flag("", &t.title),
+                                &principal
+                            ),
+                            "domain": t.domain,
+                            "kind": "translation_stale",
+                        })
+                    }),
+            );
         }
         out
     })

@@ -11,6 +11,41 @@
 //! gate). A principal with **no** roles claim is byte-identical to pre-v1.23
 //! behavior (the back-compat invariant, test-pinned).
 //!
+//! ## A ROLE IS USUALLY A RESTRICTION — AND THE TIMES IT IS NOT ARE ENUMERATED
+//!
+//! Most roles narrow the data plane: `owner_filter` `self`/`reports` becomes
+//! the `owner` half of the record gate, and the role's `scopes` become the
+//! `access_scope` half. This file used to claim roles were always
+//! "*additional* restrictions" (and `handlers::mod` repeated it). That was
+//! FALSE for any role carrying `owner_filter: "all"`, because the shortcut
+//! treated that field as an admin marker:
+//!
+//! ```text
+//! roles.iter().any(|r| r.owner_filter == "all" || r.can("admin"))
+//! ```
+//!
+//! which returned `{None, None}` — BOTH halves of the record gate erased — for
+//! three read-only compliance presets that never needed a cross-owner read:
+//! `dpo`, `client-auditor`, `bpo-ops`. A token that, with no roles, could read
+//! only `sub`'s own `private` rows would, with `roles: ["dpo"]` added by an
+//! IdP mapping, read every owner's `private` rows in the domain its scope
+//! already admitted. The secondary effect was quieter still:
+//! `handlers::recall` computes `role_restricted = owner_in.is_some()`, so the
+//! cross-domain `scope_violation` audit row never fired for precisely the
+//! principals that were widest.
+//!
+//! So the shortcut is gone. `owner_filter` narrows by the `owner` column and
+//! nothing else (its documented job, `role.rs:4`), the role's `scopes` always
+//! survive as `access_scopes`, and dropping the owner restriction is an
+//! explicit capability — [`CAN_ACTIONS`]`'s `shared_pool` — carried only by the
+//! presets in [`SHARED_POOL_ROLES`], each with the reason recorded there.
+//! `owner_filter: "all"` on a role WITHOUT `shared_pool` narrows exactly like
+//! `self` does, which is the fail-closed direction.
+//!
+//! The claim is now true as written, and
+//! `only_declared_roles_widen_the_owner_fence` is the pin that keeps it true
+//! when the next preset is added.
+//!
 //! Honest ceiling: roles are named scope bundles, not a
 //! general ACL engine (per-record ownership, groups, arbitrary perms = v2.0
 //! Cortex RBAC). The `reports` agent-tree needs a source (`manages` JWT claim or
@@ -36,6 +71,20 @@ pub const OWNER_FILTERS: &[&str] = &["self", "reports", "all"];
 /// Every action capability the role `can` allowlist recognizes. These wire to
 /// the `authorize_role` gate on the write/action handlers (approve/reject/purge/
 /// DSAR/…). `admin` short-circuits to the unrestrictive data filter.
+/// Grants the shared-pool READ: the ability to drop the record gate's
+/// `owner` restriction. It is a data-plane capability, not an action verb —
+/// no route calls `authorize_role(_, "shared_pool")`, because there is
+/// nothing to authorize per-request; it is read once by
+/// [`effective_filter`] when the record gate is composed. An empty scope
+/// list plus `shared_pool` therefore matches nothing, exactly like any
+/// other scopeless role.
+///
+/// It exists because `owner_filter` is a FIELD and the presets that need a
+/// shared pool all happen to spell it `"all"` — which meant any role that
+/// ever carried that string also widened, including three read-only
+/// compliance presets that never needed to. `owner_filter` alone now
+/// narrows by owner and nothing else; the widening is an explicit,
+/// enumerated grant.
 pub const CAN_ACTIONS: &[&str] = &[
     "read",
     "write",
@@ -52,6 +101,7 @@ pub const CAN_ACTIONS: &[&str] = &[
     "purge",
     "admin",
     "workflow",
+    "shared_pool",
 ];
 
 /// The operator-console panel names a role's `panels_default`/`panels_hidden`
@@ -263,14 +313,15 @@ pub struct RetrievalGate {
 /// (`sub` + `manages`) and its resolved roles. `deny-by-default`: a role with
 /// no scopes and no `admin` capability reads nothing. `admin` (owner_filter
 /// `all` or the `admin` capability) sees all. `self` → its own `owner`;
-/// `reports` → everything in the `manages` set.
+/// `reports` → the `manages` set (EMPTY set = deny, never unrestricted);
+/// `all` without `shared_pool` and every unknown posture narrow to the
+/// caller's own subject; only `shared_pool` (or `admin`) drops the owner
+/// fence.
 ///
 /// Kept dependency-free (no `auth::Principal`, no `search::SearchFilters`) so
 /// it lives in the lib; the server's `handlers` apply it to the retriever.
 pub fn effective_filter(sub: &str, manages: &[String], roles: &[Role]) -> RetrievalGate {
-    let adminish = roles
-        .iter()
-        .any(|r| r.owner_filter == "all" || r.can("admin"));
+    let adminish = roles.iter().any(|r| r.can("admin"));
     if adminish {
         return RetrievalGate {
             access_scopes: None,
@@ -286,26 +337,63 @@ pub fn effective_filter(sub: &str, manages: &[String], roles: &[Role]) -> Retrie
             }
         }
         match r.owner_filter.as_str() {
-            "self" => {
-                if !owners.contains(&sub.to_string()) {
-                    owners.push(sub.to_string());
-                }
-            }
             "reports" => {
+                // An EMPTY `manages` claim adds nothing, so the allowlist stays
+                // empty and the gate denies. It must NEVER fall through to
+                // `None` — `None` means "no owner predicate", i.e. every
+                // owner's rows (audit N1).
                 for m in manages {
                     if !owners.contains(m) {
                         owners.push(m.clone());
                     }
                 }
             }
-            _ => {}
+            // `self`, `all` WITHOUT `shared_pool`, and any unknown posture all
+            // narrow to the caller's own subject. `owner_filter` is a
+            // restriction, never a grant; only the explicit `shared_pool`
+            // capability widens the owner half (audit N2).
+            _ => {
+                if !owners.contains(&sub.to_string()) {
+                    owners.push(sub.to_string());
+                }
+            }
         }
     }
     RetrievalGate {
         access_scopes: Some(scopes),
-        owner_in: Some(owners).filter(|o| !o.is_empty()),
+        // `owner_filter: "all"` widens ONLY the owner column, and only for a
+        // role that declares the `shared_pool` capability. It never empties
+        // `access_scopes`: that half of the record gate is the role's own
+        // declared scope allowlist, and dropping it would admit an
+        // `access_scope` value no role ever named. See the module header for
+        // why `owner_filter` alone is not a grant and `shared_pool` is.
+        owner_in: if roles.iter().any(|r| r.can("shared_pool")) {
+            None
+        } else {
+            // An empty allowlist is `Some(vec![])` — the SQL `WHERE owner IN
+            // ()`/`1 = 0` deny — not `None`. The `.filter(!is_empty)` here was
+            // the critical bypass: a `reports` role with no `manages` claim
+            // became unrestricted.
+            Some(owners)
+        },
     }
 }
+
+/// The presets permitted to drop the owner fence, with the reason each one
+/// needs it. Every entry is a deliberate cross-owner read, not an accident of
+/// the preset's shape, and `only_declared_roles_widen_the_owner_fence` fails
+/// when a preset is added that is not on this list — which is the whole point:
+/// `owner_filter` used to widen silently, so nothing stopped the next
+/// least-privilege role from inheriting an Admin-scale read.
+///
+/// `client-auditor` is the honest case: its documented purpose is a read-only
+/// view of exactly one client *domain* — cross-owner by definition, bounded by
+/// the token's own scope domain and by its `access_scopes`. `dpo` and
+/// `bpo-ops` are read-only *board* roles whose duties (DSAR export via the
+/// `dsar_export` verb, the capacity/connector/queue/breach board) are verb
+/// gates, not memory-row reads, so they read their own rows like any other
+/// principal.
+pub const SHARED_POOL_ROLES: &[&str] = &["admin", "solo", "controller", "agent", "client-auditor"];
 
 // ── the 10 ship-with roles (curated from USE_CASES.md) ─────────────────
 
@@ -315,15 +403,15 @@ pub fn effective_filter(sub: &str, manages: &[String], roles: &[Role]) -> Retrie
 pub const PRESETS_RAW: &[(&str, &str)] = &[
     (
         "admin",
-        r#"{"name":"admin","description":"Full control: every scope, every panel, every action","scopes":["private","domain","team"],"owner_filter":"all","can":["publish","read","write","approve","reject","calibrate","release_quarantine","dsar_export","purge","admin"],"panels_default":null,"panels_hidden":null,"tools_allowed":["*"]}"#,
+        r#"{"name":"admin","description":"Full control: every scope, every panel, every action","scopes":["private","domain","team"],"owner_filter":"all","can":["publish","read","write","approve","reject","calibrate","release_quarantine","dsar_export","purge","admin","shared_pool"],"panels_default":null,"panels_hidden":null,"tools_allowed":["*"]}"#,
     ),
     (
         "solo",
-        r#"{"name":"solo","description":"SMB owner: all panels, all actions, unrestricted data (the simplest default)","scopes":["private","domain","team"],"owner_filter":"all","can":["publish","read","write","approve","reject","calibrate","release_quarantine","dsar_export","purge","admin"],"panels_default":["overview","ingest","recall","search","graph","review","procedures","connectors","security","audit","data","subjects","health","system"],"panels_hidden":null,"tools_allowed":["*"]}"#,
+        r#"{"name":"solo","description":"SMB owner: all panels, all actions, unrestricted data (the simplest default)","scopes":["private","domain","team"],"owner_filter":"all","can":["publish","read","write","approve","reject","calibrate","release_quarantine","dsar_export","purge","admin","shared_pool"],"panels_default":["overview","ingest","recall","search","graph","review","procedures","connectors","security","audit","data","subjects","health","system"],"panels_hidden":null,"tools_allowed":["*"]}"#,
     ),
     (
         "agent",
-        r#"{"name":"agent","description":"Front-line worker: reads and writes across the shared memory pool (no Admin, no approve, no reject — the review queue is not the agent's to prune), the gateway's standing identity","scopes":["private","domain","team"],"owner_filter":"all","can":["read","write"],"panels_default":["overview","ingest","recall","health"],"panels_hidden":["audit","subjects"],"tools_allowed":["ump.recall","ump.get","ump.feedback"]}"#,
+        r#"{"name":"agent","description":"Front-line worker: reads and writes across the shared memory pool (no Admin, no approve, no reject — the review queue is not the agent's to prune), the gateway's standing identity","scopes":["private","domain","team"],"owner_filter":"all","can":["read","write","shared_pool"],"panels_default":["overview","ingest","recall","health"],"panels_hidden":["audit","subjects"],"tools_allowed":["ump.recall","ump.get","ump.feedback"]}"#,
     ),
     (
         "workflow-operator",
@@ -343,7 +431,7 @@ pub const PRESETS_RAW: &[(&str, &str)] = &[
     ),
     (
         "dpo",
-        r#"{"name":"dpo","description":"Data Protection Officer: runs DSARs, no routine write, read + export + calibrate","scopes":["private","domain","team"],"owner_filter":"all","can":["read","dsar_export","calibrate"],"panels_default":["overview","recall","data","subjects","audit","health"],"panels_hidden":null,"tools_allowed":["ump.recall","ump.get","ump.feedback"]}"#,
+        r#"{"name":"dpo","description":"Data Protection Officer: runs DSARs, no routine write, read + export + calibrate","scopes":["private","domain","team"],"owner_filter":"self","can":["read","dsar_export","calibrate"],"panels_default":["overview","recall","data","subjects","audit","health"],"panels_hidden":null,"tools_allowed":["ump.recall","ump.get","ump.feedback"]}"#,
     ),
     (
         "recruiter",
@@ -351,7 +439,7 @@ pub const PRESETS_RAW: &[(&str, &str)] = &[
     ),
     (
         "controller",
-        r#"{"name":"controller","description":"Data Controller: daily operational control, broad actions, retention enforcement","scopes":["private","domain","team"],"owner_filter":"all","can":["publish","read","write","approve","reject","calibrate","release_quarantine","dsar_export","purge"],"panels_default":null,"panels_hidden":["security"],"tools_allowed":["*"]}"#,
+        r#"{"name":"controller","description":"Data Controller: daily operational control, broad actions, retention enforcement","scopes":["private","domain","team"],"owner_filter":"all","can":["publish","read","write","approve","reject","calibrate","release_quarantine","dsar_export","purge","shared_pool"],"panels_default":null,"panels_hidden":["security"],"tools_allowed":["*"]}"#,
     ),
     (
         "exec",
@@ -363,11 +451,11 @@ pub const PRESETS_RAW: &[(&str, &str)] = &[
     // INSERT OR IGNORE so operator edits survive a re-migration.
     (
         "client-auditor",
-        r#"{"name":"client-auditor","description":"A client's compliance team: read-only view of exactly one client domain","scopes":["private","domain","team"],"owner_filter":"all","can":["read"],"panels_default":["overview","health"],"panels_hidden":null,"tools_allowed":["ump.recall","ump.get"]}"#,
+        r#"{"name":"client-auditor","description":"A client's compliance team: read-only view of exactly one client domain","scopes":["private","domain","team"],"owner_filter":"all","can":["read","shared_pool"],"panels_default":["overview","health"],"panels_hidden":null,"tools_allowed":["ump.recall","ump.get"]}"#,
     ),
     (
         "bpo-ops",
-        r#"{"name":"bpo-ops","description":"BPO operations: read-only capacity/connector/queue/breach board across all clients","scopes":["private","domain","team"],"owner_filter":"all","can":["read"],"panels_default":["overview","health"],"panels_hidden":["subjects"],"tools_allowed":["ump.recall"]}"#,
+        r#"{"name":"bpo-ops","description":"BPO operations: read-only capacity/connector/queue/breach board across all clients","scopes":["private","domain","team"],"owner_filter":"self","can":["read"],"panels_default":["overview","health"],"panels_hidden":["subjects"],"tools_allowed":["ump.recall"]}"#,
     ),
 ];
 
@@ -411,13 +499,14 @@ mod tests {
         for r in &all {
             validate(r).unwrap_or_else(|e| panic!("role {} invalid: {e}", r.name));
         }
-        // The 'solo' SMB role is the simplest default: every action.
-        let solo = all.iter().find(|r| r.name == "solo").unwrap();
-        assert!(solo.can("approve") && solo.can("purge") && solo.can("dsar_export"));
         // the BPO client postures. A client-auditor is the
         // read-only wedge (can == ["read"]); bpo-ops is read-only too.
         let auditor = all.iter().find(|r| r.name == "client-auditor").unwrap();
-        assert_eq!(auditor.can, vec!["read"], "client-auditor is read-only");
+        assert_eq!(
+            auditor.can,
+            vec!["read", "shared_pool"],
+            "client-auditor is read-only + the declared shared-pool read"
+        );
         let ops = all.iter().find(|r| r.name == "bpo-ops").unwrap();
         assert_eq!(ops.can, vec!["read"], "bpo-ops is read-only");
         let workflow = all.iter().find(|r| r.name == "workflow-operator").unwrap();
@@ -430,17 +519,109 @@ mod tests {
         );
     }
 
+    /// The `solo` SMB role is still the simplest default: every action.
+    #[test]
+    fn solo_preset_is_the_every_action_default() {
+        let solo = presets().into_iter().find(|r| r.name == "solo").unwrap();
+        assert!(solo.can("approve") && solo.can("purge") && solo.can("dsar_export"));
+    }
+
+    /// THE GUARD AGAINST RECURRENCE. `owner_filter: "all"` widened the record
+    /// gate silently for years, so a new read-only preset inheriting the string
+    /// inherited an Admin-scale read with nothing to fail. The widening is now
+    /// the `shared_pool` capability, and a role may carry it only if it is on
+    /// the enumerated list, each entry of which records why.
+    ///
+    /// Red-first, three ways: restoring `|| r.owner_filter == "all"` to
+    /// `effective_filter` does NOT red this (the list is what it consults) —
+    /// `dpo_owner_filter_all_does_not_widen` reds instead. Adding a preset with
+    /// `shared_pool` that is not on the list reds here. Adding `shared_pool` to
+    /// a preset already on the list reds `shared_pool_roles_still_need_their_reason`.
+    #[test]
+    fn only_declared_roles_widen_the_owner_fence() {
+        let all = presets();
+        for r in &all {
+            let widens = r.can("shared_pool");
+            assert_eq!(
+                widens,
+                SHARED_POOL_ROLES.contains(&r.name.as_str()),
+                "role {:?} shared_pool={} disagrees with SHARED_POOL_ROLES — either add it \
+                 there with its reason, or drop the capability",
+                r.name,
+                widens
+            );
+        }
+        // No `shared_pool` role may be read-only-but-not-one-of-the-three: the
+        // capability is a READ grant, so every holder should be able to read.
+        for r in &all {
+            assert!(
+                !r.can("shared_pool") || r.can("read"),
+                "role {:?} grants shared_pool without read",
+                r.name
+            );
+        }
+    }
+
+    /// `owner_filter` is a FIELD. The three read-only compliance roles used to
+    /// carry `"all"` and therefore widened, which is the exact accident the
+    /// enumeration above exists to prevent — so their filters are asserted to
+    /// be owner-BOUND now, and `client-auditor` (the one role that genuinely
+    /// needs a cross-owner read) is asserted to still have it.
+    #[test]
+    fn dpo_owner_filter_all_does_not_widen() {
+        let all = presets();
+        for name in ["dpo", "bpo-ops"] {
+            let r = all.iter().find(|r| r.name == name).unwrap();
+            let gate = effective_filter("ana", &[], std::slice::from_ref(r));
+            assert!(
+                gate.owner_in
+                    .as_ref()
+                    .is_some_and(|o| o == &vec!["ana".to_string()]),
+                "{name} must stay owner-bound: {:?}",
+                gate.owner_in
+            );
+            // and the role's scopes still bound the access_scope half
+            assert_eq!(
+                gate.access_scopes,
+                Some(vec![
+                    "private".to_string(),
+                    "domain".to_string(),
+                    "team".to_string()
+                ]),
+                "{name} keeps its declared scope allowlist"
+            );
+        }
+        let auditor = all.iter().find(|r| r.name == "client-auditor").unwrap();
+        let gate = effective_filter("ana", &[], std::slice::from_ref(auditor));
+        assert_eq!(
+            gate.owner_in, None,
+            "client-auditor's documented job IS a cross-owner read of one domain"
+        );
+        assert!(
+            gate.access_scopes.is_some(),
+            "even a shared-pool role keeps its access_scope allowlist — that half of \
+             the record gate is never erased by owner_filter"
+        );
+    }
+
+    /// The `agent` preset's shared-pool read survives the tightening: it drops
+    /// `owner`, keeps its scope allowlist.
     #[test]
     fn agent_preset_sees_the_shared_pool_not_just_self() {
         let agent = presets().into_iter().find(|r| r.name == "agent").unwrap();
         let gate = effective_filter("ana", &[], std::slice::from_ref(&agent));
         assert_eq!(
-            gate.access_scopes, None,
-            "owner_filter 'all' marks the role unrestricted (adminish)"
+            gate.owner_in, None,
+            "the agent reads the shared pool — that is the role's stated job"
         );
         assert_eq!(
-            gate.owner_in, None,
-            "no owner restriction — legacy NULL-owner rows visible"
+            gate.access_scopes,
+            Some(vec![
+                "private".to_string(),
+                "domain".to_string(),
+                "team".to_string()
+            ]),
+            "shared_pool drops the OWNER half only; the scope allowlist survives"
         );
     }
 
@@ -468,9 +649,50 @@ mod tests {
             .find(|r| r.name == "supervisor")
             .unwrap();
         let gate = effective_filter("bob", &[], std::slice::from_ref(&sup));
+        // SOME(EMPTY) IS THE DENY. The old assertion was `None` and called it
+        // "reads nothing" — but `None` is "no owner predicate", so the pin
+        // asserted the bypass it was written to prevent (audit N1).
         assert_eq!(
-            gate.owner_in, None,
-            "no manages claim → no owner restriction leaks"
+            gate.owner_in,
+            Some(Vec::new()),
+            "no manages claim → empty allowlist (deny), never None"
+        );
+    }
+
+    #[test]
+    fn owner_filter_all_without_shared_pool_narrows_to_self() {
+        // A custom role created through POST /roles may say `all` without the
+        // capability. It must narrow like `self`, not erase the fence.
+        let custom = Role {
+            name: "custom-all".into(),
+            description: None,
+            scopes: vec!["private".into(), "domain".into(), "team".into()],
+            owner_filter: "all".into(),
+            can: vec!["read".into()],
+            panels_default: None,
+            panels_hidden: None,
+            tools_allowed: None,
+        };
+        let gate = effective_filter("bob", &[], std::slice::from_ref(&custom));
+        assert_eq!(
+            gate.owner_in,
+            Some(vec!["bob".to_string()]),
+            "`all` without shared_pool narrows to the caller"
+        );
+    }
+
+    #[test]
+    fn unknown_owner_filter_narrows_to_self() {
+        let mut custom = presets()
+            .into_iter()
+            .find(|r| r.name == "qa-specialist")
+            .unwrap();
+        custom.owner_filter = "everyone".into();
+        let gate = effective_filter("bob", &[], std::slice::from_ref(&custom));
+        assert_eq!(
+            gate.owner_in,
+            Some(vec!["bob".to_string()]),
+            "an unrecognised posture fails closed to self"
         );
     }
 

@@ -14,7 +14,7 @@ use crate::search::quality::{HeuristicEstimator, Recommendation, RetrievalQualit
 use crate::search::query::LegFilter;
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
-use rusqlite::{Connection, ToSql, params};
+use rusqlite::{Connection, ToSql};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -1813,30 +1813,144 @@ fn fts_search(
     Ok(results)
 }
 
+/// The FROM/JOIN half of the legacy scan. `source_revisions` is joined only
+/// when `as_of` needs it, mirroring [`vec0_knn`]'s `LEFT JOIN`.
+fn legacy_from_sql(filters: &SearchFilters) -> String {
+    if filters.as_of.is_some() {
+        "knowledge k JOIN embeddings e ON k.id = e.knowledge_id \
+         LEFT JOIN source_revisions sr ON k.revision_id = sr.id"
+            .to_string()
+    } else {
+        "knowledge k JOIN embeddings e ON k.id = e.knowledge_id".to_string()
+    }
+}
+
+/// The WHERE half: the same predicate set [`vec0_knn`] applies, minus the
+/// vec0-only `source`/ingest-kind terms (`embeddings` carries no source tag).
+///
+/// The parameter ORDER is the load-bearing part: [`legacy_predicate_sql`] pushes
+/// placeholders in exactly the sequence [`legacy_predicate_params`] binds them,
+/// and the two are pinned together by
+/// `legacy_predicate_placeholders_match_their_parameter_order`.
+fn legacy_predicate_sql(filters: &SearchFilters) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if filters.domain.is_some() {
+        parts.push("k.domain = ?");
+    }
+    if filters.since.is_some() {
+        parts.push("k.created_at > ?");
+    }
+    if !filters.include_flagged {
+        parts.push("k.flagged = 0");
+    }
+    if filters.as_of.is_some() {
+        parts.push(
+            "sr.fetched_at <= ? AND NOT EXISTS (\
+                SELECT 1 FROM source_revisions sr2 \
+                WHERE sr2.source_id = sr.source_id \
+                  AND sr2.state = 'active' \
+                  AND sr2.fetched_at > sr.fetched_at \
+                  AND sr2.fetched_at <= ?)",
+        );
+    }
+    if filters.at.is_some() {
+        parts.push(
+            "(k.valid_from IS NULL OR k.valid_from <= ?) \
+             AND (k.valid_to IS NULL OR k.valid_to > ?)",
+        );
+    } else {
+        parts.push("k.valid_to IS NULL");
+    }
+    // decay / memory_kind / access_scope / owner_in — the identical emitter the
+    // vec0 and FTS legs share, so the fallback cannot drift from them.
+    let mut gate: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let mut gate_sql = String::new();
+    push_gate_filters(&mut gate_sql, &mut gate, filters);
+    // ONLY push a non-empty clause. `include_decayed=true` with no other gate
+    // filter emits nothing, and pushing "" produced a trailing `AND` —
+    // SQLite "incomplete input" on the fallback path (audit).
+    let gate_clause = gate_sql.trim_start_matches(" AND ");
+    if !gate_clause.is_empty() {
+        parts.push(gate_clause);
+    }
+    parts.join(" AND ")
+}
+
+/// The bound values for [`legacy_predicate_sql`], in placeholder order.
+fn legacy_predicate_params(filters: &SearchFilters, params: &mut Vec<Box<dyn rusqlite::ToSql>>) {
+    if let Some(domain) = &filters.domain {
+        params.push(Box::new(domain.clone()));
+    }
+    if let Some(since) = &filters.since {
+        params.push(Box::new(since.clone()));
+    }
+    if let Some(as_of) = &filters.as_of {
+        params.push(Box::new(as_of.clone()));
+        params.push(Box::new(as_of.clone()));
+    }
+    if let Some(at) = &filters.at {
+        params.push(Box::new(at.clone()));
+        params.push(Box::new(at.clone()));
+    }
+    push_gate_filters(&mut String::new(), params, filters);
+}
+
 /// Legacy brute-force cosine scan (fallback when vec0 is empty).
+///
+/// ## WHY THIS TAKES THE FULL FILTER BUNDLE
+///
+/// This used to take `include_flagged: bool` and nothing else, which made the
+/// fallback a **fail-open path on the tenant boundary**: the domain predicate,
+/// the record gate (`access_scope` / `owner`), `valid_to IS NULL` and the decay
+/// filter were all absent, so a single `no such table: vec_knowledge` error —
+/// which also clears the process-global `VEC0_READY` for every pool — returned
+/// the ENTIRE `knowledge` table to a caller the gate denies. `VEC0_READY` starts
+/// `false` (`migration.rs`), so a search racing migration took this path too.
+///
+/// It now takes `&SearchFilters` and applies the same predicate set as
+/// [`vec0_knn`]: quarantine, domain, `since`, `as_of`, the bi-temporal window,
+/// and [`push_gate_filters`] (decay, `memory_kind`, `access_scope`, `owner_in`).
+/// The two legs differ in HOW they rank (brute-force cosine vs the vec0 ANN),
+/// never in WHICH rows they are allowed to see.
 fn perform_search_legacy(
     conn: &Connection,
     query_vec: &[f32],
     k: usize,
-    include_flagged: bool,
+    filters: &SearchFilters,
 ) -> Result<Vec<SearchResult>> {
-    let total_count: i64 = conn.query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))?;
+    // The count must be the count of ROWS THE CALLER MAY SEE, not the table
+    // total: paging over the table total while the WHERE narrows is both a
+    // wasted scan and an off-by-N in the batching loop below.
+    let mut count_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    legacy_predicate_params(filters, &mut count_params);
+    let count_refs: Vec<&dyn rusqlite::ToSql> = count_params.iter().map(|p| p.as_ref()).collect();
+    let total_count: i64 = conn.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM {} WHERE {}",
+            legacy_from_sql(filters),
+            legacy_predicate_sql(filters)
+        ),
+        count_refs.as_slice(),
+        |r| r.get(0),
+    )?;
     let mut results: Vec<SearchResult> = Vec::with_capacity(k * 2);
     let mut offset = 0;
-    // Byte-parity with the vec0 path: quarantine is unconditional unless the
-    // caller explicitly opts into flagged rows (review paths only).
-    let mut sql = String::from(
-        "SELECT k.id, k.title, k.content, e.vector, k.flagged
-             FROM knowledge k JOIN embeddings e ON k.id = e.knowledge_id",
+    let sql = format!(
+        "SELECT k.id, k.title, k.content, e.vector, k.flagged, k.pii, k.node_kind, k.origin \
+         FROM {} WHERE {} LIMIT ? OFFSET ?",
+        legacy_from_sql(filters),
+        legacy_predicate_sql(filters)
     );
-    if !include_flagged {
-        sql.push_str(" WHERE k.flagged = 0");
-    }
-    sql.push_str(" LIMIT ? OFFSET ?");
+    // Rebuild the params in the same order as the predicate pushes them.
+    let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    legacy_predicate_params(filters, &mut params_vec);
+    params_vec.push(Box::new(SEARCH_BATCH_SIZE as i64));
+    params_vec.push(Box::new(offset as i64));
     while offset < total_count as usize {
         let mut stmt = conn.prepare_cached(&sql)?;
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
         let batch: Vec<SearchResult> = stmt
-            .query_map(params![SEARCH_BATCH_SIZE as i64, offset as i64], |row| {
+            .query_map(param_refs.as_slice(), |row| {
                 let vec_str: String = row.get(3)?;
                 let db_vec: Vec<f32> = match serde_json::from_str(&vec_str) {
                     Ok(v) => v,
@@ -1845,13 +1959,17 @@ fn perform_search_legacy(
                         Vec::new()
                     }
                 };
-                Ok(SearchResult::raw(
+                let mut r = SearchResult::raw(
                     row.get(0)?,
                     cosine_sim(query_vec, &db_vec),
                     row.get(1)?,
                     row.get(2)?,
                 )
-                .with_flagged(row.get(4)?))
+                .with_flagged(row.get(4)?);
+                r.pii = row.get::<_, i64>(5)? != 0;
+                r.memory_kind = row.get(6)?;
+                r.origin = row.get(7)?;
+                Ok(r)
             })?
             .filter_map(|r| r.ok())
             .collect();
@@ -1860,6 +1978,9 @@ fn perform_search_legacy(
             break;
         }
         offset += SEARCH_BATCH_SIZE;
+        // the OFFSET parameter moves with the loop; the rest are constant.
+        let last = params_vec.len() - 1;
+        params_vec[last] = Box::new(offset as i64);
     }
     results.sort_by(|a, b| {
         b.score
@@ -1922,34 +2043,41 @@ pub fn perform_search_traced(
     // filter (distinct from `as_of` transaction-time recall).
     let normalized_since = filters.since.as_deref().map(normalize_since).transpose()?;
     let normalized_at = filters.at.as_deref().map(normalize_since).transpose()?;
-    let filters = if normalized_since.is_some() || normalized_at.is_some() {
-        SearchFilters {
-            source: filters.source.clone(),
-            source_leg: filters.source_leg,
-            sources: filters.sources.clone(),
-            since: normalized_since,
-            domain: filters.domain.clone(),
-            lex: filters.lex.clone(),
-            embedding_query: filters.embedding_query.clone(),
-            intent: filters.intent.clone(),
-            profile: filters.profile.clone(),
-            include_flagged: false,
-            as_of: filters.as_of.clone(),
-            evidence: filters.evidence,
-            freshness_tiebreak: filters.freshness_tiebreak,
-            at: normalized_at,
-            graph: filters.graph,
-            include_decayed: filters.include_decayed,
-            now_unix: filters.now_unix,
-            memory_kind: filters.memory_kind.clone(),
-            min_relevance: filters.min_relevance.clone(),
-            access_scopes: filters.access_scopes.clone(),
-            owner_in: filters.owner_in.clone(),
-            retention_days: filters.retention_days.clone(),
-        }
-    } else {
-        filters.clone()
-    };
+    // `as_of` is compared LEXICALLY against `source_revisions.fetched_at`
+    // (`YYYY-MM-DD HH:MM:SS`). An RFC-3339 value (`…T09:00:00Z`) sorts after
+    // every same-day row because `T` > space, so 09:00 admitted a 12:00
+    // revision and stamped it historical (audit 16). Normalize/validate it
+    // with the same parser as `at`/`since`; an unparseable value is refused.
+    let normalized_as_of = filters.as_of.as_deref().map(normalize_since).transpose()?;
+    let filters =
+        if normalized_since.is_some() || normalized_at.is_some() || normalized_as_of.is_some() {
+            SearchFilters {
+                source: filters.source.clone(),
+                source_leg: filters.source_leg,
+                sources: filters.sources.clone(),
+                since: normalized_since,
+                domain: filters.domain.clone(),
+                lex: filters.lex.clone(),
+                embedding_query: filters.embedding_query.clone(),
+                intent: filters.intent.clone(),
+                profile: filters.profile.clone(),
+                include_flagged: false,
+                as_of: normalized_as_of.clone(),
+                evidence: filters.evidence,
+                freshness_tiebreak: filters.freshness_tiebreak,
+                at: normalized_at,
+                graph: filters.graph,
+                include_decayed: filters.include_decayed,
+                now_unix: filters.now_unix,
+                memory_kind: filters.memory_kind.clone(),
+                min_relevance: filters.min_relevance.clone(),
+                access_scopes: filters.access_scopes.clone(),
+                owner_in: filters.owner_in.clone(),
+                retention_days: filters.retention_days.clone(),
+            }
+        } else {
+            filters.clone()
+        };
 
     let overfetch = vec_overfetch(k);
 
@@ -1978,21 +2106,20 @@ pub fn perform_search_traced(
                 // in-process). On the impossible "flag set, table absent" case
                 // (e.g. `migrate_down_0_9_0` rehearsal) the error falls back to
                 // the legacy scan and clears the flag.
-                let res = if !crate::migration::VEC0_READY
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    perform_search_legacy(&conn, &vq, overfetch, vfilters.include_flagged)
-                } else {
-                    match vec0_knn(&conn, &vq, overfetch, &vfilters) {
-                        Ok(r) => Ok(r),
-                        Err(e) if e.to_string().contains("no such table: vec_knowledge") => {
-                            crate::migration::VEC0_READY
-                                .store(false, std::sync::atomic::Ordering::Relaxed);
-                            perform_search_legacy(&conn, &vq, overfetch, vfilters.include_flagged)
+                let res =
+                    if !crate::migration::VEC0_READY.load(std::sync::atomic::Ordering::Relaxed) {
+                        perform_search_legacy(&conn, &vq, overfetch, &vfilters)
+                    } else {
+                        match vec0_knn(&conn, &vq, overfetch, &vfilters) {
+                            Ok(r) => Ok(r),
+                            Err(e) if e.to_string().contains("no such table: vec_knowledge") => {
+                                crate::migration::VEC0_READY
+                                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                                perform_search_legacy(&conn, &vq, overfetch, &vfilters)
+                            }
+                            Err(e) => Err(e),
                         }
-                        Err(e) => Err(e),
-                    }
-                }?;
+                    }?;
                 Ok((res, t_vec.elapsed().as_secs_f32() * 1000.0))
             });
             let fh = scope.spawn(move || -> (Vec<SearchResult>, f32) {

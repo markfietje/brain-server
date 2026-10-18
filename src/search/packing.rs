@@ -126,6 +126,12 @@ pub fn weights_from_env() -> Weights {
 pub struct PackedResults {
     /// The selected results, in selection order (best-first).
     pub results: Vec<SearchResult>,
+    /// For each entry of `results`, its index in the INPUT candidate vector.
+    /// Packing reorders (greedy submodular selection), so a caller that holds a
+    /// parallel per-candidate tag (the recall path's domain label) must travel
+    /// through this index rather than zip against the original order
+    /// (audit: a packed hit was labelled with the pre-pack domain).
+    pub order: Vec<usize>,
     /// Estimated tokens consumed by the packed content.
     pub packed_tokens: usize,
     /// The budget that was in effect. Diagnostic for callers that inspect the
@@ -191,12 +197,14 @@ pub fn pack(
     let n = candidates.len();
     let subtopics = query_subtopics(query);
     let mut packed: Vec<SearchResult> = Vec::new();
+    let mut order: Vec<usize> = Vec::new();
     let mut packed_tokens = 0usize;
     let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     if n == 0 || max_context_tokens == 0 {
         return PackedResults {
             results: Vec::new(),
+            order: Vec::new(),
             packed_tokens: 0,
             max_context_tokens,
             candidates: n,
@@ -338,6 +346,7 @@ pub fn pack(
         }
         packed_tokens += cost;
         packed.push(candidates[i].clone());
+        order.push(i);
         remaining.retain(|&r| r != i);
     }
 
@@ -354,6 +363,7 @@ pub fn pack(
 
     PackedResults {
         results: packed,
+        order,
         packed_tokens,
         max_context_tokens,
         candidates: n,
