@@ -4,6 +4,139 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.18] — 2026-10-18 — the agent loop stops lying, and the primary test gate is green again
+
+Covers every commit from tag `v1.29.17` — 65 commits, 58 files, +10,776/−1,076.
+
+**This release is server-side.** The on-device client does **not** ship: distribution
+(signing, notarization, keychain, auto-update) is unbuilt, so a `.app` would still
+launch only on the developer's machine. Nothing below changes the wire shape.
+
+Unlike the last release, **this one carries Rust behaviour changes** — the agent
+loop is the bulk of it. No new dependency edge, no schema migration, and no route
+change; the only spec edit is a keyword that a strict validator was entitled to
+reject.
+
+### Release notes
+
+**Security fixes**
+
+- **Two agent-loop writes now refuse a revoked claim.** The compaction-quota arm
+  and the probe writer each took a `WorkflowTx` and went straight to their audit
+  append with no ownership check — so a claim revoked mid-run could still land a
+  control row. Both now run the same owner verification the rest of the loop
+  uses, after the transaction opens and before the append. No change on the happy
+  path.
+- **The outbox can no longer commit a row without its audit row.** The audit write
+  happened after the fact and was swallowed when it failed, so the outbox could
+  hold state whose evidence was never recorded. Settlement and audit writes are
+  now recorded on failure and the caller decides, rather than the write vanishing.
+- **A safety latch latched on evidence it never persisted.** The latch checked a
+  condition whose own record had not yet been written, so it could fire on a fact
+  no reader could later confirm.
+
+**Bug fixes**
+
+- **A model-authored multibyte character could abort the machine.** The adversarial
+  re-check truncates its task at a fixed byte offset, and truncating to a position
+  that lands mid-character panics. Because the task text is built from model-authored
+  hypotheses, any multi-byte character straddling that offset took the request down
+  with an unwind rather than returning a typed error. Fixed with the boundary-aware
+  idiom the repo already used elsewhere.
+- **`cargo test --features bench` did not compile.** The reranking probe imported a
+  module that only exists under the `rerank-tier` feature, and the documented
+  primary gate does not enable it — while the test harness compiles every target.
+  One ungated import took down the whole suite, and it had been red and unnoticed
+  because recent work exercised only the macOS lanes.
+- **Two more failures were hiding behind that compile error**, because the gate had
+  never run: the committed test census had drifted from the tree, and the README
+  test badge had drifted from the build. Both are regenerated from the tree rather
+  than edited.
+- **A spec used a keyword its own declared version does not define.** One response
+  header was pinned with `const`, which arrived in JSON Schema 2020-12 and OpenAPI
+  3.1, in a document declaring 3.0.3. A strict 3.0 validator rejects the document
+  outright. A one-value `enum` is the 3.0 idiom and means the same thing. A gate
+  now holds the document to the vocabulary of the version it declares.
+
+**Improvements**
+
+- **The on-device model layer is measured, and two of its own claims were wrong.**
+  The chat layer now routes between an on-device tier and a server tier, budgets
+  the window by measured token cost, and trims history without ever rewriting the
+  session. Measurement contradicted the design in a way that mattered: **the server
+  tier cannot run at all on this machine** — the device is eligible and the window
+  reads back, but every request is refused for want of the app entitlement — so the
+  policy was rewritten so the on-device tier is the one that always works and
+  escalation is an upgrade rather than a dependency.
+- **Recall survives depth.** A needle test at three measured depths of a real
+  on-device prompt recovers all three, each against a cold control that never saw
+  the document. The cold control is the whole test: the first version of it handed
+  the control the same document as the treatment, and the failure it reported — a
+  total recall failure at every depth — was a broken control, not a model.
+- **The trimmer was dropping the wrong end of the conversation, then orphaning
+  answers.** A direction inversion kept the oldest exchanges and forgot what the
+  user had just said; a second defect let a trim keep an answer whose question had
+  been dropped. Both were found by drilling the pure function with shapes the
+  integration test never constructed, and both are now positional properties of
+  the algorithm rather than hopes about where a token cut lands.
+- **A conversation that cannot fit is now refused before the request.** A trim that
+  hits the floor used to fail silently, and the only evidence was an error raised
+  mid-generation that ends the session. The shortfall is now reported by the plan
+  that produced it, and the turn is refused while a caller can still act.
+- **The reranker works, and its effect is reproduced.** With the weights already on
+  disk and all three gates open, the cross-encoder moves the off-topic hit out of
+  first place and lifts on-topic documents into the top two — measured on the exact
+  candidates the server returned.
+- **A banner experiment returned a null result, with the control it needed.** Paired
+  prompts, both arms measured, and the missing condition added: whether retrieval
+  adds anything for a question the user already knows the answer to. It does not,
+  which is why the recall wire shape was left alone.
+
+**Changed**
+
+- **Every Apple-sentence quoted in the macOS sources is now verified against
+  Apple's documentation.** A fabricated quotation had shipped beside a real
+  citation, and the pin meant to prevent that verified only that a link was
+  nearby. It now checks the quotation's text against a committed corpus of Apple's
+  sentences, each with its URL and the date it was read. Adding a line to that
+  corpus means someone fetched the page.
+
+### Engineering record
+
+Not published — the round identifiers, the measurements behind each claim, and the
+defects that were found by drilling rather than by reading.
+
+**Agent loop (the bulk of the release).** Two rounds landed: one closing a
+reachable panic on model-authored input plus two pins that were asserting more
+than the code did, and a second whose own prompt predicted the per-phase exchange
+cost wrongly — the measurement contradicted the plan, and the plan was corrected to
+match. The measurable outcomes: a cumulative case budget set from the measured
+p99 rather than a guess, a depth bound that is a runtime check with the load-bearing
+case pinned, a compaction quota that counts the durable log rather than the replay
+window, children that inherit their parent's posture and cannot widen it, every
+loop bound named and pinned by value, and a context path that gained register rows
+for three guards when the plan named two.
+
+**On-device layer.** The two gating measurements are the substance: server-tier
+latency is unmeasurable here for the reason above, and the large-window recall
+question is answered only at the scale that actually runs. Two claims authored
+during the work were false and were corrected in place — a "no such constructor"
+claim about the server tier, and an entry-token-count rationale that a real
+overload had made unnecessary. A dead guard constant was deleted rather than wired.
+Three omissions are now named rather than invisible: a warm-up call never made, a
+tier that is currently a decision and not a session, and a documented cost of tier
+switching that the design had not accounted for.
+
+**Test census.** Behavioral pins moved by one and the total by one across this
+window; both figures are re-derived from the tree by the census script and are
+refused if they drift.
+
+**Recorded, not done.** Server-tier escalation with history preserved is still
+unmeasured — no escalated turn has completed anywhere, because the tier refuses
+every request here. The summarize-and-restart recovery the framework documents is
+unimplemented and its cost is unmeasured. The distribution work that gates a client
+release is unbuilt.
+
 ## [1.29.17] — 2026-10-15 — the on-device model is measured now, and two "faster" models turned out to be broken
 
 Covers every commit from tag `v1.29.16`. A macOS lane, three measurements, and two
