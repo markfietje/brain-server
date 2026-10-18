@@ -16,15 +16,23 @@
 #![forbid(unsafe_code)]
 
 pub mod recall;
+pub mod verify;
 
 #[cfg(test)]
 mod recall_tests;
+#[cfg(test)]
+mod verify_tests;
 
 pub use recall::{
     AuthorizedRecall, DEFAULT_LIMIT, Decision, MAX_DOMAIN_BYTES, MAX_LIMIT, MAX_QUERY_BYTES,
     MIN_LIMIT, Passage, RecallAnswer, RecallDoc, RecallOutcome, RecallQuery, RecallRefusal,
     Refused, Searched, Unreachable, WireExchange, authorize, recall_memory, shape_recall,
     shape_recall_command,
+};
+pub use verify::{
+    AuthorizedVerify, MAX_CLAIM_CHARS, MAX_MATCH_RANGES, MIN_CHUNK_ID, NoSuchChunk, Verdict,
+    VerifyDecision, VerifyDoc, VerifyOutcome, VerifyRefusal, VerifyRequest, WireVerify,
+    authorize as authorize_verify, shape_verify, shape_verify_command, verify_claim_command,
 };
 
 /// D7 — the bearer token's runtime injection point. Read from the
@@ -50,7 +58,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             kernel_token,
             recall_memory,
-            shape_recall_command
+            shape_recall_command,
+            verify_claim_command,
+            shape_verify_command
         ])
         .run(tauri::generate_context!())
         .expect("error while running the shell");
