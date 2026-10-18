@@ -15,13 +15,22 @@
 #![deny(clippy::cargo)]
 #![forbid(unsafe_code)]
 
+pub mod forget;
 pub mod recall;
 pub mod verify;
 
 #[cfg(test)]
+mod forget_tests;
+#[cfg(test)]
 mod recall_tests;
 #[cfg(test)]
 mod verify_tests;
+
+pub use forget::{
+    AuthorizedForget, ForgetDoc, ForgetOutcome, ForgetRefusal, ForgetRequest, ForgetResult,
+    NoSuchRow, Tombstoned, WireForget, authorize as authorize_forget, forget_memory, shape_forget,
+    shape_forget_command,
+};
 
 pub use recall::{
     AuthorizedRecall, DEFAULT_LIMIT, Decision, MAX_DOMAIN_BYTES, MAX_LIMIT, MAX_QUERY_BYTES,
@@ -60,7 +69,9 @@ pub fn run() {
             recall_memory,
             shape_recall_command,
             verify_claim_command,
-            shape_verify_command
+            shape_verify_command,
+            forget_memory,
+            shape_forget_command
         ])
         .run(tauri::generate_context!())
         .expect("error while running the shell");
