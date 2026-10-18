@@ -373,7 +373,18 @@ pub async fn run_recall(
                 let m = Arc::clone(&model);
                 m.encode_one(&query)
             };
-            let centroids = crate::domain_router::read_centroids(&state.pool).unwrap_or_default();
+            // On the blocking pool, like the prototype arm above. This was the
+            // last direct SQLite read on the async runtime in /recall: a
+            // `pool.get()` that can wait out the pool timeout, plus
+            // `read_centroids`' `CREATE TABLE IF NOT EXISTS` (a WRITE, so it can
+            // take the database's write lock) — both on a tokio worker, per
+            // request, from a read-only caller.
+            let centroid_pool = state.pool.clone();
+            let centroids =
+                task::spawn_blocking(move || crate::domain_router::read_centroids(&centroid_pool))
+                    .await
+                    .map_err(|e| HandlerError::internal(format!("centroid read join: {e}")))?
+                    .unwrap_or_default();
             routed = crate::domain_router::route(&qvec, &centroids);
             match &routed {
                 Some(d) => {
@@ -686,20 +697,33 @@ pub async fn run_recall(
     // a role-restricted agent that searched beyond the global
     // perimeter domain crossed a client border — a security event on the
     // established Auth/Denied channel. Best-effort (never fails the recall).
-    if crate::qa::scope_violation(role_restricted, &domains_searched)
-        && let Ok(conn) = state.pool.get()
-    {
-        crate::audit::record(
-            &conn,
-            crate::audit::AuditKind::Auth,
-            "api",
-            "scope_violation",
-            crate::audit::AuditStatus::Denied,
-            &format!(
-                "agent={} domains={domains_searched:?}",
-                principal_label(principal)
-            ),
+    if crate::qa::scope_violation(role_restricted, &domains_searched) {
+        // On the blocking pool, like every other DB touch in this handler: a
+        // `pool.get()` can wait out the pool timeout, and this is a WRITE (the
+        // audit row takes the database's write lock). Rare, but a security
+        // event is exactly when an attacker is already driving the endpoint.
+        let audit_pool = state.pool.clone();
+        let detail = format!(
+            "agent={} domains={domains_searched:?}",
+            principal_label(principal)
         );
+        let _ = task::spawn_blocking(move || {
+            audit_pool
+                .get()
+                .ok()
+                .map(|conn| {
+                    crate::audit::record(
+                        &conn,
+                        crate::audit::AuditKind::Auth,
+                        "api",
+                        "scope_violation",
+                        crate::audit::AuditStatus::Denied,
+                        &detail,
+                    )
+                })
+                .is_some()
+        })
+        .await;
     }
 
     // emit a read event into the hash-chained audit
@@ -1574,5 +1598,107 @@ mod tests {
         );
         assert!(!hits_loop[0].content.contains('\u{202A}'));
         assert!(!hits_loop[0].title.as_deref().unwrap().contains('\u{200B}'));
+    }
+    /// NO DIRECT SQLITE ON THE ASYNC RUNTIME IN `/recall`.
+    ///
+    /// This handler is the hottest read surface in the server and it used to touch
+    /// the database from tokio workers directly, four ways: `read_prototypes` (a
+    /// `pool.get()` that can wait out the pool timeout, PLUS a
+    /// `CREATE TABLE IF NOT EXISTS` — a WRITE, so it can take the database's write
+    /// lock), `read_centroids` (same, in the fallback arm), the composite record
+    /// gate + `domain_profiles`, and the scope-violation audit row. A read-only
+    /// caller could occupy runtime workers with blocking database work per request,
+    /// and a write lock it did not need.
+    ///
+    /// Every one is on the blocking pool now. This pin keeps it that way: it walks
+    /// the file tracking brace depth from each `spawn_blocking`, and any of these
+    /// calls that is NOT inside one of those blocks reds it — which is what a
+    /// one-line "does the line mention spawn_blocking" check cannot see.
+    #[test]
+    fn no_direct_database_call_on_the_async_runtime_in_recall() {
+        let whole = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/handlers/recall.rs"
+        ))
+        .expect("recall.rs must be readable");
+        // PRODUCTION REGION ONLY. This file's own test module names the same
+        // functions this pin checks, so scanning it would find the pin's own
+        // source text and fail forever.
+        let src = match whole.find("mod tests {") {
+            Some(i) => &whole[..i],
+            None => whole.as_str(),
+        };
+        let _ = whole;
+
+        // Line number -> true when the line sits inside a `spawn_blocking` block.
+        let (inside, total) = blocking_regions(src);
+        assert_eq!(total, src.lines().count(), "region map must cover the file");
+
+        let offenders: Vec<String> = src
+            .lines()
+            .enumerate()
+            .filter(|(n, line)| {
+                let called = ["read_prototypes", "read_centroids", "domain_profiles"]
+                    .iter()
+                    .any(|needle| line.contains(needle));
+                // A line that ITSELF names `spawn_blocking` is the
+                // single-line closure form (`task::spawn_blocking(move ||
+                // f(x))`, no braces), which the brace-depth walk cannot see.
+                called
+                    && !line.trim_start().starts_with("//")
+                    && !line.contains("spawn_blocking")
+                    && !inside.get(n).copied().unwrap_or(false)
+            })
+            .map(|(n, line)| format!("  {} (not in spawn_blocking): {}", n + 1, line.trim()))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "these database calls must run inside spawn_blocking:\n{}",
+            offenders.join("\n")
+        );
+
+        // And no raw pool handle outside a blocking block, either.
+        let raw: Vec<String> = src
+            .lines()
+            .enumerate()
+            .filter(|(n, line)| {
+                let is_get = line.contains("pool.get()");
+                // comment lines do not count
+                is_get
+                    && !inside.get(n).copied().unwrap_or(false)
+                    && !line.trim_start().starts_with("//")
+            })
+            .map(|(n, line)| format!("  {} (not in spawn_blocking): {}", n + 1, line.trim()))
+            .collect();
+        assert!(
+            raw.is_empty(),
+            "a pool.get() outside the blocking pool is blocking I/O on a tokio worker:\n{}",
+            raw.join("\n")
+        );
+    }
+
+    /// For each 1-based line of `src`, whether it falls inside a
+    /// `spawn_blocking(...)` block. Braces in string literals would confuse this,
+    /// so it is deliberately a coarse structural scanner: the assert above only
+    /// needs to be right about where the blocking-pool boundaries are.
+    fn blocking_regions(src: &str) -> (std::collections::HashMap<usize, bool>, usize) {
+        let lines: Vec<&str> = src.lines().collect();
+        let mut inside = std::collections::HashMap::new();
+        let mut depth_at_spawn: Option<usize> = None;
+        let mut depth = 0usize;
+        for (i, line) in lines.iter().enumerate() {
+            if depth_at_spawn.is_none() && line.contains("spawn_blocking") {
+                depth_at_spawn = Some(depth);
+            }
+            depth += line.matches('{').count();
+            depth = depth.saturating_sub(line.matches('}').count());
+            // still inside while the spawn's enclosing brace depth is not closed
+            let in_block = depth_at_spawn.is_some_and(|d| depth > d);
+            inside.insert(i, in_block);
+            if !in_block {
+                depth_at_spawn = None;
+            }
+        }
+        (inside, lines.len())
     }
 }
