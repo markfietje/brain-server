@@ -190,7 +190,17 @@ public struct MemoryRecallTool: Tool {
     public let name: String
     public let description: String
 
-    public init() {
+    /// The transport is REQUIRED, and there is no argument-less initialiser
+    /// any more. That deletion IS the change: while a default existed, every
+    /// construction path that forgot to wire a transport silently produced the
+    /// stub string, and a stub that is still reachable is a stub that ships.
+    private let transport: any KernelRecallTransport
+
+    /// - Parameter transport: supplied by the host, which invokes the Rust
+    ///   core. See `KernelRecallTransport` for why the seam is here rather
+    ///   than a `URLSession` a few lines below.
+    public init(transport: any KernelRecallTransport) {
+        self.transport = transport
         self.name = "recall_memory"
         // Shortened, and the MEASUREMENT corrects the expectation: the cut
         // saved 6 tokens (310 → 304), not the ~250 it looked like it should.
@@ -207,13 +217,38 @@ public struct MemoryRecallTool: Tool {
             """
     }
 
-    /// - Returns: the retrieval result, confidence and provenance included.
-    ///   The kernel is the only thing that may decide this; the model never does.
+    /// - Returns: the rendered citation block — passages, confidence and
+    ///   provenance — or the wording for the state that is not an answer.
+    ///   The kernel is the only thing that may decide which state it is; the
+    ///   model never does, and neither does this function.
+    ///
+    /// The stub that used to live here said: *"Intentionally a stub. The real
+    /// implementation is a typed-wire call to the brain-server kernel, and it
+    /// belongs behind the Rust core's bounds and authz — not here, where
+    /// nothing enforces them."*
+    ///
+    /// That constraint is now the architecture rather than a note about a
+    /// future intention. The bounds and the authz are in the core; this tool
+    /// receives an outcome the core already bounded and already classified,
+    /// and renders it. There is no URL, no socket and no token on this side of
+    /// the seam, which is what makes the absence of a Swift bypass a fact
+    /// rather than an intention.
     public func call(arguments: Arguments) async throws -> String {
-        // Intentionally a stub. The real implementation is a typed-wire call
-        // to the brain-server kernel, and it belongs behind the Rust core's
-        // bounds and authz — not here, where nothing enforces them.
-        "no kernel transport wired yet"
+        do {
+            let outcome = try await transport.recall(
+                query: arguments.query, domain: arguments.domain
+            )
+            return RecallRenderer.render(outcome)
+        } catch {
+            // A transport that did not complete is DEGRADED, not empty. The
+            // distinction is the whole point: an abstention, a refusal and a
+            // dead kernel must not all render as "no results".
+            return RecallRenderer.render(
+                .unreachable(
+                    status: 0, detail: "the recall transport did not complete: \(error)"
+                )
+            )
+        }
     }
 }
 #endif
@@ -336,7 +371,12 @@ public enum ContextBudget {
                     instructions: Instructions(
                         "You are the memory assistant for a private knowledge kernel."
                     ),
-                    tools: [MemoryRecallTool()]
+                    // This call PRICES the schema; it never invokes the tool,
+                    // so the transport is unreachable on this path. It is
+                    // supplied rather than defaulted because a tool that could
+                    // be constructed with no transport at all is a tool that can
+                    // still return the stub.
+                    tools: [MemoryRecallTool(transport: UnwiredRecallTransport())]
                 )
                 guard let window = cost.remaining, window > responseReserve else {
                     return nil

@@ -90,7 +90,11 @@ struct AppleFMProbeTests {
                 return
             }
 
-            let tools: [any Tool] = [MemoryRecallTool()]
+            // The transport is unreachable on this path: the test PRICES the
+            // tool's schema and never invokes it. Supplied rather than
+            // defaulted, because a tool constructible with no transport is a
+            // tool that can still hand back the stub.
+            let tools: [any Tool] = [MemoryRecallTool(transport: UnwiredRecallTransport())]
             let instructions = Instructions(
                 "You are the memory assistant for a private knowledge kernel."
             )
@@ -2125,3 +2129,233 @@ func mlxPackageHeaderDoesNotClaimTheSameTranscript() throws {
         "the header must name the model whose multi-turn failure falsified the claim"
     )
 }
+
+#if canImport(FoundationModels)
+// MARK: - P1: the recall tool's Swift end
+
+/// A transport the test drives. It stands in for the HOST's bridge into the
+/// Rust core — never for the core itself, whose bounds and classification are
+/// pinned in `shell/src-tauri/src/recall_tests.rs` and reach Swift already
+/// classified.
+private final class StubTransport: KernelRecallTransport, @unchecked Sendable {
+    var outcome: RecallOutcome
+    var failure: Error?
+    private(set) var seen: [(query: String, domain: String?)] = []
+
+    init(outcome: RecallOutcome, failure: Error? = nil) {
+        self.outcome = outcome
+        self.failure = failure
+    }
+
+    func recall(query: String, domain: String?) async throws -> RecallOutcome {
+        seen.append((query, domain))
+        if let failure { throw failure }
+        return outcome
+    }
+}
+
+private func passage(
+    id: Int,
+    text: String = "the passage text",
+    domain: String? = "legal",
+    validTo: String? = nil
+) -> RecallPassage {
+    RecallPassage(
+        id: id,
+        title: "A title",
+        text: text,
+        domain: domain,
+        score: 0.5,
+        validFrom: "2024-01-01T00:00:00Z",
+        validTo: validTo,
+        flagged: false
+    )
+}
+
+@available(macOS 26.0, *)
+@Test("the recall tool renders the core's answer, and the arguments cross intact")
+func recallToolReturnsRowsThroughTheCore() async throws {
+    let transport = StubTransport(
+        outcome: .answered(
+            passages: [passage(id: 42, text: "GDPR covers EU residents")],
+            decision: .ok,
+            confidence: 0.93
+        )
+    )
+    let tool = MemoryRecallTool(transport: transport)
+    #expect(tool.name == "recall_memory")
+
+    let rendered = try await tool.call(
+        arguments: .init(query: "eu data rules", domain: "legal")
+    )
+
+    // The query and domain actually reached the core — positional, because a
+    // count of arguments proves nothing about WHICH ones.
+    #expect(transport.seen.count == 1)
+    #expect(transport.seen.first?.query == "eu data rules")
+    #expect(transport.seen.first?.domain == "legal")
+
+    // And the row came back with its provenance, not as prose and not as JSON.
+    #expect(rendered.contains("id 42"))
+    #expect(rendered.contains("domain legal"))
+    #expect(rendered.contains("GDPR covers EU residents"))
+    #expect(rendered.contains("confidence 0.93"))
+    #expect(rendered.contains("valid from 2024-01-01T00:00:00Z"))
+    #expect(!rendered.contains("{"), "tool output renders as citations, never raw JSON")
+}
+
+@available(macOS 26.0, *)
+@Test("low_confidence renders as an answer that passed a gap through, not as an error")
+func abstentionIsNotAnErrorOnTheSwiftSide() async throws {
+    let tool = MemoryRecallTool(
+        transport: StubTransport(
+            outcome: .abstained(decision: .lowConfidence, confidence: 0.11)
+        )
+    )
+    let rendered = try await tool.call(arguments: .init(query: "something absent"))
+
+    #expect(rendered.contains("low_confidence"))
+    #expect(rendered.lowercased().contains("no confident answer"))
+    // The gap language the tool's own description promises to the model.
+    #expect(rendered.contains("pass that through"))
+    #expect(!rendered.lowercased().contains("error"))
+    #expect(!rendered.lowercased().contains("no memory matched"))
+}
+
+@available(macOS 26.0, *)
+@Test("a refusal renders differently from an absence, and leaks nothing about the rows")
+func refusalIsNotAnAbsenceOnTheSwiftSide() async throws {
+    let refusal = MemoryRecallTool(
+        transport: StubTransport(outcome: .refused(status: 403, scope: "recall"))
+    )
+    let absence = MemoryRecallTool(
+        transport: StubTransport(outcome: .absent(decision: .ok, confidence: 0.2))
+    )
+
+    let refused = try await refusal.call(arguments: .init(query: "q"))
+    let absent = try await absence.call(arguments: .init(query: "q"))
+
+    #expect(refused != absent, "a refusal and an absence must not render alike")
+    #expect(refused.contains("403"))
+    #expect(refused.lowercased().contains("refused"))
+    // The three phrases that would collapse the distinction.
+    #expect(!refused.contains("No memory matched"))
+    #expect(!refused.lowercased().contains("no results"))
+    #expect(!refused.lowercased().contains("nothing for it"))
+    // And it says nothing about how many rows exist behind the refusal. The
+    // marker is `"] id "` — the citation header the renderer emits — and not
+    // `"id "`, which matched inside "d-id not complete" in the arm below and
+    // made that arm pass by luck. A substring loose enough to hit an ordinary
+    // English word is not an assertion.
+    #expect(!refused.contains("] id "))
+    #expect(!refused.contains("[1]"))
+}
+
+@available(macOS 26.0, *)
+@Test("a transport that fails is degraded and stated, never an empty answer")
+func aFailedTransportIsNotAnAbsence() async throws {
+    let tool = MemoryRecallTool(
+        transport: StubTransport(
+            outcome: .answered(passages: [], decision: .ok, confidence: nil),
+            failure: RecallTransportError.notWired
+        )
+    )
+    let rendered = try await tool.call(arguments: .init(query: "q"))
+
+    #expect(rendered.lowercased().contains("unavailable"))
+    #expect(rendered.lowercased().contains("degraded"))
+    #expect(!rendered.lowercased().contains("no memory matched"))
+    #expect(!rendered.contains("] id "))
+    #expect(!rendered.contains("[1]"))
+}
+
+@available(macOS 26.0, *)
+@Test("the stub string is gone and no Swift path reaches the kernel except the core")
+func noSwiftPathReachesTheKernelAndTheStubIsGone() throws {
+    let root = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()  // AppleFMProbeTests
+        .deletingLastPathComponent()  // Tests
+        .deletingLastPathComponent()  // shell-macos
+    let sources = root.appendingPathComponent("Sources/AppleFMProbe")
+
+    // STRUCTURAL, and it is the guard for the trap the plan names: a Swift
+    // bypass would be a second, unaudited path to private data, and it looks
+    // like a refactor because the shorter version is "just fetch it here".
+    // Read the source rather than trusting the seam: a protocol can be declared
+    // and then quietly bypassed.
+    var scanned = 0
+    for file in try FileManager.default.contentsOfDirectory(
+        at: sources, includingPropertiesForKeys: nil
+    ) where file.pathExtension == "swift" {
+        let text = try String(contentsOf: file, encoding: .utf8)
+        scanned += 1
+
+        // COMMENT LINES ARE EXCLUDED, and the reason is that these files
+        // contain prose whose entire job is to state what is ABSENT — the
+        // `KernelRecallTransport` doc names `URLSession` and a bearer token in
+        // order to say this side has neither. Scanning the prose flagged the
+        // guard at itself on its first run.
+        //
+        // That exclusion cannot hide a bypass, which is what makes it safe
+        // rather than convenient: a comment does not execute, so a URL that
+        // exists only inside one is not a path to private data. Code and string
+        // literals are both still scanned, and a naive `//` strip would have
+        // been WORSE than this — `"http://…"` in a string literal contains
+        // `//`, so stripping from the first `//` would have deleted the host
+        // out of a real URL and made the guard quietly weaker.
+        let codeLines = text.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                return !trimmed.hasPrefix("//") && !trimmed.hasPrefix("/*")
+                    && !trimmed.hasPrefix("*")
+            }
+        let flat = codeLines.joined(separator: " ")
+            .split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+
+        #expect(
+            !flat.contains("no kernel transport"),
+            "\(file.lastPathComponent) still carries the stub string"
+        )
+        for forbidden in [
+            "URLSession", "URLRequest", "URL(string", "http://", "https://", "127.0.0.1",
+            "8765", "localhost", "Authorization", "Bearer", "bearer",
+        ] {
+            #expect(
+                !flat.contains(forbidden),
+                """
+                \(file.lastPathComponent) reaches the network or holds a credential \
+                directly ("\(forbidden)"). The kernel is reached through the Rust \
+                core's bounds and authz, and only the core's host bridge may do it.
+                """
+            )
+        }
+    }
+    #expect(scanned >= 3, "the scan must have read the package's sources, found \(scanned)")
+
+    // Anti-vacuity: the scan would pass on an empty directory, so assert the
+    // files it DID read are the ones that carry the seam.
+    let wire = try String(
+        contentsOf: sources.appendingPathComponent("RecallWire.swift"), encoding: .utf8
+    )
+    #expect(wire.contains("protocol KernelRecallTransport"))
+    #expect(wire.contains("case refused"))
+    #expect(wire.contains("case abstained"))
+}
+
+@available(macOS 26.0, *)
+@Test("the measurement path's inert transport fails loudly rather than answering")
+func theInertTransportIsNotAStub() async {
+    let transport = UnwiredRecallTransport()
+    await #expect(throws: RecallTransportError.notWired) {
+        try await transport.recall(query: "q", domain: nil)
+    }
+
+    // And through the tool it renders as degraded — the property that
+    // distinguishes it from the stub string it replaces.
+    let tool = MemoryRecallTool(transport: transport)
+    let rendered = try? await tool.call(arguments: .init(query: "q"))
+    #expect(rendered?.lowercased().contains("unavailable") == true)
+    #expect(rendered?.contains("did not complete") == true)
+}
+
+#endif
