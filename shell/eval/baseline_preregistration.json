@@ -1,0 +1,62 @@
+{
+	"record": "shell-eval-baseline-preregistration",
+	"version": 1,
+	"phase": "P1 typed wire bridge (Plan 04) + baseline eval (Plan 08)",
+	"preregistered_at": "2026-10-18",
+	"first_run_at": null,
+	"note": "Written and committed BEFORE the first baseline run. A tolerance edited after seeing the numbers is a rationalization, not a criterion (Plan 08 §0). `first_run_at` is set by the run commit and never by this one; a tolerance loosened here after that date is refused by shell/tests/eval-preregistration.test.ts.",
+	"machine": {
+		"cpu": "Apple M1 Pro",
+		"memory_bytes": 17179869184,
+		"macos": "27.0.1",
+		"kernel_commit": "9ff3f2fe"
+	},
+	"dataset": {
+		"fixture": "tests/fixtures/eval_queries.md",
+		"sha256": "cc0bdbb723548cbe8b729ea9636e9400c1681734a7ac15c8a3a13fc9a3bea43d",
+		"judged_queries": 106,
+		"corpus_docs": 25,
+		"frozen": true,
+		"bounds_recorded_at_preregistration": [
+			"The corpus table in the fixture is truncated to 99 characters per row, while tests/eval.rs DOCS carries the untruncated sentences. The baseline seeds the fixture's OWN corpus (the frozen artifact Plan 08 §1 names), so its numbers are not comparable to an in-process run over eval.rs DOCS. Recorded, not repaired: the fixture is frozen.",
+			"tests/eval.rs QUERIES holds 107 queries; the fixture holds 106. The extra one is `SnapSync`, a negation probe with an EMPTY relevant set. The fixture therefore carries exactly one negation probe (`Kubernetes ingress`). The runner reads the FIXTURE, so the baseline covers 106 queries. Recorded, not repaired.",
+			"Corpus rows are truncated, so gold answers that depend on a truncated tail (doc 9's 'four percent of global revenue') are only partially matchable. This lowers the achievable ceiling and is part of why T5 is recorded rather than gated."
+		]
+	},
+	"tolerances": {
+		"T1_wire_lossless": {
+			"gating": true,
+			"rule": "For every judged query, the ordered hit-id sequence the shell's typed recall path returns MUST equal the ordered hit-id sequence the same kernel returns for the same request over plain HTTP POST /recall. Divergence in ANY position is a bridge defect.",
+			"decides_in_advance": "Attribution. If the two sequences differ, the conclusion is 'the bridge loses, duplicates, or reorders rows' — never 'recall@k moved'. Retrieval quality and wire losslessness are measured separately so neither can absorb the other.",
+			"compares": "ordered id sequences (positional), never a count or a total"
+		},
+		"T2_decision_complete": {
+			"gating": true,
+			"rule": "Every shaped response carries a `decision`, and every value is a member of the published enum. 0 responses without `decision`; 0 values outside {ok, low_confidence}.",
+			"decides_in_advance": "A response missing `decision` VOIDS the run regardless of its retrieval numbers. The enum is the kernel's published contract (openapi.yaml /recall 200.decision); a client-side third value is a contract lie, not a new state."
+		},
+		"T3_abstention_reachable": {
+			"gating": true,
+			"rule": "At least 1 of the 106 judged queries must return `decision: low_confidence` with zero passages.",
+			"decides_in_advance": "Zero abstentions is a FINDING that this corpus cannot support the abstention eval (Plan 08 §2.3) and that a dedicated abstention fixture is owed. It is explicitly NOT a pass. This is the arm that stops 'no abstentions observed' from being read as 'the abstention path is fine'.",
+			"rationale": "The fixture carries exactly one negation probe, so a zero here is plausible — which is exactly why the outcome had to be assigned before the number was known."
+		},
+		"T4_refusal_is_not_absence": {
+			"gating": true,
+			"rule": "Each run makes at least 1 deliberately unauthorized call. It must yield the refusal state, and that state's shape must be structurally distinguishable from an absence (empty passages with `decision: ok`).",
+			"decides_in_advance": "A refusal and an absence may never share a rendered form. Collapsing them is a confidentiality leak (Plan 04 §5), so this is gated on STRUCTURE, not on styling and not on a count.",
+			"compares": "outcome discriminant + presence of passages (structural), never a total"
+		},
+		"T5_recall_row": {
+			"gating": false,
+			"rule": "Record recall@5 over the 106 judged queries, the per-query ordered hit ids, each decision, and the zero-hit query set. This row is the REFERENT, not a verdict.",
+			"decides_in_advance": "Any future default-model swap is judged at ±3 points against THIS row (Plan 08 §2.1). No committed row, no swap — and because P3 is CLOSED, the rule is currently inert: it binds a future proposal, it does not license one.",
+			"why_not_gating": "Gating it would make an unmeasured retrieval number a pass/fail criterion chosen after the fact, which is the failure Plan 08 §0 exists to prevent. The corpus is truncated (see dataset bounds), so its absolute value is not a quality claim."
+		},
+		"T6_dataset_and_harness_drift": {
+			"gating": true,
+			"rule": "The fixture sha256 above must match the fixture on disk at run time. A mismatch voids the baseline; it is re-taken, never silently re-baselined.",
+			"decides_in_advance": "Editing the fixture to make a number look good is the one move that destroys the only baseline this phase produces (Plan 08 §5)."
+		}
+	}
+}
