@@ -197,7 +197,7 @@ pub async fn post_rewind(
             "reason must be 1..=4000 characters",
         ));
     }
-    // Screen the SANITIZED form — the form that is stored (audit N4).
+    // Screen the SANITIZED form — the form that is stored.
     let reason = crate::gate::sanitize_read(&body.reason, false, &principal);
     if crate::screen::contains_suspicious_pattern(&reason) {
         return Err(HandlerError::bad_request(

@@ -637,7 +637,7 @@ pub async fn run_recall(
         tel.answer_in_context = packed.answer_in_context;
         // Carry each candidate's domain THROUGH the pack, by input index.
         // Zipping against the pre-pack `domains` labelled a reordered hit with
-        // another domain (audit): packing selects by coverage/representative-
+        // another domain: packing selects by coverage/representative-
         // ness, so its output order is not the input order.
         tagged = packed
             .results

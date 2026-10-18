@@ -133,7 +133,7 @@ pub fn screen_content(content: &str) -> Result<String, ChannelError> {
     // judges exactly the bytes that will be persisted. Screening a partial
     // transform (the old `strip_invisible` only) let a markdown label
     // `[system: …](url)` pass CLEAN and then heal into a live directive on
-    // storage (audit N4).
+    // storage.
     let stored = crate::gate::sanitize_read(trimmed, false, &None);
     if crate::screen::contains_suspicious_pattern(&stored) {
         return Err(ChannelError::InvalidContent("blocklist"));

@@ -2197,7 +2197,7 @@ pub fn write_markdown_ingest(
                 // `heading_path` IS STORED ON THE ROW but the chunker removes
                 // the heading bytes from `chunk.text`, so scanning only
                 // title+text missed a heading that is itself an address
-                // (audit N3). The read sites emit `heading_path` under this
+                //. The read sites emit `heading_path` under this
                 // flag, so the flag must cover every stored free-text field.
                 crate::gate::pii_flag(doc_title, &chunk.text)
                     || crate::gate::pii_flag(&chunk.heading_path, ""),
@@ -2832,7 +2832,7 @@ pub(crate) async fn release_quarantine(
     // Resolve the pool from the SAME header the authorize above used. In
     // multi-db the header domain is the trust boundary and `state.pool` is the
     // GLOBAL db: using it here let an Admin-for-domain-A token release/purge a
-    // flagged row in the global database (audit N3). The sibling by-id read
+    // flagged row in the global database. The sibling by-id read
     // (`get_chunk`) already resolves this way.
     let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
@@ -2907,7 +2907,7 @@ pub async fn delete_quarantine(
     let actor =
         handlers::gate::principal_to_owner(&principal.0).unwrap_or_else(|| "operator".to_string());
     // Same resolution as release: the header domain's pool, never the global
-    // db in multi-db mode (audit N3).
+    // db in multi-db mode.
     let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
     let deleted = task::spawn_blocking(move || -> Result<usize, AppError> {

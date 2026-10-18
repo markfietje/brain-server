@@ -162,7 +162,7 @@ pub fn release_flagged(
     // THE GATE AND THE WRITE ARE ONE UNIT. The previous check ran in
     // autocommit and the UPDATE re-identified the row by id only, so a domain /
     // owner / rowid change between the check and the write was not re-checked
-    // (audit N6). Re-read inside the IMMEDIATE tx.
+    //. Re-read inside the IMMEDIATE tx.
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(meta) = target_meta(&tx, id, scope)? else {
         return Ok(0);
@@ -209,7 +209,7 @@ pub fn delete_flagged(
         return Err(QuarantineError::PurgeForbidden);
     }
     // Same check-then-act closure as release: resolve and gate inside the
-    // IMMEDIATE tx (audit N6).
+    // IMMEDIATE tx.
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(meta) = target_meta(&tx, id, scope)? else {
         return Ok(0);

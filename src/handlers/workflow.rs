@@ -151,7 +151,7 @@ pub async fn post_steering(
     // SCREEN THE FORM THAT IS STORED. Screening the raw bytes and then calling
     // `sanitize_read` for storage manufactured the plant: a markdown label
     // `[system: …](url)` or a C0-split marker was CLEAN raw and became a live
-    // line-anchored directive after the store transform (audit N4).
+    // line-anchored directive after the store transform.
     let sanitized = crate::gate::sanitize_read(&body.message, false, &principal);
     if crate::screen::contains_suspicious_pattern(&sanitized) {
         return Err(HandlerError::bad_request(
@@ -1492,7 +1492,7 @@ pub async fn post_answer(
             "answer must not be empty",
         ));
     }
-    // Screen the SANITIZED form — the form that is stored (audit N4).
+    // Screen the SANITIZED form — the form that is stored.
     let answer = crate::gate::sanitize_read(&body.answer, false, &principal);
     if crate::screen::contains_suspicious_pattern(&answer) {
         return Err(HandlerError::bad_request(

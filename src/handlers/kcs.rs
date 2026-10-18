@@ -227,7 +227,7 @@ pub async fn get_kcs_articles(
                 gate_owners.as_deref(),
             )
         {
-            // THE MISSING PER-ROW DOMAIN FILTER (audit N4). `None` above means
+            // THE MISSING PER-ROW DOMAIN FILTER. `None` above means
             // the core scans every domain; the worklist's `can_read_domain`
             // loop never saw these rows because they were extended AFTER it.
             // A principal scoped to one tenant therefore saw every domain's

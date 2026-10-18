@@ -3425,7 +3425,7 @@ fn backfill_pii_flag(db: &Connection) -> Result<u64> {
                 )?;
             // Backfill the SAME fields the read seam emits. A markdown row's
             // heading_path is stored apart from `content`, so scanning only
-            // title+content left a heading-only address unflagged (audit N3).
+            // title+content left a heading-only address unflagged.
             let flag = crate::gate::pii_flag(title.as_deref().unwrap_or(""), &content)
                 || crate::gate::pii_flag(heading.as_deref().unwrap_or(""), "");
             if flag {

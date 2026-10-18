@@ -314,7 +314,7 @@ mod tests {
                     ranges.len() <= MAX_MATCH_RANGES,
                     "cap respected for {prefix:?}/{claim:?}"
                 );
-                // THE SUPPORT ARM (audit): if the folded claim occurs in the
+                // THE SUPPORT ARM: if the folded claim occurs in the
                 // folded content, the matcher MUST report at least one range.
                 // The previous test asserted only INSIDE the loop, so zero
                 // ranges passed — the exact reason `İstanbul`/`İstanbul` was

@@ -47,7 +47,7 @@ pub enum PiiKind {
 pub fn pii_flag(title: &str, content: &str) -> bool {
     // Scan the form the READ seam will emit, not the raw bytes. A zero-width
     // or C0 byte inside `alice\u{200b}@example.com` made the detector miss a
-    // value that the seam then welded into a live address (audit N1): the
+    // value that the seam then welded into a live address: the
     // strip that the reader performs must be the form the detector judges.
     let norm = |s: &str| {
         crate::strip_invisible::strip_control_chars(&crate::strip_invisible::strip_invisible(s))
@@ -142,7 +142,7 @@ fn has_phone(text: &str) -> bool {
 /// The first implementation treated the WHOLE chain as the only candidate, so
 /// a card followed by another number (`4111 1111 1111 1111 1234`, one
 /// 20-digit chain) was a false negative, and a card embedded in a longer run
-/// (`9994111111111111111`) was invisible (audit N2). Window scanning closes
+/// (`9994111111111111111`) was invisible. Window scanning closes
 /// both, at the cost of accepting a Luhn-valid 13..=19-digit window inside a
 /// longer number as a candidate — the fail-closed direction for redaction.
 /// Windows are taken LONGEST first and accepted only when they do not overlap
@@ -1230,14 +1230,14 @@ fn strip_hostile_elements_once(s: &str) -> String {
 /// artifacts, never clean prose). Release discipline: any `sanitize_read`
 /// change must disclose digest invalidation.
 pub fn sanitize_read(s: &str, pii: bool, principal: &Option<crate::auth::Principal>) -> String {
-    // NORMALIZE FIRST (audit N1): redaction used to run before the invisible/
+    // NORMALIZE FIRST: redaction used to run before the invisible/
     // control strip, so `alice\u{200b}@example.com` was not detected (the
     // detector saw the split), and the strip then welded a live address for
     // the reader. The detector/masker and the reader now judge the same bytes.
     let normalized =
         crate::strip_invisible::strip_control_chars(&crate::strip_invisible::strip_invisible(s));
     let mut out = redact_content(&normalized, pii, principal);
-    // DELETIONS CAN WELD A MARKDOWN REF (audit N5): `![x]<script></script>(url)`
+    // DELETIONS CAN WELD A MARKDOWN REF: `![x]<script></script>(url)`
     // becomes a live image after the hostile-element strip. Alternate the
     // deletion transforms to a fixed point; every pass only removes bytes, so
     // the loop terminates and the bound is a guard, not a policy.

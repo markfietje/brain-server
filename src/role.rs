@@ -341,7 +341,7 @@ pub fn effective_filter(sub: &str, manages: &[String], roles: &[Role]) -> Retrie
                 // An EMPTY `manages` claim adds nothing, so the allowlist stays
                 // empty and the gate denies. It must NEVER fall through to
                 // `None` — `None` means "no owner predicate", i.e. every
-                // owner's rows (audit N1).
+                // owner's rows.
                 for m in manages {
                     if !owners.contains(m) {
                         owners.push(m.clone());
@@ -351,7 +351,7 @@ pub fn effective_filter(sub: &str, manages: &[String], roles: &[Role]) -> Retrie
             // `self`, `all` WITHOUT `shared_pool`, and any unknown posture all
             // narrow to the caller's own subject. `owner_filter` is a
             // restriction, never a grant; only the explicit `shared_pool`
-            // capability widens the owner half (audit N2).
+            // capability widens the owner half.
             _ => {
                 if !owners.contains(&sub.to_string()) {
                     owners.push(sub.to_string());
@@ -651,7 +651,7 @@ mod tests {
         let gate = effective_filter("bob", &[], std::slice::from_ref(&sup));
         // SOME(EMPTY) IS THE DENY. The old assertion was `None` and called it
         // "reads nothing" — but `None` is "no owner predicate", so the pin
-        // asserted the bypass it was written to prevent (audit N1).
+        // asserted the bypass it was written to prevent.
         assert_eq!(
             gate.owner_in,
             Some(Vec::new()),

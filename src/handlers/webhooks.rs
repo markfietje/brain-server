@@ -19,7 +19,7 @@ use crate::webhook::{EnqueueOutcome, WEBHOOK_TS_FUTURE_SKEW_SECS, WebhookQueue};
 /// replays it, so the claim MUST key on the payload. This used to match only
 /// `kind.starts_with("github")`, so `delivery/*` fell to the id-trusting arm
 /// and a captured body+signature replayed forever with a fresh delivery id
-/// (audit). Standard-Webhooks lanes do NOT come through here: they MAC
+///. Standard-Webhooks lanes do NOT come through here: they MAC
 /// `{id}.{timestamp}.{body}` and pass `ClaimKey::DeliveryId` explicitly,
 /// because there the id is unforgeable.
 fn claim_key_for(_kind: &str) -> crate::webhook::ClaimKey {
@@ -987,7 +987,7 @@ async fn receive_signal(state: &Arc<AppState>, headers: &HeaderMap, body: &Bytes
     // The SAME full store transform the command path applies below
     // (`sanitize_read`), so a markdown label, C0 split, hostile tag or sentinel
     // that heals into a line-anchored directive cannot pass this screen
-    // (audit N4).
+    //.
     let screened_text = crate::gate::sanitize_read(&payload.text, false, &None);
     if crate::screen::contains_suspicious_pattern(&screened_text) {
         deny(&state, "signal", "injection pattern rejected");

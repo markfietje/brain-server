@@ -902,7 +902,7 @@ fn legacy_fallback_applies_the_record_gate_and_domain() {
 
     // `include_decayed=true` with NO other gate filter used to emit an empty
     // gate clause and join it, leaving a trailing `AND` — SQLite "incomplete
-    // input" (audit N5). The predicate must simply omit the clause.
+    // input". The predicate must simply omit the clause.
     let decayed = super::SearchFilters {
         include_decayed: true,
         ..Default::default()
