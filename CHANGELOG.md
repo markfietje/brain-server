@@ -8,6 +8,81 @@ are consistent at that tag.
 
 ### Added
 
+- **The shell's Rust core grew beyond recall: `/verify` and `/ump/forget`,
+  and the refusal taxonomy is the deliverable.** A command that cannot refuse is
+  a command with no authz, so each is a fresh surface with its own bounds and
+  its own arms, following `recall.rs`'s shape rather than wrapping a fetch.
+  `/verify` bounds the claim at the kernel's own 2,000-character ceiling on the
+  TRIMMED claim and measures `chars()` — `/recall` measures BYTES on the raw
+  query, and mirroring that here would refuse claims the kernel serves (2,000
+  multibyte characters is legal and can be 8,000 bytes). `chunk_id > 0` is
+  labeled shell-side: the kernel states no floor, but every production insert
+  omits the rowid column. Three mint refusals (`claim_empty`, `claim_too_long`,
+  `chunk_id_not_positive`) and six outcomes (`supported`, `unsupported`,
+  `refused`, `no_such_chunk`, `unreachable`, `contract_violation`).
+  `/ump/forget` exposes the SOFT path only. `hard` is declared on the request
+  type solely to be refused, as `Option<Value>` so that any spelling — `true`,
+  `"true"`, `1`, `"yes"` — is NAMED in the refusal rather than only a well-typed
+  boolean; the refusal states what the destructive act requires (Admin scope
+  AND the `purge` role, which a capability bearer can never reach). Both take
+  `deny_unknown_fields`, neither takes a principal, and a principal smuggled
+  into either is refused. The authz surface is stated, not left implicit:
+  `/verify` opens no new reach but a new SHAPE of it — a content-confirmation
+  oracle over candidate strings without echoing the content — and its 404 arm
+  preserves the kernel's deliberate blur of "no such row" against "a row your
+  record gate does not admit".
+
+- **Both commands are wired through the typed client in authorize → wire →
+  shape order, and writing the wire found two defects in existing artifacts.**
+  `chat/forget.ts`'s `didErase` read the outcome's NAME and reported every soft
+  forget as an ERASURE, so the receipt said data was destroyed when a flag had
+  been set; it reads the kernel's `result` field now, and the pin asserts both
+  directions. `openapi.yaml` declared no request body for `/ump/forget` at all,
+  so openapi-typescript generated `body?: never` and the route was uncallable
+  from ANY generated client, not only this shell. The body is specified, the
+  generated types regenerated, and the route-coverage pin is green.
+
+- **The route table is the SHELL's, and Plan 09 §1 is stale.** The kernel's
+  `OPENAPI_ROUTES`/`AUTHZ_GATES` cover the composed server and are already
+  green; they say nothing about the shell, and asserting them again would be a
+  passing gate that never looked at its subject. The census derives the shell's
+  routes from `shell/src/routes/**/+page.svelte` by SvelteKit convention,
+  asserts a floor of 9 AND the exact nine, and carries one parity verdict per
+  route (`exact`, `renamed`, `no_counterpart`). Against the real Dioxus route
+  table, `/overview` and `/models` have no counterpart at all, `/search` and
+  `/decisions` exist under other names (`/recall`, `/review`), and `/chat` is
+  `no_counterpart` — missing on both sides, exactly as the plan said. **Gate 1
+  therefore cannot go green**, and that is recorded rather than reconciled by
+  editing the table.
+
+- **`prewarm` is recorded UNREACHABLE with its arithmetic, not wired.** Plan 02
+  §7's criterion is a first delta without a blocking spinner, measured ~2.0 s
+  cold against ~0.7 s warm. There is no model session in the shipped app to
+  prewarm: no Swift host fills `KernelRecallTransport`, so wired conformers = 0,
+  sessions = 0, targets = 0, and a call against a session that does not exist is
+  a no-op that reads as done. The pin asserts no `prewarm` symbol exists in
+  production code AND fails the moment a wired transport appears — at which
+  point the obligation is owed, not silently inherited.
+
+- **`de` is retrieval-only, stated as a value rather than defaulted.** AFM 3
+  Core reports 24 supported languages including fr/es/nl and not de, and the
+  rule is not to answer German in English. Dropping `de` was rejected on
+  contract cost (a locale is a keys-parity contract change across a gate, a
+  settings file and five catalogs); external routing was rejected on a fact
+  (every request is refused here with `ModelManagerError 1046`). The decision is
+  a total `Record` over the five locale literals, an unknown locale fails closed
+  to `unknown_locale`, and the German catalog is held to actually being German —
+  238 of 250 keys differ from `en`.
+
+- **The `[correct]` and `[forget]` affordances are axe AA clean and
+  keyboard-complete in every state they open.** The existing `/chat` axe arm
+  renders an answered turn and never opens an affordance, so the claim form and
+  the result regions did not exist in the document it measured; the new pin
+  opens each state (idle citation, claim form, verdict, tombstone) and runs axe
+  over the whole document. Measured finding: axe-core 4.14 reports ZERO
+  violations on a placeholder-only input, so the pin carries its own
+  label-association arm — the WCAG claim does not rest on axe alone.
+
 - **The shell's recall tool now returns real rows, and the Rust core is the
   boundary that makes that safe.** `shell/src-tauri/src/lib.rs` carried one
   command and a header promising "system integration ONLY"; it now carries
@@ -92,6 +167,19 @@ are consistent at that tag.
 
 ### Notes
 
+- **What Phase II did not settle, stated so it cannot read as done.**
+  Summarize-and-restart recovery (Plan 19) is unbuilt and unmeasured: a
+  floor-bound turn is visible and refusable before the request, but not
+  survivable. Escalation is unmeasured — every `.deep` request is refused on
+  this machine with `ModelManagerError 1046`, no profile is built, and
+  `reasoningLevel` is never set, so no part of this phase promises it. The
+  client still cannot ship: signing, notarization, keychain, auto-update and
+  clean-machine verification are Plan 05 / P4. The on-device model's tool still
+  has no live transport in the shipped app — II-1 decided the seam stays a seam
+  and the webview holds the only wire — so there are no model deltas to stream
+  and no model session to prewarm; every turn today is retrieval plus its
+  evidence. Panel parity (M3) is not started, and axe AA is proven per flow,
+  not as a breadth claim.
 - **Two dataset defects were found by writing the preregistration, and are
   recorded rather than repaired** (the fixture is frozen): its corpus table is
   truncated to 99 characters per row while `tests/eval.rs`'s `DOCS` is not, so
