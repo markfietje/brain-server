@@ -59,9 +59,23 @@ describe('II-6 forget', () => {
 		// The kernel confirmed the tombstone but the evidence read returned
 		// nothing. A tombstone still renders; the chain claim does not.
 		const unobserved = tombstonedReceipt('tombstoned', 41, null);
-		expect(didErase(unobserved)).toBe(true);
+		// II-7c CORRECTION: this used to expect `true`, which agreed with the
+		// old name-based `didErase` and so passed on the defect it was meant to
+		// police. A tombstone is a FLAG — the row is still retrievable — so it is
+		// not an erasure, and the result field is what says so.
+		expect(didErase(unobserved)).toBe(false);
 		expect(chainTransitionObserved(unobserved)).toBe(false);
 		expect(forgetReceipt(unobserved).text).toContain('no chain transition is claimed');
+	});
+
+	test('didErase_reads_the_result_and_not_the_outcomes_name', () => {
+		// The distinction is invisible in the outcome's NAME and total in the
+		// kernel's `result`. Both cases carry outcome 'tombstoned'.
+		expect(didErase(tombstonedReceipt('tombstoned', 41, null))).toBe(false);
+		expect(didErase(tombstonedReceipt('erased', 41, null))).toBe(true);
+		// And the receipt for a soft forget must not read as a destruction.
+		const soft = forgetReceipt(tombstonedReceipt('tombstoned', 41, null));
+		expect(soft.text).not.toContain('erased');
 	});
 
 	test('a_refusal_is_a_result_and_says_nothing_was_erased', () => {

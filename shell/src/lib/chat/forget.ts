@@ -144,9 +144,28 @@ export function unavailableForget(
 	return { outcome: 'unavailable', recordId, status, detail };
 }
 
-/** True only for the outcome that erased something. */
+/**
+ * DID THE BYTES GO? — read from the RESULT, never from the outcome's name.
+ *
+ * **This was wrong until II-7c, and the old form is recorded because it is the
+ * shape a name-based predicate takes.** It read `outcome.outcome ===
+ * 'tombstoned'`, which is TRUE for a tombstone — so every soft forget reported
+ * that data had been ERASED, when what happened is that a flag was set and the
+ * row is still retrievable. The distinction is invisible in the outcome's name
+ * and total in the `result` the kernel actually returns.
+ *
+ * It survived a green suite because the pins asserted the behaviour rather than
+ * the predicate: `chat-forget.test.ts` called it on a tombstone and expected
+ * `true`, so the pin and the defect agreed with each other. Nothing could have
+ * caught it from the outside — it took wiring the core's real `result` through
+ * to make the question askable.
+ *
+ * Note the honest consequence, which is the point: through the shell's soft
+ * path this is now ALWAYS `false`, and it stays in the vocabulary because
+ * `tombstonedReceipt` accepts `'erased'` and a caller must be able to ask.
+ */
 export function didErase(outcome: ForgetOutcome): boolean {
-	return outcome.outcome === 'tombstoned';
+	return outcome.outcome === 'tombstoned' && outcome.result === 'erased';
 }
 
 /**

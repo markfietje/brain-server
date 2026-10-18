@@ -8955,7 +8955,21 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Numeric row id, or the `urn:ump:…` content id. The handler resolves an `i64`, a stored UMP id, or any `:`-suffix that parses as an i64; anything else is a 404. */
+                    id: string;
+                    /** @description Optional, default `ump_forget`. Written verbatim into `tombstones.reason`, which has no ceiling of its own. */
+                    reason?: string;
+                    /**
+                     * @description `true` runs the v1.14 `purge_chunk_ids` erase path and requires the `/purge` destructive authority (Admin scope AND the `purge` role; a capability bearer is always refused).
+                     * @default false
+                     */
+                    hard?: boolean;
+                };
+            };
+        };
         responses: {
             /** @description {result: tombstoned} */
             200: {

@@ -3002,6 +3002,32 @@ paths:
         `purge` role capability; a capability bearer is always refused).
         Target-row bound: the caller's record gate decides the id.
         Returns `{result: "tombstoned"}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:
+                  type: string
+                  description: >
+                    Numeric row id, or the `urn:ump:…` content id. The handler
+                    resolves an `i64`, a stored UMP id, or any `:`-suffix that
+                    parses as an i64; anything else is a 404.
+                reason:
+                  type: string
+                  description: >
+                    Optional, default `ump_forget`. Written verbatim into
+                    `tombstones.reason`, which has no ceiling of its own.
+                hard:
+                  type: boolean
+                  default: false
+                  description: >
+                    `true` runs the v1.14 `purge_chunk_ids` erase path and
+                    requires the `/purge` destructive authority (Admin scope AND
+                    the `purge` role; a capability bearer is always refused).
       responses:
         "200":
           description: "{result: tombstoned}"
