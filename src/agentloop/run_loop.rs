@@ -2939,7 +2939,20 @@ mod tests {
                     wake.notify_all();
                 }
                 let outcome = (&mut work).await.unwrap();
-                assert_eq!(outcome.outcome, RunOutcome::Canceled);
+                // Both are correct: `Canceled` when the cancel landed on a live
+                // run, `Completed` when the run finished in the gap between the
+                // commit and the cancel. Neither is a defect — cancelling a
+                // completed run does not un-complete it. The claim this arm makes
+                // is that COMMITTED EVIDENCE SURVIVES, and that is asserted
+                // strictly on the row count below.
+                assert!(
+                    matches!(
+                        outcome.outcome,
+                        RunOutcome::Canceled | RunOutcome::Completed { .. }
+                    ),
+                    "a committed compaction must end the run either way, got {:?}",
+                    outcome.outcome
+                );
             });
             let conn = f.pool.get().unwrap();
             let rows: i64 = conn
@@ -2975,16 +2988,45 @@ mod tests {
                     *lock.lock().unwrap() = true;
                     wake.notify_all();
                 }
-                let committed_first = tokio::select! {
-                    _outcome = &mut work => true,
-                    _ = tokio::time::timeout(Duration::from_secs(5), committed.notified()) => false,
-                };
+                // Wait for the COMMIT ITSELF, not for the run to finish.
+                //
+                // The old code raced the two — a `select!` over
+                // `committed.notified()` and the run — and then DISCARDED which
+                // arm won (`let _ = committed_first;`) before asserting a single
+                // specific outcome anyway. That is how a test can be green on a
+                // laptop and red on a loaded runner: on a slow runner the run
+                // reaches `Completed` first, `cancel.cancel()` lands on a
+                // finished run and is a no-op, and `RunOutcome::Completed` fails
+                // an assertion that only ever expected `Canceled`. The
+                // `rerank-tier` lane caught it for exactly that reason.
+                //
+                // Waiting on the commit removes the race from the SETUP: once
+                // this resolves, the evidence row is written. What is NOT
+                // guaranteed is whether the run is still live when the cancel
+                // lands, and that is a property of scheduling, not of the code
+                // under test — so the outcome is asserted below as the set of
+                // legitimate values, and the EVIDENCE is asserted strictly.
+                tokio::time::timeout(Duration::from_secs(5), committed.notified())
+                    .await
+                    .expect("the compaction never committed — the run finished without reaching the commit");
                 // Commit won; cancel afterward — the loop cancels but the
                 // committed evidence is not undone.
                 cancel.cancel();
                 let outcome = (&mut work).await.unwrap();
-                assert_eq!(outcome.outcome, RunOutcome::Canceled);
-                let _ = committed_first;
+                // Both are correct: `Canceled` when the cancel landed on a live
+                // run, `Completed` when the run finished in the gap between the
+                // commit and the cancel. Neither is a defect — cancelling a
+                // completed run does not un-complete it. The claim this arm makes
+                // is that COMMITTED EVIDENCE SURVIVES, and that is asserted
+                // strictly on the row count below.
+                assert!(
+                    matches!(
+                        outcome.outcome,
+                        RunOutcome::Canceled | RunOutcome::Completed { .. }
+                    ),
+                    "a committed compaction must end the run either way, got {:?}",
+                    outcome.outcome
+                );
             });
             let conn = f.pool.get().unwrap();
             let rows: i64 = conn
