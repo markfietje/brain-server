@@ -2033,6 +2033,42 @@ mod tests {
             .unwrap()
     }
 
+    /// Budget for awaiting a seam, in one place because the size is a
+    /// measurement and the rule is a law.
+    ///
+    /// The rule: a seam wait is FAIL-CLOSED. A swallowed timeout here does not
+    /// merely make the test slower — it releases the run into assertions about
+    /// a boundary it never reached, and the failure it eventually reports names
+    /// the wrong thing. The compaction boundary test is the worked example: its
+    /// setup waited 5 s for the seam, swallowed the expiry, and then started a
+    /// FRESH 5 s budget on the commit. On a loaded runner the run had not
+    /// reached the end of the admission search yet, so the commit was reported
+    /// as "never happened" — while the CI log showed a test that had spent its
+    /// whole life waiting for work it was about to finish.
+    ///
+    /// The size is NOT a performance assertion and must not be sized like one.
+    /// The wait covers whatever PRODUCTION work stands between "the run
+    /// started" and "the run is parked at the seam". On the compaction path
+    /// that includes the admission search, which re-projects and re-shapes the
+    /// whole replay window once per candidate split: measured 1.8 s idle and
+    /// 5.3 s under ~2.5x CPU contention on the 25x4 KB window these tests
+    /// seed, against a CI suite that runs ~2.2x slower than an idle laptop.
+    /// These tests claim WHERE the cancellation landed, never how fast the loop
+    /// got there — so the budget only has to outlast the slowest runner in the
+    /// matrix, with the measured worst case an order of magnitude under it. A
+    /// premise that is NEVER observed still fails, loudly.
+    const SEAM_WAIT: Duration = Duration::from_secs(60);
+
+    /// Await `seam`, or fail the test naming what was never observed.
+    async fn await_seam(seam: &tokio::sync::Notify, what: &str) {
+        if tokio::time::timeout(SEAM_WAIT, seam.notified())
+            .await
+            .is_err()
+        {
+            panic!("{what} was never observed: the run never reached the seam");
+        }
+    }
+
     struct Fixture {
         driver: LoopDriver,
         provider: Arc<LoopbackProvider>,
@@ -2762,7 +2798,7 @@ mod tests {
             tokio::pin!(work);
             tokio::select! {
                 outcome = &mut work => panic!("returned before tool entered: {outcome:?}"),
-                _ = tokio::time::timeout(Duration::from_secs(5), entered.notified()) => {}
+                _ = await_seam(&entered, "the tool boundary") => {}
             }
             // DROP the caller future while the runner lives (Pin<Box<_>>
             // has no Drop of its own to run; the point is the future never
@@ -2930,7 +2966,7 @@ mod tests {
             runtime.block_on(async {
                 tokio::select! {
                     outcome = &mut work => panic!("returned before the pause: {outcome:?}"),
-                    _ = tokio::time::timeout(Duration::from_secs(5), entered.notified()) => {}
+                    _ = await_seam(&entered, "the compaction boundary") => {}
                 }
                 cancel.cancel();
                 {
@@ -2981,7 +3017,7 @@ mod tests {
             runtime.block_on(async {
                 tokio::select! {
                     outcome = &mut work => panic!("returned before the pause: {outcome:?}"),
-                    _ = tokio::time::timeout(Duration::from_secs(5), entered.notified()) => {}
+                    _ = await_seam(&entered, "the compaction boundary") => {}
                 }
                 {
                     let (lock, wake) = &*latch;
@@ -3006,9 +3042,16 @@ mod tests {
                 // lands, and that is a property of scheduling, not of the code
                 // under test — so the outcome is asserted below as the set of
                 // legitimate values, and the EVIDENCE is asserted strictly.
-                tokio::time::timeout(Duration::from_secs(5), committed.notified())
-                    .await
-                    .expect("the compaction never committed — the run finished without reaching the commit");
+                //
+                // What this wait may NOT be is a second, independent deadline on
+                // the same premise. The boundary above is fail-closed now, so by
+                // the time this line runs the run is already parked AT the seam
+                // and the commit is the next thing it does — but while the
+                // boundary wait was a swallowable 5 s, this one inherited the
+                // whole admission search it had never waited for and reported it
+                // as a commit that never happened. Same budget, one clock, one
+                // premise: `SEAM_WAIT`.
+                await_seam(&committed, "the compaction commit").await;
                 // Commit won; cancel afterward — the loop cancels but the
                 // committed evidence is not undone.
                 cancel.cancel();
@@ -3578,19 +3621,44 @@ mod tests {
         runtime.block_on(async {
             f.driver.claim(1, "parent", true).await.unwrap();
             let cancel = CancellationToken::new();
-            let first = f.driver.run_turns_owned_projected(1, "parent:first", "task", "parent", &cancel, |receipt| {
-                Ok(vec![("subagent_result".into(), receipt.final_text.clone(), format!("child-result:{}", receipt.exchange_id))])
-            });
+            let first = f.driver.run_turns_owned_projected(
+                1,
+                "parent:first",
+                "task",
+                "parent",
+                &cancel,
+                |receipt| {
+                    Ok(vec![(
+                        "subagent_result".into(),
+                        receipt.final_text.clone(),
+                        format!("child-result:{}", receipt.exchange_id),
+                    )])
+                },
+            );
             tokio::pin!(first);
             tokio::select! {
                 result = &mut first => panic!("returned before receipt pause: {result:?}"),
-                signal = tokio::time::timeout(Duration::from_secs(5), entered.notified()) => signal.unwrap(),
+                _ = await_seam(&entered, "the receipt boundary") => {}
             }
             // exchange_done already exists, but neither receipt nor child
             // projection is finalized. Even the same owner must stay excluded.
-            let terminal: i64 = f.pool.get().unwrap().query_row("SELECT count(*) FROM agent_session_events WHERE kind='control:exchange_done'", [], |r| r.get(0)).unwrap();
+            let terminal: i64 = f
+                .pool
+                .get()
+                .unwrap()
+                .query_row(
+                    "SELECT count(*) FROM agent_session_events WHERE kind='control:exchange_done'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
             assert_eq!(terminal, 1);
-            assert!(second.run_turns_owned(1, "parent:second", "task", "parent", &cancel).await.is_err());
+            assert!(
+                second
+                    .run_turns_owned(1, "parent:second", "task", "parent", &cancel)
+                    .await
+                    .is_err()
+            );
             assert!(second_provider.requests().is_empty());
             assert!(second.claim(1, "parent", false).await.is_err());
             {
@@ -3600,7 +3668,13 @@ mod tests {
             }
             resume.notify_one();
             let receipt = first.await.unwrap();
-            let row = session_log::exact(&f.pool.get().unwrap(), 1, &format!("child-result:{}", receipt.exchange_id)).unwrap().unwrap();
+            let row = session_log::exact(
+                &f.pool.get().unwrap(),
+                1,
+                &format!("child-result:{}", receipt.exchange_id),
+            )
+            .unwrap()
+            .unwrap();
             assert_eq!(row.payload_json, "child reply");
             second.claim(1, "parent", false).await.unwrap();
         });
@@ -3779,9 +3853,7 @@ mod tests {
                 a.run_turns_keyed(1, "a", "one", &CancellationToken::new())
                     .await
             });
-            tokio::time::timeout(Duration::from_secs(5), entered.notified())
-                .await
-                .unwrap();
+            await_seam(&entered, "the first tool boundary").await;
             let before = session_kinds(&f);
             let error = b
                 .run_turns(1, "two", &CancellationToken::new())
@@ -3833,7 +3905,7 @@ mod tests {
             tokio::pin!(work);
             tokio::select! {
                 outcome = &mut work => panic!("returned before tool entered: {outcome:?}"),
-                _ = tokio::time::timeout(Duration::from_secs(5), entered.notified()) => {}
+                _ = await_seam(&entered, "the tool boundary") => {}
             }
             cancel.cancel();
             let result = (&mut work).await;
