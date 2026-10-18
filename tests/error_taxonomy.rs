@@ -72,6 +72,12 @@ const KNOWN_ERRORS: &[(&str, &str, &str, &str)] = &[
     ("OfferError", "workflow/relay.rs", "workflow", "display"),
     ("TokenError", "ump_integrity.rs", "auth", "display"),
     ("PurgeError", "service/purge.rs", "service", "display"),
+    // The quarantine-by-id core. `gap`, not `display`: the router maps every
+    // variant to `AppError` explicitly (404 / 403 / 409 / 500) and never
+    // formats this type. `NotFound` and `PurgeForbidden` must share one answer
+    // on the release path, so a free-form Display could only invite the
+    // existence oracle the mapping avoids.
+    ("QuarantineError", "service/quarantine.rs", "service", "gap"),
     ("GateError", "service/review.rs", "input", "display"),
     ("IngestError", "service/ingest.rs", "input", "display"),
     ("DsarError", "service/dsar.rs", "service", "display"),
@@ -96,11 +102,20 @@ const KNOWN_ERRORS: &[(&str, &str, &str, &str)] = &[
 
 /// Accepted renderer gaps: (error type, reason, owner). The test pins this
 /// list exactly — see the module docs.
-const KNOWN_GAPS: &[(&str, &str, &str)] = &[(
-    "RefreshError",
-    "no Display: renders Debug-only; file is no-touch on the A3 track",
-    "auth",
-)];
+const KNOWN_GAPS: &[(&str, &str, &str)] = &[
+    (
+        "RefreshError",
+        "no Display: renders Debug-only; file is no-touch on the A3 track",
+        "auth",
+    ),
+    (
+        "QuarantineError",
+        "no Display by design: the router maps each variant to AppError \
+         (404/403/409/500) and never formats it; NotFound and PurgeForbidden \
+         share one answer so the route is not an id-existence oracle",
+        "service",
+    ),
+];
 
 fn src_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")

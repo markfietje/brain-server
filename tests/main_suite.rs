@@ -1144,6 +1144,7 @@ mod tests {
         let err = delete_quarantine(
             State(state.clone()),
             handlers::auth::OptPrincipal(None),
+            axum::http::HeaderMap::new(),
             Path(id),
         )
         .await
@@ -4006,7 +4007,18 @@ Final paragraph after the rule.";
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(auditor.contains("\"can\":[\"read\"]"));
+        assert!(
+            auditor.contains("\"read\""),
+            "client-auditor is read-only but reads"
+        );
+        assert!(
+            auditor.contains("\"shared_pool\""),
+            "client-auditor's cross-owner read is the declared shared_pool capability"
+        );
+        assert!(
+            !auditor.contains("\"purge\""),
+            "client-auditor must never carry the destructive capability"
+        );
         let solo: String = db
             .query_row("SELECT json FROM roles WHERE name = 'solo'", [], |r| {
                 r.get(0)
@@ -6364,13 +6376,55 @@ Final paragraph after the rule.";
         let gate = |p: &auth::Principal| {
             handlers::gate::role_retrieval_gate(&Some(p.clone()), &pool).unwrap()
         };
-        // agent → the shared pool (owner_filter "all" marks the role
-        // adminish for retrieval — the gateway identity must see the legacy
-        // NULL-owner rows; the no-Admin ceiling lives in the action gates,
-        // not here).
+        // agent → the shared pool. It declares `shared_pool`, which widens the
+        // OWNER half only; its declared scopes SURVIVE as the access half. The
+        // old expectation (both None) encoded the defect the audit closed:
+        // `owner_filter: "all"` used to erase BOTH halves of the record gate.
         let g = gate(&role_p("ana", &["agent"], &[]));
-        assert_eq!(g.owner_in, None, "agent: no owner restriction");
-        assert_eq!(g.access_scopes, None, "agent: no scope restriction");
+        assert_eq!(g.owner_in, None, "agent: shared_pool drops the owner fence");
+        assert_eq!(
+            g.access_scopes,
+            Some(vec!["private".into(), "domain".into(), "team".into()]),
+            "agent: the scope half must survive"
+        );
+
+        // THE REGRESSION ARM, and the finding it guards: three presets that
+        // never declared a cross-owner read must NOT become unrestricted when
+        // attached to a token. `dpo` and `bpo-ops` are `self`; `client-auditor`
+        // is the one preset whose documented job is cross-owner (bounded by
+        // scope), so it may drop only the owner half.
+        let dpo = gate(&role_p("ana", &["dpo"], &[]));
+        assert_eq!(
+            dpo.owner_in,
+            Some(vec!["ana".to_string()]),
+            "dpo: own rows only"
+        );
+        assert_eq!(
+            dpo.access_scopes,
+            Some(vec!["private".into(), "domain".into(), "team".into()]),
+            "dpo: scopes survive"
+        );
+        let ops = gate(&role_p("ana", &["bpo-ops"], &[]));
+        assert_eq!(
+            ops.owner_in,
+            Some(vec!["ana".to_string()]),
+            "bpo-ops: own rows only"
+        );
+        assert_eq!(
+            ops.access_scopes,
+            Some(vec!["private".into(), "domain".into(), "team".into()]),
+            "bpo-ops: scopes survive"
+        );
+        let auditor = gate(&role_p("ana", &["client-auditor"], &[]));
+        assert_eq!(
+            auditor.owner_in, None,
+            "client-auditor: cross-owner read is its documented job"
+        );
+        assert_eq!(
+            auditor.access_scopes,
+            Some(vec!["private".into(), "domain".into(), "team".into()]),
+            "client-auditor: the domain scope still bounds it"
+        );
         // supervisor (reports) → only managed rows (owner IN managed) — the
         // narrowing arm: a regression that made every bundle unrestricted
         // fails here.
@@ -8036,13 +8090,13 @@ Final paragraph after the rule.";
             (
                 router_mem_src,
                 "add_chunk",
-                "INSERT INTO knowledge(content, title, source, content_hash, owner, origin)",
+                "INSERT INTO knowledge(content, title, source, content_hash, pii, owner, origin)",
             ),
             // ingest_memory
             (
                 router_mem_src,
                 "ingest_memory",
-                "INSERT INTO knowledge(content, title, source, content_hash, owner, origin)",
+                "INSERT INTO knowledge(content, title, source, content_hash, pii, owner, origin)",
             ),
             // /ingest (structured) — v1.17.3 M2: the INSERT moved into the
             // shared `ingest_one` core (the batch path reuses it), and the
@@ -8059,7 +8113,7 @@ Final paragraph after the rule.";
             (
                 router_mem_src,
                 "write_markdown_ingest",
-                "heading_path, line_start, line_end, source_path, owner)",
+                "heading_path, line_start, line_end, source_path, pii, owner)",
             ),
         ];
         for (src, handler, sql) in sites {
@@ -8644,8 +8698,12 @@ Final paragraph after the rule.";
             ".prepare_cached(",
         ];
         let count: usize = TOKENS.iter().map(|t| production.matches(t).count()).sum();
+        // 52 -> 49: the quarantine by-id release/delete SQL moved OUT of the
+        // router into `service/quarantine.rs` (the audit's finding 6). A named
+        // act, not drift — the service core now owns those statements and the
+        // router only maps its error type.
         assert_eq!(
-            count, 52,
+            count, 49,
             "the router's rusqlite call-shape census moved — F4-08's staged              migration requires the delta to be a named act (update this              census in the same commit as the SQL change)"
         );
     }

@@ -87,6 +87,10 @@ fn seed_roles(pool: &brain_server::Pool) {
             "write".to_string(),
             "approve".to_string(),
             "reject".to_string(),
+            // The shared-pool capability is now EXPLICIT: `owner_filter:"all"`
+            // is a restriction, not a grant (audit N2). A review desk that
+            // needs the cross-owner queue declares the capability that says so.
+            "shared_pool".to_string(),
         ],
         panels_default: None,
         panels_hidden: None,
@@ -608,4 +612,244 @@ async fn admin_scoped_principal_keeps_the_review_scans() {
             "{path} must answer an admin-scoped caller: {body}"
         );
     }
+}
+
+// ── the quarantine MUTATIONS ────────────────────────────────────────────
+//
+// `GET /quarantine` is domain-scoped above. Its two by-id siblings were not:
+// they authorized `Action::Admin` against the literal `"global"` and then wrote
+// with NO domain predicate, NO record-level `(owner, access_scope)` gate, and
+// (for delete) no `purge` role — strictly weaker than the list they hang off.
+//
+// Both are pinned here through the composed `app(state)`, and every refusal
+// pins the database as unchanged.
+
+async fn post_quarantine(
+    srv: &TestServer,
+    token: &str,
+    path: &str,
+) -> (StatusCode, serde_json::Value) {
+    let req = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app(srv.state.clone()).oneshot(req).await.expect("oneshot");
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+fn flagged_row(srv: &TestServer, id: i64, owner: &str, domain: &str) {
+    let conn = srv.state.pool.get().expect("conn");
+    conn.execute(
+        "INSERT INTO knowledge(id, title, content, content_hash, source, domain, owner,
+                                access_scope, flagged)
+         VALUES(?1, 'q', 'quarantined payload', 'h-quarantine', 'manual', ?2, ?3, 'private', 1)",
+        rusqlite::params![id, domain, owner],
+    )
+    .unwrap();
+}
+
+fn is_still_flagged(srv: &TestServer, id: i64) -> bool {
+    srv.state
+        .pool
+        .get()
+        .expect("conn")
+        .query_row(
+            "SELECT flagged FROM knowledge WHERE id = ?1",
+            rusqlite::params![id],
+            |r| r.get::<_, i64>(0),
+        )
+        .expect("row exists")
+        == 1
+}
+
+fn row_exists(srv: &TestServer, id: i64) -> bool {
+    srv.state
+        .pool
+        .get()
+        .expect("conn")
+        .query_row(
+            "SELECT 1 FROM knowledge WHERE id = ?1",
+            rusqlite::params![id],
+            |_| Ok(()),
+        )
+        .is_ok()
+}
+
+/// A tenant-A admin must not un-quarantine or delete tenant-B's flagged row in
+/// shim mode, where both live in one file. The 404 is the SAME answer a missing
+/// id gets, so this route is not an existence oracle either.
+#[tokio::test]
+async fn quarantine_mutations_do_not_cross_the_domain_boundary() {
+    let srv = build_server();
+    let tok = mint(&srv, "r101-qdom", "user:adm-a", &["admin:team-a/*"], &[]);
+    flagged_row(&srv, 9001, "alice", "acme");
+    flagged_row(&srv, 9002, "bob", "other");
+
+    for path in ["/quarantine/9002/release", "/quarantine/9002/delete"] {
+        let (st, body) = post_quarantine(&srv, &tok, path).await;
+        assert_eq!(
+            st,
+            StatusCode::NOT_FOUND,
+            "{path} must not reach another tenant's flagged row: {body}"
+        );
+    }
+    assert!(is_still_flagged(&srv, 9002), "the foreign row is untouched");
+    assert!(row_exists(&srv, 9002), "the foreign row still exists");
+}
+
+/// The record gate on these two routes is DEFENCE IN DEPTH, and this pin says
+/// why it cannot be the load-bearing arm here.
+///
+/// `release_quarantine` / `delete_quarantine` require `Action::Admin`, and
+/// `scope_filter` (handlers::gate) returns the UNRESTRICTED record gate for
+/// any Admin-scoped principal — admin is the standing trusted-reader group. So
+/// for a JWT caller the route is reachable only by an already-unrestricted
+/// principal, and no shipped role both narrows `owner_in` AND carries
+/// `release_quarantine`/`purge` (the ones that carry the capability widen the
+/// owner fence by design; the ones that narrow it — `clinician`, `dpo`,
+/// `bpo-ops` — carry neither).
+///
+/// The gate is still composed, because a future preset could be narrow AND
+/// privileged, and dropping it would then be a silent widening. Its behaviour
+/// is pinned where it is decidable — at the core, with a gate that actually
+/// narrows: `service::quarantine::tests::the_record_gate_narrows_both_arms`.
+///
+/// What IS load-bearing at the route, and pinned above: the DOMAIN predicate
+/// (cross-tenant), the `purge` role (privilege), and the
+/// `release_quarantine` capability (which no gate read before this round).
+#[tokio::test]
+async fn quarantine_record_gate_is_composed_but_not_load_bearing_at_the_route() {
+    let srv = build_server();
+    let tok = mint(&srv, "r101-qgate2", "user:adm", &["admin:team-a/*"], &[]);
+    let gate = brain_server::handlers::gate::record_read_gate(
+        &Some(brain_server::auth::Principal {
+            sub: "user:adm".into(),
+            tenant: "team-a".into(),
+            scopes: vec![brain_server::auth::Scope::parse("admin:team-a/*").unwrap()],
+            jti: "x".into(),
+            roles: vec![],
+            manages: vec![],
+            kind: brain_server::auth::PrincipalKind::Jwt,
+        }),
+        &srv.state.pool,
+    );
+    assert!(
+        gate.owner_in.is_none() && gate.access_scopes.is_none(),
+        "an Admin-scoped principal IS the unrestricted class; if this ever changes, the \
+         route-level record gate becomes load-bearing and needs its own pin"
+    );
+    // the route still answers normally for that class
+    flagged_row(&srv, 9401, "someone", "global");
+    let (st, body) = post_quarantine(&srv, &tok, "/quarantine/9401/release").await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "admin-scoped release still works: {body}"
+    );
+    assert!(!is_still_flagged(&srv, 9401));
+}
+
+/// THE PRIVILEGE ARM. `supervisor` carries `release_quarantine` and
+/// deliberately NOT `purge`, so it is refused at `/purge` — and it must be
+/// refused at the quarantine delete too, which is the same act on a flagged
+/// row. Both routes answer 403 BEFORE the row is read, so the 403 leaks
+/// nothing about which ids are quarantined.
+#[tokio::test]
+async fn quarantine_delete_requires_the_purge_role() {
+    let srv = build_server();
+    let sup = mint(
+        &srv,
+        "r101-qsup",
+        "user:sup",
+        &["admin:team-a/*"],
+        &["supervisor"],
+    );
+    flagged_row(&srv, 9201, "agent-x", "global");
+
+    let (st, body) = post_quarantine(&srv, &sup, "/quarantine/9201/delete").await;
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "supervisor has release_quarantine but NOT purge: {body}"
+    );
+    assert!(
+        row_exists(&srv, 9201) && is_still_flagged(&srv, 9201),
+        "the refusal must leave the database unchanged"
+    );
+    // and the same refusal for an id that does not exist — no oracle
+    let (st, _) = post_quarantine(&srv, &sup, "/quarantine/999999/delete").await;
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "an absent id must answer the same as a present one"
+    );
+
+    // The roles that DO carry purge keep the route.
+    let admin = mint(
+        &srv,
+        "r101-qadmin",
+        "user:adm2",
+        &["admin:team-a/*"],
+        &["admin"],
+    );
+    let (st, body) = post_quarantine(&srv, &admin, "/quarantine/9201/delete").await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "an admin-purge role keeps the quarantine delete: {body}"
+    );
+    assert!(!row_exists(&srv, 9201), "the row is gone");
+}
+
+/// `release_quarantine` is a declared capability (`role::CAN_ACTIONS`) that no
+/// gate read — `authorize_role` was only ever called with approve/reject/
+/// workflow/publish/calibrate/purge/dsar_export. Clearing the flag re-admits a
+/// payload the injection screen rejected, so the capability must bite: a role
+/// without it is refused even with Admin scope.
+#[tokio::test]
+async fn quarantine_release_requires_the_release_capability() {
+    let srv = build_server();
+    // `controller` has purge + release_quarantine; `qa-specialist` has neither
+    // but has read+calibrate, so mint it with Admin SCOPE to isolate the ROLE
+    // gate from the scope gate.
+    let qa = mint(
+        &srv,
+        "r101-qrel",
+        "user:qa",
+        &["admin:team-a/*"],
+        &["qa-specialist"],
+    );
+    flagged_row(&srv, 9301, "agent-y", "global");
+    let (st, body) = post_quarantine(&srv, &qa, "/quarantine/9301/release").await;
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "qa-specialist does not carry release_quarantine: {body}"
+    );
+    assert!(
+        is_still_flagged(&srv, 9301),
+        "the refusal must not clear the quarantine flag"
+    );
+
+    let controller = mint(
+        &srv,
+        "r101-qctrl",
+        "user:ctrl",
+        &["admin:team-a/*"],
+        &["controller"],
+    );
+    let (st, body) = post_quarantine(&srv, &controller, "/quarantine/9301/release").await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "controller carries release_quarantine: {body}"
+    );
+    assert!(!is_still_flagged(&srv, 9301), "the flag is cleared");
 }
