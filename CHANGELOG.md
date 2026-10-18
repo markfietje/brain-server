@@ -6,7 +6,101 @@ are consistent at that tag.
 
 ## [Unreleased] — 2026-10-18
 
-Nothing yet.
+### Added
+
+- **The shell's recall tool now returns real rows, and the Rust core is the
+  boundary that makes that safe.** `shell/src-tauri/src/lib.rs` carried one
+  command and a header promising "system integration ONLY"; it now carries
+  `recall.rs` — the recall wire's BOUNDS and the reading of the kernel's answer.
+  It holds **no transport**: `capabilities/main.json` already stated the posture
+  ("the webview reaches the kernel over the page's own fetch, never through
+  Tauri"), and the generated client is TypeScript, which a Rust command cannot
+  call. So the core is the GATE and the PROJECTOR and the webview keeps the
+  only wire. Making Rust fetch instead would need an HTTP dependency *and* a
+  second home for the bearer, and the token's only home is `token.ts` module
+  memory.
+
+  Bounds are the kernel's own values, not ones invented here: `MAX_QUERY` 2000,
+  `MIN_LIMIT` 1, `MAX_LIMIT` 100, `DEFAULT_LIMIT` 5 — mirroring
+  `handlers/mod.rs` and `handlers/recall.rs`, which *refuses* outside that range
+  rather than clamping. `serde`/`serde_json` become explicit edges; both were
+  already in the workspace's graph through `tauri`, so the lockfile gained two
+  lines and not two packages, and no HTTP client was added.
+
+  Six outcome states, because the wire admits one more than the plan named:
+  `answered`, `absent`, `absentained` (`low_confidence`), `refused` (401/403),
+  `unreachable`, and `contract_violation` — a 2xx whose body is not the
+  published contract, which is not "unreachable" because the kernel *did*
+  answer. On a refusal the `decision` and `passages` keys are absent from the
+  object entirely, where an absence carries both, so a renderer branching on
+  `passages.length` cannot reach a refusal at all.
+
+- **The Swift transport stub is gone.** `MemoryRecallTool.call` returned a
+  hard-coded "no kernel transport" placeholder; that string now appears nowhere
+  in the tree, and this entry deliberately describes it rather than quoting it,
+  because the exit criterion is that it appears *nowhere*. The tool calls
+  through an **injected** `KernelRecallTransport` — a protocol the *host* fills
+  by invoking the Rust core — and renders the citation block. The stub's own
+  comment said the real implementation "belongs behind the Rust core's bounds
+  and authz — not here, where nothing enforces them"; that constraint is now
+  the architecture rather than a note about a future intention. Swift holds no
+  URL, no socket and no token, and `init(transport:)` *requires* a transport —
+  while a default existed, any construction path that forgot to wire one
+  silently produced the stub. `UnwiredRecallTransport` covers the one path that
+  needed a placeholder (the tool-schema *measurement*, which prices the schema
+  and never invokes the tool) and it **throws** rather than answering.
+
+- **A preregistered baseline, and the arm that failed.** Plan 08 §0 requires the
+  tolerances to be committed before the comparison, so
+  `shell/eval/baseline_preregistration.json` is dated `2026-10-18` with the run
+  performed afterwards, and `shell/tests/eval-preregistration.test.ts` holds the
+  tolerance block equal to the one in the commit that introduced it. The
+  baseline ran 106 judged queries over the frozen fixture's own corpus against
+  a real kernel on a dedicated port: **T1 wire lossless PASS** (0 divergent —
+  the shell's typed wire returned the kernel's ordered ids, position for
+  position), **T2 decision complete PASS**, **T4 refusal ≠ absence PASS**
+  (observed against the operator's live kernel, which answered 401, rather than
+  stubbed), **T5 recorded** at recall@5 = 0.9670, and **T3 abstention reachable
+  FAILED with zero abstentions in 106 queries.** T3's consequence was assigned
+  before any number existed, so the committed result is the finding: *this
+  corpus cannot support the abstention eval and a dedicated abstention fixture
+  is owed.* The alternative reading — "no abstentions, great" — was available
+  for free, which is the exact failure preregistration exists to prevent.
+
+- **A relay that cannot buffer.** `shell/src/lib/api/recallStream.ts` forwards
+  each typed event as it arrives, in order, without reading it. Its guard is
+  deterministic rather than a timing threshold: a producer that will not
+  release its second event until the consumer has observed the first deadlocks
+  a buffering relay and completes instantly against a real one.
+
+### Fixed
+
+- **`shell/src-tauri` had no `cargo test` step, so the core's pins compiled in
+  CI and never ran.** A guard that exists and is never executed is
+  indistinguishable from a guard that does not exist — which is why every core
+  pin passing locally never made the lane look covered. `shell.yml` now runs
+  them and `ci-gates.test.ts` refuses if the step is deleted.
+
+- **The drift gate was blind to what the shell assumes.** It proves
+  `schema.d.ts` is byte-equal to what `openapi.yaml` generates, which does not
+  prove the contract still says what the client's code assumes: adding a third
+  value to `/recall`'s `decision` enum and regenerating *honestly* leaves the
+  existing gate green while the Rust and Swift code stop matching the wire.
+  `shell/tests/recall-contract-drift.test.ts` reads the generated artefact and
+  holds the enum closed, along with the telemetry/confidence and `QueryDoc`
+  links the core depends on.
+
+### Notes
+
+- **Two dataset defects were found by writing the preregistration, and are
+  recorded rather than repaired** (the fixture is frozen): its corpus table is
+  truncated to 99 characters per row while `tests/eval.rs`'s `DOCS` is not, so
+  the two are not comparable; and `eval.rs` holds 107 queries against the
+  fixture's 106 — the extra is `SnapSync`, a negation probe with an empty gold
+  set, leaving the fixture with exactly one.
+- **`shell.yml` previously ran the generated-wire drift gate already**, twice
+  (`pnpm test`, plus a regenerate-and-`cmp`); the roadmap note claiming it was
+  "not in a lane that runs" was wrong and is corrected.
 
 ## [1.29.18] — 2026-10-18 — the agent loop stops lying, and the primary test gate is green again
 
