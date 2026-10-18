@@ -6,31 +6,11 @@ are consistent at that tag.
 
 ## [Unreleased] — 2026-10-18
 
-### Fixed
-
-- **The MCP stdio server lost every request pipelined after the first.** opencode
-  drives MCP over stdio and writes `initialize` + `tools/list` in one write; the
-  read loop discarded everything after a chunk's first newline, so `tools/list`
-  never arrived and the client timed out at 30 s ("Request timed out") while the
-  server itself was alive. `mcp` gains a carry-over line reader (`next_line`,
-  enum `Line { Ready, Overflow, Eof }`) and a factored `serve()`; over-cap law
-  is preserved (newline-terminated over-cap lines drop only the oversized line
-  and its remainder survives; accumulating unterminated over-cap spans clear and
-  refuse with one `-32700` per span). Four new pins cover pipelined framing in
-  one chunk, byte-at-a-time pipelining, EOF with an unterminated request still
-  answered, and an over-cap line with the following remainder answered.
-- **install-service.sh re-adhoc-signs every installed binary.** On macOS 27
-  (26A434) a freshly-written ad-hoc binary can be refused at exec by taskgated —
-  exit 137, "Taskgated Invalid Signature" in the crash report, empty stderr,
-  nothing in the kernel log — even though `codesign -vv` validates the same
-  bytes and a byte-identical re-install execs cleanly. Observed live when the
-  rebuilt `mcp` died on opencode's first spawn after an otherwise healthy
-  install. The script now mints the exec-time verdict at install (idempotent,
-  fail-open, same ad-hoc trust basis).
+Nothing yet.
 
 ## [1.29.18] — 2026-10-18 — the agent loop stops lying, and the primary test gate is green again
 
-Covers every commit from tag `v1.29.17` — 65 commits, 58 files, +10,776/−1,076.
+Covers every commit from tag `v1.29.17` — 70 commits, 64 files, +25,201/−1,166.
 
 **This release is server-side.** The on-device client does **not** ship: distribution
 (signing, notarization, keychain, auto-update) is unbuilt, so a `.app` would still
@@ -61,6 +41,25 @@ reject.
 
 **Bug fixes**
 
+- **The MCP stdio server lost every request pipelined after the first.** opencode
+  drives MCP over stdio and writes `initialize` + `tools/list` in one write; the
+  read loop discarded everything after a chunk's first newline, so `tools/list`
+  never arrived and the client timed out at 30 s ("Request timed out") while the
+  server itself was alive. `mcp` gains a carry-over line reader (`next_line`,
+  enum `Line { Ready, Overflow, Eof }`) and a factored `serve()`; over-cap law
+  is preserved (newline-terminated over-cap lines drop only the oversized line
+  and its remainder survives; accumulating unterminated over-cap spans clear and
+  refuse with one `-32700` per span). Four new pins cover pipelined framing in
+  one chunk, byte-at-a-time pipelining, EOF with an unterminated request still
+  answered, and an over-cap line with the following remainder answered.
+- **install-service.sh re-adhoc-signs every installed binary.** On macOS 27
+  (26A434) a freshly-written ad-hoc binary can be refused at exec by taskgated —
+  exit 137, "Taskgated Invalid Signature" in the crash report, empty stderr,
+  nothing in the kernel log — even though `codesign -vv` validates the same
+  bytes and a byte-identical re-install execs cleanly. Observed live when the
+  rebuilt `mcp` died on opencode's first spawn after an otherwise healthy
+  install. The script now mints the exec-time verdict at install (idempotent,
+  fail-open, same ad-hoc trust basis).
 - **A model-authored multibyte character could abort the machine.** The adversarial
   re-check truncates its task at a fixed byte offset, and truncating to a position
   that lands mid-character panics. Because the task text is built from model-authored
