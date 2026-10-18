@@ -107,6 +107,16 @@ install_bin() {
 	# the operator is installing brain-server on their own machine.
 	xattr -d com.apple.provenance "$dest" 2>/dev/null || true
 	xattr -d com.apple.quarantine "$dest" 2>/dev/null || true
+	# macOS 27 (Tahoe, 26A434): a freshly-written ad-hoc binary can be refused
+	# at exec by taskgated — "Taskgated Invalid Signature", exit 137, empty
+	# stderr, nothing in the kernel log — even though `codesign -vv` validates
+	# the file and a byte-identical re-install execs cleanly. Observed live on
+	# the 2026-10-18 deploy: ~/.local/bin/mcp died on every spawn (the MCP
+	# catalog showed the server exiting) until the file was re-signed or
+	# re-installed. Re-adhoc-sign here so the exec-time verdict is minted at
+	# install time; idempotent for an already-valid binary, same-trust (local
+	# ad-hoc), fail-open like the strips above.
+	codesign -f -s - "$dest" >/dev/null 2>&1 || true
 	ok "installed $dest"
 }
 install_bin "$SRC_BIN" "$DEST_BIN"

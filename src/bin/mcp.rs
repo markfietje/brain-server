@@ -24,7 +24,7 @@ mod http;
 
 use brain_server::server::bootstrap::ct_eq;
 use http::{get, post};
-use std::io::Write;
+use std::io::{Read, Write};
 
 use axum::response::IntoResponse;
 
@@ -377,7 +377,108 @@ fn main() {
         return;
     }
     let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
+    let stdout = std::io::stdout();
+    {
+        let mut reader = stdin.lock();
+        let mut writer = stdout.lock();
+        serve(&mut reader, &mut writer);
+    }
+}
+
+/// One result of the bounded line reader: a complete line, an over-cap
+/// refusal, or end of stream.
+enum Line {
+    /// A complete line: newline-terminated, or the final unterminated line
+    /// at EOF (the legacy loop answered those too).
+    Ready(Vec<u8>),
+    /// The buffered bytes exceed MAX_LINE_BYTES with no newline in sight.
+    /// The caller refuses with -32700 and the reader resumes after the line's
+    /// remainder, so one oversized line is refused once per
+    /// ~MAX_LINE_BYTES consumed until its newline arrives (the loop's
+    /// documented law, unchanged).
+    Overflow,
+    /// EOF with nothing pending.
+    Eof,
+}
+
+/// Pull the NEXT complete line from `reader`, with `buf` carrying unclosed
+/// bytes between calls.
+///
+/// The one law this reader exists for: bytes AFTER a newline inside a read
+/// chunk are never discarded. A host that pipelines two JSON-RPC requests
+/// back-to-back (opencode does) can land `initialize\ntools/list\n` in ONE
+/// 8 KiB chunk; the pre-fix loop answered the first line and threw the rest
+/// away, so the host waited out its `tools/list` timeout on a server that
+/// had the reply all along. Red-proof: the 1.29.17 shipped binary, one
+/// write, two lines → only the initialize reply.
+fn next_line(reader: &mut impl Read, buf: &mut Vec<u8>) -> std::io::Result<Line> {
+    // A complete line already carried over from an earlier chunk: serve it
+    // WITHOUT reading again (multi-line pipelining must not drop requests,
+    // and draining here keeps a later remainder byte-exact).
+    if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+        let line: Vec<u8> = buf.drain(..pos).collect();
+        buf.drain(..1); // the newline itself
+        if line.len() > MAX_LINE_BYTES {
+            // The newline already ended this line — the refuse-and-discard
+            // span is behind us, so the bytes buffered AFTER it (a pipelined
+            // next request) must survive. Only the oversized line is dropped.
+            return Ok(Line::Overflow);
+        }
+        return Ok(Line::Ready(line));
+    }
+    // Bound the line read AT READ TIME, not after: read in fixed chunks and
+    // stop the moment a line exceeds MAX_LINE_BYTES. (`read_line` grows its
+    // buffer for as long as the peer keeps sending, so a multi-GB
+    // newline-free stream would OOM the process before any post-read cap
+    // could fire.)
+    let mut chunk = [0u8; 8192];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => {
+                // EOF: the final unterminated line, if any, is still a line.
+                if buf.is_empty() {
+                    return Ok(Line::Eof);
+                }
+                let line = std::mem::take(buf);
+                if line.len() > MAX_LINE_BYTES {
+                    return Ok(Line::Overflow);
+                }
+                return Ok(Line::Ready(line));
+            }
+            Ok(n) => {
+                if let Some(pos) = chunk[..n].iter().position(|&b| b == b'\n') {
+                    // The line = everything carried over + this chunk's
+                    // prefix; the bytes AFTER its newline are the next
+                    // line's prefix and must survive into `buf` — the
+                    // pipelining fix itself (the pre-fix loop broke here
+                    // and that remainder was lost).
+                    let mut line = std::mem::take(buf);
+                    line.extend_from_slice(&chunk[..pos]);
+                    buf.extend_from_slice(&chunk[pos + 1..n]);
+                    if line.len() > MAX_LINE_BYTES {
+                        // Newline-terminated ⇒ the discard-until-newline
+                        // span ended with this chunk; the pipelined request
+                        // buffered after it stays. Only the oversized line
+                        // is dropped.
+                        return Ok(Line::Overflow);
+                    }
+                    return Ok(Line::Ready(line));
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.len() > MAX_LINE_BYTES {
+                    buf.clear();
+                    return Ok(Line::Overflow);
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Serve the stdio JSON-RPC loop over `reader`/`writer`. Factored out of
+/// `main` so the framing layer is pin-testable — the pipelining loss lived
+/// only inside `main`, where no test could reach it.
+fn serve(reader: &mut impl Read, writer: &mut impl Write) {
     // Legacy (2025-11-25) semantics are selected by a legacy client's
     // `initialize` request and stay active for this stdio process.
     // `legacy` is process-sticky and never reset. Under
@@ -386,74 +487,45 @@ fn main() {
     // reused across clients, a second client could skip version/capabilities
     // declaration. The ceiling is documented; reset-on-new-handshake is v2.x.
     let mut legacy = false;
-
+    let mut buf: Vec<u8> = Vec::with_capacity(8192);
     loop {
-        // Bound the line read AT READ TIME, not after: read in fixed chunks
-        // and stop the moment a line exceeds MAX_LINE_BYTES. (`read_line`
-        // grows its buffer for as long as the peer keeps sending, so a
-        // multi-GB newline-free stream would OOM the process before any
-        // post-read cap could fire.) On overflow: refuse with -32700 and
-        // keep consuming — the remainder of the oversized line arrives as
-        // further over-cap chunks, each refused, until a newline or EOF.
-        let mut line: Vec<u8> = Vec::with_capacity(4096);
-        let mut overflow = false;
-        let mut eof = false;
-        {
-            use std::io::Read;
-            let mut reader = stdin.lock();
-            let mut chunk = [0u8; 8192];
-            loop {
-                match reader.read(&mut chunk) {
-                    Ok(0) => {
-                        eof = true;
-                        break;
-                    }
-                    Ok(n) => {
-                        if let Some(pos) = chunk[..n].iter().position(|&b| b == b'\n') {
-                            line.extend_from_slice(&chunk[..pos]);
-                            break;
+        let line = match next_line(reader, &mut buf) {
+            Ok(Line::Eof) => return,
+            Ok(Line::Ready(line)) => line,
+            Ok(Line::Overflow) => {
+                // Over-cap lines are refused with the same -32700 shape a
+                // parse error gets; consuming resumes after the line's
+                // remainder, and a later over-cap stretch is refused again.
+                let _ = writer.write_all(
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": null,
+                        "error": {
+                            "code": -32700,
+                            "message": "line exceeds max length"
                         }
-                        line.extend_from_slice(&chunk[..n]);
-                        if line.len() > MAX_LINE_BYTES {
-                            overflow = true;
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("mcp: stdin read error: {e}");
-                        return;
-                    }
-                }
+                    })
+                    .to_string()
+                    .as_bytes(),
+                );
+                let _ = writer.write_all(b"\n");
+                let _ = writer.flush();
+                continue;
             }
-        }
-        if eof && line.is_empty() && !overflow {
-            break;
-        }
-        if overflow || line.len() > MAX_LINE_BYTES {
-            let _ = stdout.write_all(
-                serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": null,
-                    "error": {
-                        "code": -32700,
-                        "message": "line exceeds max length"
-                    }
-                })
-                .to_string()
-                .as_bytes(),
-            );
-            let _ = stdout.write_all(b"\n");
-            continue;
-        }
+            Err(e) => {
+                eprintln!("mcp: stdin read error: {e}");
+                return;
+            }
+        };
         let text = String::from_utf8_lossy(&line);
         let line_str = text.trim();
         if line_str.is_empty() {
             continue;
         }
         if let Some(response) = handle_line(line_str, &mut legacy) {
-            let _ = stdout.write_all(response.as_bytes());
-            let _ = stdout.write_all(b"\n");
-            let _ = stdout.flush();
+            let _ = writer.write_all(response.as_bytes());
+            let _ = writer.write_all(b"\n");
+            let _ = writer.flush();
         }
     }
 }
@@ -2559,6 +2631,135 @@ mod tests {
             presented >= 7,
             "the authenticated request paths must all present the resolved bearer, saw \
              {presented}"
+        );
+    }
+
+    // ---- the stdio framing layer (serve/next_line) -------------------------
+
+    /// A host that pipelines two requests back-to-back — `initialize` and
+    /// `tools/list` landing in ONE read chunk — gets BOTH replies, in order.
+    /// Regression: the pre-fix loop answered the first line of a chunk and
+    /// discarded the bytes after its newline, so opencode's pipelined
+    /// `tools/list` never received a reply and the host timed out (30 s)
+    /// against a server that had the answer all along. Red-proof: the
+    /// shipped 1.29.17 binary driven with one write carrying both lines
+    /// answered only `initialize`.
+    #[test]
+    fn pipelined_requests_in_one_chunk_both_get_replies() {
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"host","version":"1"}}}"#;
+        let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
+        let input = format!("{init}\n{list}\n");
+        let mut reader = std::io::Cursor::new(input.into_bytes());
+        let mut out: Vec<u8> = Vec::new();
+        serve(&mut reader, &mut out);
+        let text = String::from_utf8(out).expect("utf8 replies");
+        let replies: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            replies.len(),
+            2,
+            "both pipelined requests must be answered: {text:?}"
+        );
+        assert!(
+            replies[0].contains("\"id\":1"),
+            "first reply answers the initialize: {}",
+            replies[0]
+        );
+        let second: serde_json::Value =
+            serde_json::from_str(replies[1]).expect("second reply is JSON");
+        assert!(
+            second.get("error").is_none(),
+            "the pipelined tools/list must dispatch, not error: {}",
+            replies[1]
+        );
+        assert!(
+            second["result"]["tools"].as_array().is_some(),
+            "the tools/list reply carries the tool table: {}",
+            replies[1]
+        );
+    }
+
+    /// The remainder survives a chunk boundary too, not just a whole-line
+    /// boundary: when the reader yields one byte at a time, the second
+    /// pipelined request's bytes were assembled through the carry buffer and
+    /// still answered.
+    #[test]
+    fn pipelined_requests_survive_byte_at_a_time_reads() {
+        struct ByteAtATime<'a>(&'a [u8]);
+        impl std::io::Read for ByteAtATime<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.0.is_empty() {
+                    return Ok(0);
+                }
+                buf[0] = self.0[0];
+                self.0 = &self.0[1..];
+                Ok(1)
+            }
+        }
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"host","version":"1"}}}"#;
+        let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
+        let input = format!("{init}\n{list}\n");
+        let mut reader = ByteAtATime(input.as_bytes());
+        let mut out: Vec<u8> = Vec::new();
+        serve(&mut reader, &mut out);
+        let text = String::from_utf8(out).expect("utf8 replies");
+        assert_eq!(text.lines().count(), 2, "both must be answered: {text:?}");
+        assert!(text.contains("\"id\":2"), "tools/list answered: {text:?}");
+    }
+
+    /// EOF with an unterminated FINAL request still processes it — the
+    /// legacy loop answered such a line, and a host that closes the pipe
+    /// without a last newline loses nothing.
+    #[test]
+    fn eof_unterminated_request_is_answered() {
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"host","version":"1"}}}"#;
+        let ping = r#"{"jsonrpc":"2.0","id":2,"method":"ping","params":{}}"#;
+        // No trailing newline: the stream just ends mid-buffer.
+        let input = format!("{init}\n{ping}");
+        let mut reader = std::io::Cursor::new(input.into_bytes());
+        let mut out: Vec<u8> = Vec::new();
+        serve(&mut reader, &mut out);
+        let text = String::from_utf8(out).expect("utf8 replies");
+        let replies: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            replies.len(),
+            2,
+            "the unterminated line is still a line: {text:?}"
+        );
+        assert!(
+            replies[1].contains("\"id\":2"),
+            "ping answered: {}",
+            replies[1]
+        );
+    }
+
+    /// An over-cap line is refused -32700 (id null) and the NEXT pipelined
+    /// line still gets its reply — the pre-fix loop lost the post-newline
+    /// remainder here too, not only on well-behaved streams.
+    #[test]
+    fn overcap_line_refused_and_remainder_still_answered() {
+        let over = format!("{{\"pad\":\"{}\"}}", "x".repeat(MAX_LINE_BYTES + 1));
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"host","version":"1"}}}"#;
+        // One chunk: the oversized line, its newline, then a real request.
+        let input = format!("{over}\n{init}\n");
+        let mut reader = std::io::Cursor::new(input.into_bytes());
+        let mut out: Vec<u8> = Vec::new();
+        serve(&mut reader, &mut out);
+        let text = String::from_utf8(out).expect("utf8 replies");
+        let replies: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            replies.len(),
+            2,
+            "one refusal then the initialize reply: {text:?}"
+        );
+        assert!(
+            replies[0].contains("-32700") && replies[0].contains("null"),
+            "the refusal carries the -32700 null-id shape: {}",
+            replies[0]
+        );
+        assert!(
+            replies[1].contains("\"id\":1") && replies[1].contains("result"),
+            "the request riding after the oversized line still answered: {}",
+            replies[1]
         );
     }
 }
