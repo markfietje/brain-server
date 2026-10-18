@@ -483,23 +483,11 @@ export function sanitizeForBlock(text: string): string {
     .replace(/\s+/g, " ");
   // C. Sentinels on the normalized form (A/B may have joined a near-marker).
   out = stripSentinels(out);
-  // D. Markdown image/link refs: URL dropped, text kept. Images first so the
-  //    resulting `[alt]` isn't re-matched by the link pass.
-  //
-  //    TO A FIXED POINT, matching `src/fence.rs::strip_markdown_refs`. A single
-  //    pass heals a construct out of the surrounding prose: the label of an
-  //    outer link is re-emitted UNSCANNED, so `[![a](inner) c](outer)` welds
-  //    the label onto the outer URL into a live `![a c](outer)` image. The
-  //    Rust counterpart runs this loop explicitly and pins the second pass;
-  //    this mirror did not, so the plugin and the server disagreed about the
-  //    same bytes. Each pass only deletes bytes, so a changed pass strictly
-  //    shortens the input and the loop terminates on its own.
+  // D. Markdown refs to a fixed point, matching `src/fence.rs`. A single pass
+  //    re-emits an outer label unscanned and welds a live image.
   out = stripRefsToFixpoint(out);
-  // E. Hostile elements + attributes, THEN the ref strip again: deleting a tag
-  //    can WELD a markdown image/link back together
-  //    (`![x]<script></script>(url)` → a live ref), which the one-pass order
-  //    shipped (audit N5). Alternate the delete-only transforms to a fixed
-  //    point, mirroring the Rust read seam.
+  // E. Hostile elements, then the ref strip again: deleting a tag can weld a
+  //    live ref (`![x]<script></script>(url)`). Alternate to a fixed point.
   for (let i = 0; i < 4; i++) {
     const next = stripRefsToFixpoint(stripSentinels(stripHostileElements(out)));
     if (next === out) {

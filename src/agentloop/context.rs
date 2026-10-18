@@ -1529,7 +1529,12 @@ mod tests {
                 Err(e) => panic!("the whole window must project: {e:?}"),
             };
             assert!(suffix_lengths(&orphan).is_err());
-            for split in 0..=window.len() {
+            let splits = window
+                .iter()
+                .enumerate()
+                .map(|(i, _)| i)
+                .chain(std::iter::once(window.len()));
+            for split in splits {
                 let suffix = project(&window[split..]);
                 assert_eq!(
                     facts.suffix(split),
