@@ -1506,3 +1506,49 @@ fn the_graph_leg_honours_as_of_and_the_bitemporal_window() {
     );
     assert!(super::normalize_since("zzz").is_err());
 }
+
+/// THE ALLOCATION CEILING IS THE FUNCTION'S OWN, NOT THE CALLER'S.
+///
+/// `perform_search_legacy` sized its result vector from `k`, so its allocation
+/// was whatever the caller passed and the only bound was a clamp in a handler
+/// two modules away. A caller that forgets the clamp inherits an unbounded
+/// allocation, and NO behavioral pin can catch it: the allocation size is not
+/// observable from outside the function, and with a small fixture the result
+/// length is small either way — which is exactly how this round's first attempt
+/// at this pin passed its own red-drill while asserting nothing.
+///
+/// So the guarantee is pinned STRUCTURALLY, the way `no_sql_in_handlers` and
+/// the recall blocking-pool pin are: the function must clamp `k` to
+/// `MAX_K` itself, and must not size an allocation from an unclamped `k`.
+///
+/// Red-first: deleting the `.min(crate::config::MAX_K)` line reds both arms.
+#[test]
+fn the_legacy_fallback_clamps_its_own_allocation() {
+    let whole = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/search/mod.rs"))
+        .expect("search/mod.rs must be readable");
+    // PRODUCTION REGION ONLY: this pin's own source names the same symbols.
+    let src = whole
+        .split_once("mod tests {")
+        .map_or(whole.as_str(), |(head, _)| head);
+
+    // The function body, from its signature to the next top-level item.
+    let start = src
+        .find("fn perform_search_legacy(")
+        .expect("perform_search_legacy must exist");
+    let body_end = src[start..]
+        .find("\npub fn ")
+        .map(|i| start + i)
+        .unwrap_or(src.len());
+    let body = &src[start..body_end];
+
+    assert!(
+        body.contains("let k = k.min(crate::config::MAX_K)"),
+        "perform_search_legacy must clamp `k` to MAX_K itself — its result vector is \
+         sized from `k`, and the only other bound is a handler clamp two modules \
+         away, which a future caller can simply forget"
+    );
+    assert!(
+        !body.contains("with_capacity(k * 2)") || body.contains("let k = k.min("),
+        "the allocation must be sized from the CLAMPED k"
+    );
+}

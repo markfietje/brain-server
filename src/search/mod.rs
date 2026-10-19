@@ -1918,6 +1918,22 @@ fn perform_search_legacy(
     k: usize,
     filters: &SearchFilters,
 ) -> Result<Vec<SearchResult>> {
+    // THE ALLOCATION CEILING IS LOCAL, NOT THE CALLER'S PROBLEM.
+    //
+    // This function is a public entry point, and its result vector is sized
+    // from `k` — so its allocation size was whatever the caller passed, and the
+    // only thing keeping that bounded was a `clamp` in a handler two modules
+    // away. CodeQL flags exactly that shape (`rust/uncontrolled-allocation-
+    // size`, HIGH): not because a reachable path allocates unboundedly today —
+    // `/recall` clamps to `MAX_LIMIT` and `/search` to `MAX_K`, so `k` ≤ 120
+    // after overfetch — but because the invariant is not the function's own.
+    // A future caller that forgets the clamp inherits an unbounded allocation,
+    // and no test in this file would notice.
+    //
+    // `MAX_K` is the same ceiling the handlers already enforce, so this narrows
+    // nothing a caller can legitimately ask for; it moves the guarantee inside
+    // the function that allocates.
+    let k = k.min(crate::config::MAX_K);
     // The count must be the count of ROWS THE CALLER MAY SEE, not the table
     // total: paging over the table total while the WHERE narrows is both a
     // wasted scan and an off-by-N in the batching loop below.
