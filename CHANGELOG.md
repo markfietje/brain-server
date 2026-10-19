@@ -4,6 +4,63 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.20] — 2026-10-19 — the follow-through release
+
+Seven commits landed after 1.29.19 was cut, and this release is them: a
+retrieval path that stopped doing blocking database work on the async runtime,
+a cross-database enrichment join that attached another domain's metadata to a
+hit, the plugin's markdown-ref strip agreeing with the Rust core it mirrors,
+and the documentation and wire-contract follow-through the route changes owed.
+No wire shape moved; two routes document refusals they already returned, and
+the `pii` migration now recomputes the flag for rows already on disk, which
+means non-admin readers will see `[redacted:…]` on memory that was previously
+served raw.
+
+### Release notes
+
+**Bug fixes**
+
+- `/recall` no longer touches SQLite on the async runtime. Four database
+  touches ran directly on tokio workers — `read_prototypes` (a pooled-connection
+  wait plus a `CREATE TABLE IF NOT EXISTS`, which can take the database's write
+  lock), `read_centroids` in the routing fallback, the composite record gate
+  with `domain_profiles`, and the scope-violation audit row. A read-only caller
+  could occupy runtime workers with blocking database work per request. All
+  four are on the blocking pool, and a structural pin walks the production
+  region and reds any database call outside one; the pin was drill-verified by
+  reverting an arm and watching it fail.
+- `GET /search` enriches evidence from the pool its hits came from rather than
+  the global database. Ids are per-database, so an id collision attached
+  another domain's `source.uri`, `heading_path`, revisions, authority and
+  evidence links to a hit the caller never scoped.
+- The plugin's markdown-ref strip runs to a fixed point and closes the welded
+  construct, matching `src/fence.rs`. A single pass healed a nested link into a
+  live remote-image ref — `[![a](inner) c](outer)` became `![a c](outer)` — so
+  the plugin and the server disagreed about identical bytes while the module
+  claimed parity. Server-side `sanitize_read` runs first on every recall hit,
+  which is what kept this from being live; the mirror is now correct in its own
+  right, with a parity suite pinning the nesting cases.
+- The recall blocking-pool pin's region splitter uses `split_once` + `map_or`,
+  clearing the one lint the pre-push gate raised on this round's diff.
+
+**Changed**
+
+- `docs/mcp.md` described three security postures that no longer exist: a
+  single-token source under the default `agent` identity now REFUSES to start
+  rather than presenting the operator bearer; `BRAIN_MCP_SCOPE=read` denies
+  seven tools rather than five (it had omitted the two admin verbs, which is
+  the point of the scope); and `MCP_HTTP_TOKEN` is required on loopback too.
+- `docs/authz.md` and `docs/architecture.md` state the capability vocabulary as
+  eleven entries (it was recorded as ten) and name the five presets carrying
+  `shared_pool` and the three read-only ones that no longer widen.
+- `openapi.yaml` documents the quarantine routes' 403 (role-gated, not
+  scope-gated) and 409 (legal hold) — refusals the routes already returned and
+  the contract never mentioned. `docs/authz.md` and `docs/architecture.md`
+  record the capability vocabulary as eleven entries and name which presets
+  widen.
+- The `pii` migration recomputes the flag for every row already on disk, so an
+  upgrade repairs rows the silent write paths had left at the schema default.
+
 ## [1.29.19] — 2026-10-19 — the security audit release
 
 The client phase picked up the kernel's security audit: twenty findings were
