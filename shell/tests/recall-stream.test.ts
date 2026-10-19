@@ -146,6 +146,17 @@ describe('time-to-first-event, not whole-turn', () => {
 		// The measurement: the first fragment must land well inside the turn,
 		// not at its end. Half the turn is a wide margin on purpose — this is a
 		// smoke alarm, not a benchmark.
+		//
+		// The LOWER BOUND is what makes a future "deterministic time" edit
+		// fail rather than fake a green: the 120 ms `setTimeout` here is the
+		// only real time in the turn, so a clock that is virtualized for
+		// testability collapses `totalMs` to ~0 against a numeric 120 and
+		// breaches it — a ratio arm alone could survive that (both producers
+		// express and slow scale by the same factor), and a `> 0` on
+		// `firstFragmentAtMs` cannot be claimed at all because the express
+		// producer's first event routinely lands INSIDE the same millisecond
+		// `Date.now()` starts the timer in (driven at 19 machines on the same
+		// task's express loop).
 		expect(firstFragmentAtMs).toBeGreaterThanOrEqual(0);
 		expect(firstFragmentAtMs).toBeLessThan(totalMs / 2);
 		expect(totalMs).toBeGreaterThanOrEqual(LAST_EVENT_MS);
