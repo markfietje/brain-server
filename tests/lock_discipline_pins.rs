@@ -444,6 +444,73 @@ fn the_release_and_ci_band_carries_its_gates() {
     }
 }
 
+/// The release script's pre-tag drift gate (the 2026-10-19 stale-client
+/// repair). `shell.yml` — the lane that carries
+/// `openapi_types_are_drift_free_vs_the_kernel_contract` — triggers on
+/// main-push / pull_request / workflow_dispatch and NEVER on a tag push,
+/// private-repo Actions are throttled to zero here, and the release verdict
+/// release.yml fail-closes on IS the ci.yml matrix. So the gate was silent
+/// across every event a release actually travels: `openapi.yaml` moved in
+/// release commits while the shell tree sat untouched, and no trigger ever
+/// ran the lane — the drift had been in the tree since `520a1dea`, and the
+/// v1.29.22 tag shipped a client whose documented shapes were stale ones.
+/// The repair was a regen by hand; the DISCIPLINE is release.sh's drill (1f),
+/// regenerate locally + byte-compare + refuse on BOTH sides, before the tag
+/// exists.
+///
+/// **Structural, with the reason recorded.** The drill's regen half needs the
+/// shell toolchain (`pnpm exec openapi-typescript`), which the kernel suite
+/// does not install — the same class as the R123 carry-in rows. So the
+/// behavioral proof is the RUN at release time, recorded in the guard's
+/// register row; what cargo holds is the wiring: that the drill is still in
+/// the script, that it still runs BEFORE the tag exists, and that an inability
+/// to check is a REFUSAL rather than a pass. The third is the one that makes
+/// this a gate and not a decoration: a script that skips the comparison when
+/// its tool is missing ships exactly the lie the drill exists for.
+#[test]
+fn the_release_script_runs_the_drift_regen_before_it_tags() {
+    let script = read("scripts/release.sh");
+
+    let regen = script
+        .find("pnpm exec openapi-typescript ../openapi.yaml -o \"$DRIFT_TMP\"")
+        .expect(
+            "release.sh must run the schema-drift drill (1f, the 1.29.22 stale-client \
+             shape) — regenerating the client and byte-comparing it against the \
+             contract BEFORE tagging",
+        );
+
+    // The comparison itself, and a refusal that NAMES the defect it refuses.
+    assert!(
+        script.contains("cmp -s shell/src/lib/api/schema.d.ts \"$DRIFT_TMP\""),
+        "the drift drill must BYTE-COMPARE the regenerated client against the committed one — a size check, a timestamp check or a `git diff --quiet` would pass for a client that content-drifted"
+    );
+    assert!(
+        script.contains("STALE against openapi.yaml"),
+        "the drill must refuse with a diagnostic that names the staleness — a silent skip is the CI-absence that shipped the v1.29.22 client"
+    );
+
+    // Fail-closed on tooling absence: an inability to CHECK must be a refusal,
+    // never a pass. Without this arm the drill is only a gate on machines that
+    // have already paid for one — exactly the machines that do not need it.
+    assert!(
+        script.contains("pnpm is unavailable"),
+        "release.sh must REFUSE the drift drill it cannot run (missing toolchain), rather than skipping it — a gate that cannot run must be louder than a green one"
+    );
+
+    // Order: the drill must run before tag creation. This is the arm that
+    // catches a reordering — the trivially plausible edit that moves the
+    // sanity checks after the push for "fast feedback" — because a drill
+    // placed after `git tag -a` reports a lie to a release that already
+    // shipped.
+    let tag = script
+        .find("git tag -a \"$TAG\"")
+        .expect("release.sh must still create the annotated tag");
+    assert!(
+        regen < tag,
+        "the drift drill (at byte {regen}) must run BEFORE `git tag -a` (at byte {tag}) — a drill placed after the tag reports a lie to a release that already shipped"
+    );
+}
+
 /// F4-21: the audit-ignore list's re-check triggers are now MACHINE-evaluated
 /// for the one case a lockfile can decide — an advisory whose crate is GONE
 /// from every tracked lockfile is fixed-or-removed, and suppressing it

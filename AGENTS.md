@@ -471,7 +471,12 @@ scripts/lipstyk-gate.sh
 # still never pushed there — release.sh's law), and release.yml's
 # publication step fail-closes unless that matrix is green for the tagged
 # SHA: red or absent ⇒ binaries build but nothing publishes. The pre-tag
-# discipline is the LOCAL gate suite; release.sh watches the public runs
+# discipline is the LOCAL gate suite PLUS release.sh's own 1f schema-drift
+# drill (2026-10-19): the shell lane that carries the typed-client drift
+# gate never fires on a tag push and private Actions don't fire at all, so
+# release.sh regenerates `shell/src/lib/api/schema.d.ts` locally, byte-compares
+# it against openapi.yaml, and refuses to tag on a mismatch — the v1.29.22
+# stale-client shape. release.sh watches the public runs
 # after the push and exits non-zero on a not-green verdict. The
 # release builds are 4 parallel per-target jobs (linux x86_64/aarch64,
 # macOS arm64/x86_64); the verify-required-assets gate refuses to publish if

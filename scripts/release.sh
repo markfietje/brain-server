@@ -4,8 +4,11 @@
 #
 # What it does:
 #   1. sanity checks (clean tree, tag not taken, main in sync with origin,
-#      public remote actually pushable, CHANGELOG section exists — the
-#      release-notes generator refuses to publish without one)
+#      public remote actually pushable; then the schema-drift drill — 1f,
+#      added by the 1.29.22 stale-client repair: regenerate the typed client
+#      and byte-compare it against the contract, refusing on mismatch or on
+#      an inability to run; then the CHANGELOG section check, which the
+#      release-notes generator refuses to publish without)
 #   2. warns if Cargo.toml doesn't match the version
 #   3. creates an annotated tag and pushes it to `public` — under the
 #      2026-10-06 billing law (see below) that tag push IS the public CI
@@ -120,6 +123,56 @@ fi
 # step fail-closes on that very run: red OR absent ci.yml for the tagged
 # SHA ⇒ binaries build but NOTHING publishes. The pre-tag discipline is the
 # LOCAL gate suite (fmt, clippy, tests, badges) on the tree being tagged.
+
+# 1f. The typed client matches the contract being shipped (the schema-drift
+# drill). This is a LOCAL gate and not a CI gate, and the reason is the
+# 1.29.22 repair (36195da9): the shell lane (`shell.yml`) carries the drift
+# gate, but it triggers on main-push / pull-request / workflow_dispatch and
+# NEVER on a tag push, private-repo Actions are throttled to zero here, and
+# the release verdict release.yml fail-closes on is the ci.yml matrix — so
+# the gate was silent across every event a release actually travels.
+# `openapi.yaml` moved in release commits while the shell tree sat untouched
+# and no trigger ever ran the lane; the drift had been in the tree since
+# 520a1dea, and the release shipped a client whose documented shapes were
+# stale ones. A stale client does not fail a build — it FAILS OPEN, which is
+# the worse failure. So: regenerate locally, byte-compare, refuse on both
+# sides — a MISMATCH refuses, and an INABILITY to check refuses too. A gate
+# that cannot run must be louder than a green one, not quieter.
+if [[ ! -f openapi.yaml ]]; then
+  echo "error: openapi.yaml is missing — the drift gate has no contract to check against (a kernel-only tree is not a releasable tree). Refusing to tag." >&2
+  exit 1
+fi
+if [[ ! -f shell/src/lib/api/schema.d.ts ]]; then
+  echo "error: shell/src/lib/api/schema.d.ts is missing. Regenerate it (cd shell && pnpm gen:api), commit it, then re-run. Refusing to tag." >&2
+  exit 1
+fi
+if ! command -v pnpm >/dev/null 2>&1; then
+  echo "error: pnpm is unavailable, so the drift gate cannot run. Refusing to tag rather than shipping a client whose shapes are unverified." >&2
+  echo "       Install pnpm (corepack enable), run the regen by hand (cd shell && pnpm gen:api)," >&2
+  echo "       commit it, and re-run this script. Refusing is the fail-closed direction:" >&2
+  echo "       a release whose gate did not run is a release that may be lying." >&2
+  exit 1
+fi
+DRIFT_TMP="$(mktemp)"
+trap 'rm -f "$DRIFT_TMP"' EXIT
+if (cd shell && pnpm exec openapi-typescript ../openapi.yaml -o "$DRIFT_TMP") >/dev/null; then
+  if ! cmp -s shell/src/lib/api/schema.d.ts "$DRIFT_TMP"; then
+    echo "error: shell/src/lib/api/schema.d.ts is STALE against openapi.yaml — regenerating produces different bytes." >&2
+    echo "       Run:   cd shell && pnpm gen:api   (then commit the regenerated file) and re-run." >&2
+    echo "       This is the 1.29.22 shape and it must be refused, not re-created: the" >&2
+    echo "       one lane carrying the drift gate does not fire on a tag push, so the stale" >&2
+    echo "       bytes would ride to the tag with nothing between them and the release." >&2
+    echo "       First diff hunk:" >&2
+    diff shell/src/lib/api/schema.d.ts "$DRIFT_TMP" | head -12 >&2 || true
+    exit 1
+  fi
+  echo ">> 1f drift gate: shell/src/lib/api/schema.d.ts matches openapi.yaml byte-for-byte."
+else
+  echo "error: the drift regen itself failed to run. Is shell/node_modules installed (cd shell && pnpm install)?" >&2
+  echo "       Refusing to tag rather than shipping an unverified client: the byte-comparison" >&2
+  echo "       below this point cannot be trusted if the regeneration never happened." >&2
+  exit 1
+fi
 
 # 2. Version consistency: Cargo mismatch is a warning (the tag defines the
 # release; a deliberate mismatch has no downstream failure). A missing
