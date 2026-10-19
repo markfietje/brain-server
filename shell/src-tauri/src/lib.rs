@@ -19,10 +19,14 @@ pub mod forget;
 pub mod recall;
 pub mod verify;
 
+mod token;
+
 #[cfg(test)]
 mod forget_tests;
 #[cfg(test)]
 mod recall_tests;
+#[cfg(test)]
+mod token_tests;
 #[cfg(test)]
 mod verify_tests;
 
@@ -44,21 +48,46 @@ pub use verify::{
     authorize as authorize_verify, shape_verify, shape_verify_command, verify_claim_command,
 };
 
-/// D7 — the bearer token's runtime injection point. Read from the
-/// operator's own environment (`BRAIN_SHELL_TOKEN`); held in JS memory
-/// only (see src/lib/api/token.ts); never logged, never rendered, never
-/// persisted (keyring storage is the recorded M2 deferral). This is
-/// system integration (an env read), not business logic.
+/// D7 / III-2 — the bearer token's runtime injection point. Read order: the
+/// login keychain (service `app.brain.shell/token`, account `default`), then
+/// the shell's own `BRAIN_SHELL_TOKEN`, absent last. Once handed over it is
+/// held in JS memory only (see src/lib/api/token.ts); the webview never logs,
+/// renders or persists it. The kernel's operator credentials (`AUTH_TOKEN`,
+/// `BRAIN_TOKEN`, and their files) are NOT read here: that is the privilege
+/// boundary this shell keeps.
 ///
-/// Unchanged by Phase I, and that is a decision rather than an omission: the
-/// core reads NO token of its own to authorize recall, because the loopback
-/// posture needs none (a kernel with no token resolved serves unauthenticated)
-/// and a core that read one would give the bearer a second home. The caller's
-/// principal rides the webview's own middleware; `RecallQuery` has no field
-/// through which one could arrive.
+/// The keychain read runs on the blocking pool — a login-keychain access can
+/// wait on a system prompt, and a sync command would freeze the UI.
 #[tauri::command]
-fn kernel_token() -> Option<String> {
-    std::env::var("BRAIN_SHELL_TOKEN").ok()
+async fn kernel_token() -> Option<String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        token::resolve_platform(std::env::var("BRAIN_SHELL_TOKEN").ok())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// III-2 — write the bearer to the login keychain. The value is trimmed and
+/// bounded before any store is touched; the error is a stable code, never the
+/// token. The store work runs on the blocking pool for the same reason the
+/// read does.
+#[tauri::command]
+async fn store_kernel_token(token: String) -> Result<(), String> {
+    let token = token::normalize(token).map_err(|e| e.code().to_string())?;
+    tauri::async_runtime::spawn_blocking(move || token::write_platform(&token))
+        .await
+        .map_err(|_| "keychain_write_failed".to_string())?
+        .map_err(|e| e.code().to_string())
+}
+
+/// III-2 — remove the stored bearer. Clearing an absent item is success.
+#[tauri::command]
+async fn clear_kernel_token() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(token::clear_platform)
+        .await
+        .map_err(|_| "keychain_clear_failed".to_string())?
+        .map_err(|e| e.code().to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -66,6 +95,8 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             kernel_token,
+            store_kernel_token,
+            clear_kernel_token,
             recall_memory,
             shape_recall_command,
             verify_claim_command,

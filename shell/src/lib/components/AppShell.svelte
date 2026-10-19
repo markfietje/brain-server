@@ -24,6 +24,7 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Label } from '#lib/components/ui/label/index.js';
 	import { DEFAULT_BASE, apiBase, setApiBase } from '#lib/api/client.js';
+	import { refreshBearer } from '#lib/api/bootstrap.js';
 
 	const NAV = [
 		{ route: '/overview', key: 'nav.overview', Icon: HouseIcon },
@@ -138,6 +139,58 @@
 			originState = 'invalid';
 		}
 	}
+
+	// ── settings: the kernel token (III-2; Tauri only) ───────────────────
+	// The writer the login keychain needs. The token is entered here, written
+	// by the Rust core, and never retained in the webview beyond the IPC call:
+	// the input is cleared after Save AND after a failure, and the status line
+	// says configured/anonymous without naming which source supplied it.
+	const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+	let tokenInput = $state('');
+	let tokenConfigured = $state(false);
+	let tokenState = $state<'idle' | 'saved' | 'cleared' | 'empty' | 'error'>('idle');
+
+	$effect(() => {
+		if (settingsOpen && inTauri) {
+			tokenState = 'idle';
+			void refreshTokenStatus();
+		}
+	});
+
+	async function refreshTokenStatus(): Promise<void> {
+		tokenConfigured = await refreshBearer();
+	}
+
+	async function saveToken(): Promise<void> {
+		const token = tokenInput;
+		if (!token.trim()) {
+			tokenState = 'empty';
+			return;
+		}
+		try {
+			const { invoke } = await import('@tauri-apps/api/core');
+			await invoke('store_kernel_token', { token });
+			tokenState = 'saved';
+		} catch {
+			tokenState = 'error';
+		} finally {
+			tokenInput = '';
+			await refreshTokenStatus();
+		}
+	}
+
+	async function clearToken(): Promise<void> {
+		try {
+			const { invoke } = await import('@tauri-apps/api/core');
+			await invoke('clear_kernel_token');
+			tokenState = 'cleared';
+		} catch {
+			tokenState = 'error';
+		} finally {
+			tokenInput = '';
+			await refreshTokenStatus();
+		}
+	}
 </script>
 
 <svelte:window onkeydown={onKeydown} />
@@ -221,5 +274,44 @@
 				{/each}
 			</select>
 		</div>
+		{#if inTauri}
+			<div class="grid gap-2">
+				<h3 class="text-sm font-semibold">{m["settings.token.heading"]()}</h3>
+				<Label for="setting-token">{m["settings.token.label"]()}</Label>
+				<div class="flex flex-wrap gap-2">
+					<Input
+						id="setting-token"
+						type="password"
+						autocomplete="off"
+						spellcheck="false"
+						autocapitalize="none"
+						autocorrect="off"
+						aria-describedby="setting-token-hint"
+						bind:value={tokenInput}
+					/>
+					<Button onclick={saveToken}>{m["settings.token.save"]()}</Button>
+					<Button variant="outline" onclick={clearToken}>
+						{m["settings.token.clear"]()}
+					</Button>
+				</div>
+				<p id="setting-token-hint" class="text-xs text-muted-foreground">
+					{m["settings.token.hint"]()}
+				</p>
+				<p class="text-sm text-muted-foreground" role="status">
+					{tokenConfigured
+						? m["settings.token.status.configured"]()
+						: m["settings.token.status.anonymous"]()}
+				</p>
+				{#if tokenState === 'saved'}
+					<p class="text-sm text-brand" role="status">{m["settings.token.saved"]()}</p>
+				{:else if tokenState === 'cleared'}
+					<p class="text-sm text-brand" role="status">{m["settings.token.cleared"]()}</p>
+				{:else if tokenState === 'empty'}
+					<p class="text-sm text-destructive" role="alert">{m["settings.token.empty"]()}</p>
+				{:else if tokenState === 'error'}
+					<p class="text-sm text-destructive" role="alert">{m["settings.token.error"]()}</p>
+				{/if}
+			</div>
+		{/if}
 	</div>
 </Dialog>

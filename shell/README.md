@@ -164,13 +164,23 @@ worker on port 8799; the WebKit project remains the static no-bypass CSP leg.
   `app.html` (the dev server strips it for HMR; every build keeps it).
   No remote content is loadable; `{@html}` is lint-banned; `no-console` is
   lint-banned; `#![forbid(unsafe_code)]` on the Rust core.
-- **The token (D7):** never in the bundle — the token module reads NOTHING
+- **The token (D7/III-2):** never in the bundle — the token module reads NOTHING
   from `import.meta.env` (VITE_* is compile-time-exposed and forbidden for
-  this). In Tauri it arrives via the `kernel_token` command (the operator's
-  own `BRAIN_SHELL_TOKEN` env, read at runtime by the Rust core). In the
-  PWA build the operator's serving origin calls `setBearer` from its own
-  bootstrap. Held in memory only; never logged, never rendered, never
-  persisted (keyring = M2 deferral). The redaction test proves it.
+  this). In Tauri it is supplied at runtime from the login keychain first (the
+  generic-password item `app.brain.shell/token`, account `default`), then the
+  shell's own `BRAIN_SHELL_TOKEN`. The kernel's operator credentials
+  (`BRAIN_TOKEN_FILE`, `AUTH_TOKEN`, …) are NEVER read by the shell: that is
+  the privilege boundary, not a naming preference. The Settings dialog writes
+  and clears the keychain item through `store_kernel_token` /
+  `clear_kernel_token`, and every keychain access runs on the blocking pool so
+  a system prompt cannot freeze the UI. In the PWA build the operator's serving
+  origin still calls `setBearer` from its own bootstrap, and the keychain
+  section does not exist. The webview holds the token in memory only; never
+  logged, never rendered, never in browser storage. The redaction tests prove
+  it. Ad-hoc bundles (III-1) have no stable Team ID, so a keychain ACL prompt
+  across rebuilds is expected rather than a failure; III-5's Developer ID is
+  what makes the ACL stable. The pins drive the mock store; the app-level
+  keychain drill is the external acceptance step.
 - **The renderer (D1/D3):** branch-on-answer is CLIENT-SIDE over the
   kernel-validated packs; unknown/ambiguous answers hit the abstain card —
   nothing is invented, no free text exists in the schema. No intake

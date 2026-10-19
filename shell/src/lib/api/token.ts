@@ -3,11 +3,12 @@
  * bundle: no `import.meta.env` read exists here (VITE_* variables are
  * compile-time-exposed to the bundle and are therefore FORBIDDEN for the
  * token). It is supplied at RUNTIME — via the Tauri command (`kernel_token`,
- * which reads the operator's own environment in the Rust core) or, in the
- * PWA build, by the operator's serving origin calling `setBearer` from its
- * own bootstrap script. It is held in module memory only: never logged,
- * never rendered, never persisted (keyring storage is the recorded M2
- * deferral). The redaction test pins all of this.
+ * which reads the login keychain first and then the shell's own environment in
+ * the Rust core) or, in the PWA build, by the operator's serving origin calling
+ * `setBearer` from its own bootstrap script. Once resolved it is held in
+ * module memory only: never logged, never rendered, never stored by the
+ * webview. Its persistent home is the login keychain (`app.brain.shell/token`,
+ * written by the Rust core). The redaction test pins all of this.
  */
 
 let bearer: string | null = null;

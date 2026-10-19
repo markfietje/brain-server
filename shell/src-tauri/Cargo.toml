@@ -31,6 +31,17 @@ tauri = { version = "2.12.4", features = [] }
 # added: the core holds no transport (see capabilities/main.json).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# III-2: the keychain logic and its mock-store pins are platform-independent.
+# `keyring-core` is pure Rust; the APPLE store is the only macOS-gated edge.
+# The v1 `keyring` meta-crate is declined by name: it hard-wires the platform
+# store in a process-global default, so a test cannot inject a mock without
+# replacing global state (and its default feature names zbus on Linux).
+keyring-core = "1.0.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The login-keychain implementation: `keychain` (legacy login keychain), NOT
+# `protected` (data-protection keychain — entitlements/access groups are III-5).
+apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
 
 [profile.release]
 codegen-units = 1

@@ -113,3 +113,53 @@ test('the_macos_bundle_lane_stages_builds_and_walks', () => {
 	expect(bundleJob).not.toContain('secrets.');
 	expect(bundleJob).toContain('Contents/MacOS/brain-server" --version');
 });
+
+/**
+ * III-2 — the keychain dependency is target-gated, and the mock seam stays
+ * portable. `keyring-core` is pure Rust and must build on the Ubuntu lane so
+ * the mock-store pins compile there; only the Apple store is macOS-gated. The
+ * v1 `keyring` wrapper is declined by name (no injection point).
+ */
+test('the_keychain_dependencies_are_target_gated_and_use_keyring_core', () => {
+	const cargoToml = readFileSync(join(shellRoot, 'src-tauri', 'Cargo.toml'), 'utf8');
+	const cargoLock = readFileSync(join(shellRoot, 'src-tauri', 'Cargo.lock'), 'utf8');
+
+	const table = (header: string): string => {
+		const at = cargoToml.indexOf(header);
+		expect(at, `Cargo.toml lost ${header}`).toBeGreaterThanOrEqual(0);
+		const rest = cargoToml.slice(at + header.length);
+		const end = rest.search(/^\[/m);
+		return end === -1 ? rest : rest.slice(0, end);
+	};
+
+	const dependencies = table('[dependencies]');
+	const macDependencies = table(`[target.'cfg(target_os = "macos")'.dependencies]`);
+
+	// Portable: the mock-store tests run on Linux.
+	expect(dependencies).toMatch(/^keyring-core\s*=\s*"1\.0\.1"$/m);
+	// Apple-only: Linux must never build the platform store.
+	expect(macDependencies).toMatch(
+		/^apple-native-keyring-store\s*=\s*\{[^}]*version\s*=\s*"1\.0\.2"[^}]*\}$/m
+	);
+	expect(macDependencies).toContain('features = ["keychain"]');
+	expect(dependencies).not.toContain('apple-native-keyring-store');
+
+	// The v1 meta-crate is declined: it hard-wires the platform store in a
+	// process-global default, which makes the mock seam impossible.
+	expect(cargoToml).not.toMatch(/^keyring\s*=/m);
+
+	// The lock resolves the two real crates and no `keyring` package (the
+	// exact line, not the `keyring-core` substring).
+	expect(cargoLock).toContain('\nname = "keyring-core"\n');
+	expect(cargoLock).toContain('\nname = "apple-native-keyring-store"\n');
+	expect(cargoLock).not.toContain('\nname = "keyring"\n');
+
+	// The offline test step is unchanged: the online clippy step is what
+	// populates the registry first (C10 — no fetch step was added).
+	expect(workflow).toContain(
+		'cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings'
+	);
+	expect(workflow).toContain(
+		'cargo test --manifest-path src-tauri/Cargo.toml --locked --offline'
+	);
+});
