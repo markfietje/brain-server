@@ -1415,7 +1415,57 @@ pub fn verify_chain(conn: &Connection) -> bool {
 /// and the one-shot upgrade path (MACs tolerated, because a chain written
 /// before pins carried MACs still has sound LINKS — the upgrade re-stamps
 /// the pins only after this tolerant walk passes).
+///
+/// SNAPSHOT DISCIPLINE — THE TWO READS MUST SEE ONE INSTANT.
+///
+/// The body reads the chain TWICE from two different tables: the walk reads
+/// `audit_events` (the tip) and the pin check reads `schema_meta` (the head
+/// pin). When the connection is in AUTOCOMMIT, each of those is its own read
+/// transaction and therefore its OWN SNAPSHOT. On a WAL database a concurrent
+/// audit append that commits BETWEEN them leaves the pin one-or-more rows
+/// NEWER than the tip the walk saw — and the comparison below reports a pin
+/// mismatch, i.e. "rows were added or removed outside the audited write
+/// paths", for a chain that is perfectly intact. The invariant the check
+/// relies on ("every legitimate mutation rewrites the pin in the same tx") is
+/// true at any single instant; comparing a tip from instant T1 against a pin
+/// from instant T2 > T1 simply asks a question no single instant answers.
+///
+/// This was NOT theoretical. The production WAL chain-check loop
+/// (`alert.rs`) walks hundreds of thousands of rows on a timer while request
+/// traffic appends; over ~20h it logged 42 false mismatches, EVERY one with
+/// the pin AHEAD of the tip by 1..63 rows (never behind — behind would mean
+/// real loss), the gap being however many appends landed mid-walk.
+///
+/// The fix is to hold ONE read snapshot across the whole body: `BEGIN
+/// DEFERRED` takes the snapshot at the first read and keeps it until commit,
+/// so the walk, the pin, and the genesis pin all describe the same instant.
+/// An append that commits after the snapshot is simply not seen by this
+/// verify — the next tick sees it with its own pin, consistent.
 fn verify_chain_inner(conn: &Connection, require_pin_macs: bool) -> bool {
+    // Already inside a caller's transaction: its snapshot already pins every
+    // read below, so run inline (and a nested BEGIN would error).
+    if !conn.is_autocommit() {
+        return verify_chain_in_snapshot(conn, require_pin_macs);
+    }
+    // Autocommit: open a read transaction so the whole body shares one
+    // snapshot. `BEGIN DEFERRED` acquires no write lock — it only fixes the
+    // read view — so this adds no contention and still lets writers proceed.
+    if conn.execute_batch("BEGIN DEFERRED").is_err() {
+        // Fail closed: if we cannot establish the snapshot the two reads would
+        // be taken from different instants, which is the bug.
+        return false;
+    }
+    let ok = verify_chain_in_snapshot(conn, require_pin_macs);
+    // Read-only body; discard the transaction. ROLLBACK (not COMMIT) so the
+    // snapshot is released without ever implying a write.
+    let _ = conn.execute_batch("ROLLBACK");
+    ok
+}
+
+/// The walk + pin comparison proper. Runs entirely inside one read snapshot
+/// (established by [`verify_chain_inner`] or by a caller's transaction), so
+/// every read here observes the same instant.
+fn verify_chain_in_snapshot(conn: &Connection, require_pin_macs: bool) -> bool {
     let Some(scheme) = current_scheme(conn) else {
         tracing::warn!(
             "audit chain verify: hmac256-epoch chain has no key in this process — not ok"
@@ -2949,6 +2999,123 @@ mod tests {
             verify_chain(&c),
             "chain verifies after concurrent autocommit writers — no fork"
         );
+    }
+
+    /// REGRESSION (v1.29.22): a chain verify must NOT read the tip and the
+    /// head pin from two different snapshots.
+    ///
+    /// `verify_chain_inner` walks `audit_events` (the tip) and then reads
+    /// `schema_meta` (the head pin). In AUTOCOMMIT each statement is its own
+    /// read transaction, so on a WAL database a concurrent append that commits
+    /// between them leaves the pin NEWER than the tip the walk saw — a false
+    /// "rows were added or removed outside the audited write paths" against a
+    /// chain that is perfectly intact. This is the exact production symptom: the
+    /// periodic WAL chain-check loop logged 42 such mismatches over ~20h, EVERY
+    /// one with the pin AHEAD of the tip (never behind — behind would mean real
+    /// loss), the gap being however many appends landed mid-walk.
+    ///
+    /// With the snapshot fix the verify is immune by construction: an append
+    /// that commits after the verify's snapshot is simply not visible to the
+    /// in-flight verify, and the NEXT tick sees it together with its own pin.
+    #[test]
+    fn chain_verify_is_immune_to_a_concurrent_append() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::thread;
+
+        fn open_conn(p: &std::path::Path) -> Connection {
+            let c = Connection::open(p).expect("open");
+            c.execute_batch(
+                "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;",
+            )
+            .unwrap();
+            c
+        }
+
+        let path = std::env::temp_dir().join(format!("audit_race_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+
+        let setup = open_conn(&path);
+        setup
+            .execute_batch(
+                "CREATE TABLE audit_events(
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   ts TEXT DEFAULT CURRENT_TIMESTAMP,
+                   kind TEXT NOT NULL,
+                   actor TEXT,
+                   target_hash TEXT,
+                   status TEXT,
+                   detail_hash TEXT,
+                   tenant_id TEXT NOT NULL DEFAULT 'global',
+                   prev_hash TEXT);
+                 CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT);",
+            )
+            .unwrap();
+        // Seed a chain big enough that the walk takes real wall-clock time, so
+        // an append is very likely to commit inside the verify's read window.
+        for i in 0..3000 {
+            record(
+                &setup,
+                AuditKind::Ingest,
+                "api",
+                &format!("c{i}"),
+                AuditStatus::Ok,
+                "d",
+            );
+        }
+        assert!(
+            verify_chain(&setup),
+            "the seeded chain verifies before any race"
+        );
+        drop(setup);
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer_path = path.clone();
+        let writer_stop = stop.clone();
+        let writer = thread::spawn(move || {
+            let w = open_conn(&writer_path);
+            let mut i = 0u64;
+            // Hammer appends for the whole window the verifier runs in. Each
+            // `record` commits the row AND its pin in one tx — the chain stays
+            // internally consistent; only the verifier's two-snapshot read is
+            // at risk. The cap bounds the chain so a verify never walks an
+            // unbounded table (the race is caught on the FIRST verify; this
+            // budget only keeps later verifies in the race too).
+            while !writer_stop.load(Ordering::Relaxed) && i < 30_000 {
+                record(
+                    &w,
+                    AuditKind::Auth,
+                    "api",
+                    &format!("w{i}"),
+                    AuditStatus::Ok,
+                    "d",
+                );
+                i += 1;
+            }
+        });
+
+        let v = open_conn(&path);
+        for n in 0..15 {
+            assert!(
+                verify_chain(&v),
+                "verify #{n}: a concurrent append must not make an intact chain \
+                 read as tampered (the tip and pin must come from one snapshot)"
+            );
+        }
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
+
+        // And once the writer is done, the chain still verifies.
+        assert!(
+            verify_chain(&v),
+            "chain verifies after the concurrent writer stops"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 
     /// F-23 (v1.27.26 "Notarize"): a failed BEGIN IMMEDIATE must NOT fall

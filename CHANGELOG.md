@@ -4,6 +4,48 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.22] — 2026-10-19 — the outage, and the pin that cried wolf
+
+Two defects, both found by looking at a server that would not stay up. The
+first is the outage: v1.29.21 shipped a boot-time crash loop. The second was
+already running, quietly, for twenty hours.
+
+### Release notes
+
+**Security fixes**
+
+- The PII card scanner no longer panics on a 13-15 digit identifier. Its
+  second pass slid a fixed 16-digit window across a lone digit run, but the
+  only guard was `total >= 13` — enough for the first pass, not the second —
+  so `total - 16` underflowed, and `overflow-checks = true` turns that into a
+  panic. Because the `pii` migration backfill scans every stored row at boot,
+  one such string anywhere in the corpus panicked startup and `KeepAlive` made
+  it a crash loop (560 panics). Not theoretical: 43 of this deployment's 8,745
+  rows trip it. Fixed and pinned at 1, 12, 13, 14, 15, 16 and 17 digits.
+
+**Changed**
+
+- The audit chain verifier reads the tip and the head pin from ONE snapshot.
+  In autocommit those were two separate reads; on a WAL database an audit
+  append landing between them made the pin look newer than the chain tip, so
+  an intact chain was reported as "rows were added or removed outside the
+  audited write paths". The periodic chain check logged 42 such false
+  mismatches in ~20 hours, every one with the pin AHEAD of the tip — never
+  behind, which would have meant real loss. The verifier now holds a single
+  read transaction across the walk and both pins. Truncation and tamper
+  detection are unchanged and still covered by the module's own battery;
+  a false alarm on an intact chain is itself a defect, so this strengthens
+  the detector rather than relaxing it.
+- The legacy search allocation is now bounded at the sink as well as at the
+  caller (`(k * 2).min(MAX_K * 2)`), which is what closed CodeQL alert #82
+  (`rust/uncontrolled-allocation-size`); the repo is at zero open
+  code-scanning alerts. The structural pin's second arm was rewritten because
+  its previous form could not have caught the re-flag.
+- The chain-module byte digest is re-recorded, as it has been for three prior
+  rounds that each legitimately fixed a real defect inside `src/audit`. The
+  diff is three hunks, all pure additions; no verdict, key, epoch, chain
+  link, scheme or audit row moved.
+
 ## [1.29.21] — 2026-10-19 — the allocation ceiling
 
 One CodeQL finding closed: `perform_search_legacy` sized its result vector from

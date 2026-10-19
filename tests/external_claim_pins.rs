@@ -1062,8 +1062,37 @@ fn r45_0_correction_leaves_the_audit_chain_module_byte_untouched() {
 /// R112 recorded, and the module's own battery is what substantiates it: the
 /// keyed suite, the tamper controls and the unsealed-key arms all still pass,
 /// plus a new census pin that fails if any mutator is ever unfenced again.
+///
+/// RE-RECORDED 2026-10-19 (v1.29.22, the pin-skew round) on the same
+/// extend-don't-weaken footing, and for the same reason as every prior
+/// re-record: a REAL production defect was fixed inside this module, so the
+/// digest moved. `git diff -U0` shows THREE hunks, ALL pure additions
+/// (`-1418,0` / `-1417,0` / `-2953,0` — not one line of existing production
+/// logic was deleted or edited), and the only `Audit*` token in the diff is
+/// `AuditStatus::Ok` as test data. No verdict, key, epoch, chain_link,
+/// scheme, check, or audit row moved.
+///
+/// The defect: `verify_chain_inner` walked `audit_events` (the tip) and then
+/// read `schema_meta` (the head pin). In AUTOCOMMIT each statement is its own
+/// read transaction, so on a WAL database a concurrent audit append that
+/// committed between them left the pin NEWER than the tip the walk saw — and
+/// the module reported "rows were added or removed outside the audited write
+/// paths" against a chain that was perfectly intact. The production chain
+/// check loop logged 42 such FALSE mismatches in ~20h, every one with the pin
+/// AHEAD of the tip (never behind — behind would be real loss). The fix
+/// establishes ONE read snapshot (`BEGIN DEFERRED`) across the whole body, so
+/// the walk, the head pin and the genesis pin all describe the same instant;
+/// an append committing after the snapshot is simply not seen by the in-flight
+/// verify and the next tick sees it with its own pin. It STRENGTHENS the
+/// detector (a false tamper alarm on an intact chain is itself a defect) and
+/// changes no verdict semantics: truncation, forging and mid-chain tamper are
+/// still caught by the same code, proven by the module's own battery —
+/// `verify_detects_truncation_via_stale_pin` and the tamper controls stay
+/// green — plus the new red-first `chain_verify_is_immune_to_a_concurrent_append`,
+/// which FAILS on the pre-fix code (verified: red at verify #0, 0.44s) and
+/// passes with the fix. 57/57 `--lib audit` tests green.
 const CHAIN_MODULE_SHA256: &str =
-    "fe85c9c076bc47267261a86addfeb23096949434a1aa34efbc7369d99d91eee7";
+    "164abb1c911bd958804bad1e3ed33ced45e82bb5837d35151bd4005778908dfe";
 
 /// E8's second half: the correction adds no key material and no audit row.
 #[test]
