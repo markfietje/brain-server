@@ -4,6 +4,72 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.23] — 2026-10-20 — the shell joins the release line, and the drift gate moves in front of the tag
+
+Eight commits after v1.29.22: the Phase III shell groundwork (the transport
+decision, the authz route census, the axe breadth sweep, the universal sidecar,
+and the keychain bearer) plus the release-path repair that began when v1.29.22
+shipped a typed client whose shapes were stale. No kernel route or wire shape
+moved; the only kernel-code change is the structural pin over `release.sh`.
+
+### Release notes
+
+**Added**
+
+- The shell's kernel bearer has one persistent home: a login-keychain generic
+  password (service `app.brain.shell/token`, account `default`), read before
+  the shell's own `BRAIN_SHELL_TOKEN` and never from the kernel's operator
+  credential (`BRAIN_TOKEN_FILE`, `AUTH_TOKEN`, `BRAIN_TOKEN`,
+  `AGENT_TOKEN_FILE`). `keyring-core` 1.0.1 + the Apple-native store 1.0.2
+  (macOS-target-gated) replace the declined v1 wrapper; every pin drives the
+  mock store, and the three async commands keep keychain work off the UI
+  thread. The Settings dialog gains the writer: a password field, Save, Clear,
+  and a configured/anonymous status line. The lock gains four packages; the
+  Ubuntu tree stays Apple-store-free.
+- `Brain Shell.app` carries its own ad-hoc-signed, hardened-runtime kernel
+  sidecar. `scripts/sidecar.mjs stage` builds both Apple arches from the clean
+  commit, lipos the universal binary, stages Tauri's three full-triple files and
+  seals `SIDECAR_PROVENANCE.json` inside the bundle; `verify` finds every Mach-O
+  by path, checks the seal, verifies each file with `--ignore-resources` + the
+  runtime flag, checks arch parity and hashes the staged artifacts. Measured:
+  a 48.57 MiB bundle, two Mach-O paths, both `[x86_64 arm64]` and
+  `flags=0x10002(adhoc,runtime)`.
+- Every user-reachable shell route now carries the kernel's own authz verdict:
+  its scope(s) and mutating reach, derived from `route_guards.rs` rather than
+  from prose. Three pins hold the table to the tree — a closure over
+  `shell/src`, a refusal for call shapes the scanner cannot read, and the
+  `/chat` forget affordance pinned soft-only at the route's real call site.
+- The axe AA sweep covers all nine census routes rather than the five that
+  happened to have arms, with a render proof per route and a population floor
+  so a sweep of nothing cannot pass. All nine measured clean; no source fix was
+  needed.
+
+**Changed**
+
+- `scripts/release.sh` runs a pre-tag schema-drift gate: it regenerates the
+  typed client, byte-compares it with the committed one, and refuses on both a
+  mismatch and an inability to check. Four red-proofs, including the
+  end-to-end stale-client refusal and the ordering proof that the gate runs
+  before the tag exists.
+- The sidecar transport is loopback HTTP; UDS is declined and pinned, because
+  the kernel has no `UnixListener` and the whole typed wire is HTTP.
+- The recall-stream timing comment records why `totalMs >= 120` is the
+  anti-shortcut bound, and why the plausible strengthening
+  `firstFragmentAtMs > 0` is false about the machine.
+
+**Fixed**
+
+- `shell/src/lib/api/schema.d.ts` is regenerated with `pnpm gen:api` after
+  v1.29.22's contract edits left it stale; the committed bytes match the drift
+  gate's regeneration exactly.
+
+**Owed, not claimed**
+
+- The app-level keychain acceptance (bundle → Settings → save a sentinel →
+  quit → relaunch → configured → Clear) needs GUI interaction and remains
+  owed. The shell's Ubuntu and `bundle-macos` lanes are dispatched against this
+  tag; their verdict is the runner's, not this file's.
+
 ## [1.29.22] — 2026-10-19 — the outage, and the pin that cried wolf
 
 Two defects, both found by looking at a server that would not stay up. The
