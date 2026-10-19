@@ -803,17 +803,22 @@ disables them:
    tiers propose and never promote; the release approve and promote routes refuse agent
    principals outright.
 
-**The capability vocabulary is closed, and it is ten entries** (`CAN_ACTIONS`, `src/role.rs`):
+**The capability vocabulary is closed, and it is eleven entries** (`CAN_ACTIONS`, `src/role.rs`):
 
 ```
-read · write · approve · reject · calibrate · release_quarantine · dsar_export · purge · admin · workflow
+read · write · approve · reject · calibrate · release_quarantine · dsar_export · purge · admin · workflow · shared_pool
 ```
 
-The agent preset holds `["read", "write", "reject"]`. The omitted six are operator- or
-service-side and each gates a real route — `calibrate` (agreement), `release_quarantine`
-(disposition), `dsar_export`, `purge`, `admin`, `workflow`. A role carrying any item outside
-this list is **rejected at write time** (`Role::validate`), and the only production writer of
-the roles table is the handler that calls it.
+The agent preset holds `["read", "write", "shared_pool"]`. Ten gate a real route or a real
+gate composition — `calibrate` (agreement), `release_quarantine` (disposition),
+`dsar_export`, `purge`, `admin`, `workflow`, and `shared_pool` (the record gate's owner
+half, read by `effective_filter`). `shared_pool` is the one that is NOT a route gate: it is
+the explicit grant behind "this role may read across owners", carried by five presets and
+enumerated in `SHARED_POOL_ROLES` — because `owner_filter` used to widen silently, and a
+read-only compliance preset inheriting that string inherited an Admin-scale read with
+nothing to fail. A role carrying any item outside this list is **rejected at write time**
+(`Role::validate`), and the only production writer of the roles table is the handler that
+calls it.
 
 **⚠️ A KNOWN DEFECT, disclosed rather than absorbed: `publish` is unsatisfiable.**
 KCS article publication is gated on the `publish` capability, but `publish` is **not** in

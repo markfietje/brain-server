@@ -157,7 +157,18 @@ parse-validated by `all_presets_parse_and_validate`:
 
 The capability vocabulary (`CAN_ACTIONS`) is: `read`, `write`, `approve`,
 `reject`, `calibrate`, `release_quarantine`, `dsar_export`, `purge`, `admin`,
-`workflow` — and NOT `publish`.
+`workflow`, `shared_pool` — and NOT `publish`.
+
+`shared_pool` is the one capability that is not a route gate: it is read once,
+when the record gate is composed, and it is what permits a role to drop the
+record gate's `owner` half (see below). It exists because `owner_filter` is a
+FIELD, and every preset that happened to spell it `"all"` widened — including
+three read-only compliance roles that never needed to. The widening is now an
+explicit, enumerated grant (`SHARED_POOL_ROLES`: `admin`, `solo`,
+`controller`, `agent`, `client-auditor`, each with its reason recorded in
+`src/role.rs`), and
+`only_declared_roles_widen_the_owner_fence` reds when a preset carries it that
+is not on the list.
 
 ## No-role JWTs vs the role-based shared pool (R85)
 
@@ -172,12 +183,27 @@ subject reads no private rows (fail closed). Domain/team scopes still follow
 the signed JWT scopes; admin and loopback/opaque operator access are
 unchanged.
 
-The **`agent` preset is the explicit exception, not the default.** Its
-`owner_filter:"all"` deliberately opens the shared pool across owners
-(including legacy NULL-owner rows) so the gateway identity can work. Do not
-mistake a no-role JWT for the agent role: no-role means owner-only, the
-`agent` role means shared-pool by design. Narrowing the agent preset to
-owner-only is a separate policy decision and release, not part of this fix.
+## Roles can widen too — and which ones do is enumerated
+
+A role **usually** narrows: `owner_filter` `self`/`reports` becomes the `owner`
+half of the record gate and the role's `scopes` become the `access_scope` half.
+It is NOT always a restriction, and this file used to claim it was. Five
+presets carry `shared_pool` and drop the `owner` half: `admin`, `solo`,
+`controller`, `agent` (the gateway identity, which needs the shared pool to
+work) and `client-auditor` (whose documented job IS a cross-owner read of
+exactly one client domain, bounded by the token's own scope domain and by its
+`access_scope` allowlist).
+
+Three read-only presets that used to widen no longer do: `dpo` and `bpo-ops`
+are board/DSAR roles whose duties are VERB gates (`dsar_export`, the ops
+board), not memory-row reads, so they read their own rows like any other
+principal; and no preset drops the `access_scope` half — `owner_filter:"all"`
+narrows by owner and nothing else, so a role can never admit an
+`access_scope` value no role declared.
+
+Do not mistake a no-role JWT for a shared-pool role: no-role means owner-only,
+a `shared_pool` role means cross-owner by explicit grant. Adding a sixth
+widening role means adding it to `SHARED_POOL_ROLES` with its reason.
 
 The **same record gate binds the UMP any-id mutations** (R93): `/ump/revise`,
 `/ump/forget`, and `/ump/feedback` may only target a row the caller's gate

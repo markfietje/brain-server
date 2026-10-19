@@ -46,19 +46,26 @@ What you need to run it:
    routes refuse it by class. `operator` takes line 1 explicitly (an operator
    running the bridge as their own steward); an unknown value — including an
    empty one — refuses to start, matching `BRAIN_MCP_SCOPE`. On a SINGLE-token
-   file there is no agent lane to take, so the bridge keeps working and says so
-   at startup (`mcp: identity=agent lanes=1 — single-token source, so the
-   OPERATOR token is being presented …`): that is the ambient-authority posture,
-   and `BRAIN_MCP_SCOPE=read` is what bounds it. No installer artifact sets it
-   — `agent` is the default, `operator` is a per-host operator choice.
+   file there is no agent lane to take, and the bridge **refuses to start**.
+   It used to fall back to the operator token under an `agent` label, which is
+   MORE authority than the label claims: that bearer authenticates with no
+   principal at all, so every scope gate, capability gate and record gate
+   passes and `ump.get` redacts nothing. The escape hatches are explicit — set
+   `BRAIN_MCP_IDENTITY=operator` to mean the single token, or install the
+   two-lane token file. No installer artifact sets the identity — `agent` is
+   the default, `operator` is a per-host operator choice.
 5. **Scope (optional, v1.28.67 "Pin").** `BRAIN_MCP_SCOPE` ∈ `read` | `full`
-    (default `full`). Under `read`, the five write verbs — `brain_ingest`,
-    `ump.remember`, `ump.revise`, `ump.forget`, `ump.feedback` — refuse at dispatch with
+    (default `full`). Under `read`, seven tools refuse at dispatch with
    `tool_out_of_scope` and `tools/list` annotates them
    `"x-brain-scope": "read-denied"` so recall-only hosts can render or hide
-   them. Parsed fail-closed: an unknown value refuses to start (the startup
-   line logs the resolved scope). No installer or deploy artifact sets it —
-   `read` is a per-host operator choice (set it in the host's environment).
+   them — the five write verbs (`brain_ingest`, `ump.remember`, `ump.revise`,
+   `ump.forget`, `ump.feedback`) **and the two admin verbs** (`ump.audit`,
+   `ump.audit.verify`), which the write list alone did not name: `read` meant
+   "no writes" and the list read "the five that write", leaving a full
+   audit-chain read on a bridge that cannot write memory. Parsed fail-closed:
+   an unknown value refuses to start (the startup line logs the resolved
+   scope). No installer or deploy artifact sets it — `read` is a per-host
+   operator choice (set it in the host's environment).
 
 You can smoke-test it from a shell (a modern, stateless request is the example
 further down): pipe one JSON-RPC line into `./target/release/mcp` and read the
@@ -263,13 +270,19 @@ curl -s http://127.0.0.1:8766/mcp \
   deployment that is the agent's token, not the operator's — an LLM tool call
   does not arrive as the superuser by default.
 - There is no separate credential; whoever can invoke the binary acts as the
-  configured principal on the server. On a single-token file that principal is
-  the operator, and the startup line names it.
+  configured principal on the server. On a single-token file with the default
+  `agent` identity there is NO principal — the bridge refuses to start rather
+  than present the operator token under an agent label (`BRAIN_MCP_IDENTITY=operator`
+  is how a single-token host means it).
 - **HTTP mode changes the bind posture**: `MCP_TRANSPORT=http` / `MCP_HTTP_ADDR`
   opens a listener (loopback by default). Anything that can reach that port can
-  drive the same tools, so set `MCP_HTTP_TOKEN` whenever the listener is not
-  strictly personal-loopback. A non-loopback `MCP_HTTP_ADDR` without a token
-  refuses to boot. The server treats it as a misconfiguration, not a warning.
+  drive the same tools, so `MCP_HTTP_TOKEN` is **required on every bind,
+  loopback included**. Loopback is a reachability boundary, not an
+  authentication one — every process on the host shares it, and an
+  unauthenticated MCP surface is the full tool surface, hard-erase included.
+  The server refuses to boot without the token on any address and treats it as
+  a misconfiguration, not a warning. (The stdio transport, the default, needs
+  no token: its caller is the parent process.)
 
 ## DeepSeek Harness (dsh)
 
