@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { expect, test } from 'vitest';
 import { shellRoot } from './fixtures';
+import { CENSUS_ROUTES, ROUTE_FLOOR } from './route-census';
 
 /**
  * II-7d — the SHELL route census, and its parity verdicts.
@@ -39,8 +40,10 @@ import { shellRoot } from './fixtures';
  * asserted in the next test so that the floor and the enumeration are two
  * independent statements: one says "the walk found something", the other says
  * "and it is exactly these".
+ *
+ * III-0c: the literal MOVED to `route-census.ts` so the a11y sweep reads the
+ * SAME set — see that module's header. This file's seven pins are unchanged.
  */
-const ROUTE_FLOOR = 9;
 
 /** One census entry: the route path AND the page file it was derived from.
  * III-0b's authz derivation re-opens the FILE — the route string alone cannot
@@ -351,17 +354,7 @@ test('the_shell_route_census_finds_every_page_and_asserts_its_own_floor', () => 
 	// The floor says "something was found"; this says "and it is exactly these".
 	// A new route fails here until it is given a verdict, which is the moment a
 	// parity question gets asked rather than skipped.
-	expect(routes).toEqual([
-		'/',
-		'/chat',
-		'/decisions',
-		'/decisions/[id]',
-		'/models',
-		'/overview',
-		'/recall',
-		'/recall/[trace_id]/trace',
-		'/search'
-	]);
+	expect(routes).toEqual([...CENSUS_ROUTES]);
 	expect(routes.length).toBe(ROUTE_FLOOR);
 
 	// ---- THE DERIVATION IS PROVEN, not just its output ----
