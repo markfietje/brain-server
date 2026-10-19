@@ -1949,7 +1949,24 @@ fn perform_search_legacy(
         count_refs.as_slice(),
         |r| r.get(0),
     )?;
-    let mut results: Vec<SearchResult> = Vec::with_capacity(k * 2);
+    // BOUND THE SINK EXPRESSION ITSELF, NOT ONLY THE LOCAL.
+    //
+    // `k` is already clamped above, so `k * 2` is at most `MAX_K * 2` (200) --
+    // this allocation has been bounded since the clamp landed. CodeQL still
+    // flagged it (`rust/uncontrolled-allocation-size`, alert #82) because that
+    // query does not carry the bound from a `let k = k.min(..)` shadowed local
+    // through the later `k * 2`: what it wants is a bound visible on the
+    // argument expression that reaches `with_capacity`. So the bound is applied
+    // HERE, to the value actually handed to the allocator, as `.min(MAX_K * 2)`.
+    //
+    // Deliberately redundant with the clamp above, and kept even though it
+    // narrows nothing: the clamp is what makes `k` correct for the SQL `LIMIT`
+    // (it bounds the QUERY), while this is what bounds the ALLOCATION the query
+    // analyses. One is a data bound, the other a memory bound; conflating them
+    // is how the alert survived an already-correct fix. `k` is <= `MAX_K` here,
+    // so `k * 2` cannot overflow -- the `min` is the whole point, not the math.
+    let cap = (k * 2).min(crate::config::MAX_K * 2);
+    let mut results: Vec<SearchResult> = Vec::with_capacity(cap);
     let mut offset = 0;
     let sql = format!(
         "SELECT k.id, k.title, k.content, e.vector, k.flagged, k.pii, k.node_kind, k.origin \

@@ -230,7 +230,18 @@ fn card_candidate_runs(text: &str) -> Vec<(usize, usize)> {
             // Luhn-valid sub-run out of an id. A multi-group chain is handled
             // entirely by the aligned pass; sliding inside it is what masked
             // the middle of two adjacent cards.
-            if groups.len() == 1 {
+            //
+            // `total >= 16` IS LOAD-BEARING. PASS 1 only needs `len <= total`,
+            // which the outer `total >= 13` gives it; here the window is a
+            // FIXED 16, so a single group of 13, 14 or 15 digits — a reference
+            // or account number — underflowed `total - 16`. With
+            // `overflow-checks = true` that is a PANIC, and because
+            // `scan_pii` runs on every ingested row (to compute the flag) and
+            // the `pii` migration backfill runs it over every stored row at
+            // BOOT, one such string anywhere in the corpus made the server
+            // panic at startup — a crash loop under `KeepAlive`. Not a
+            // theoretical reach: a 13–15 digit id is ordinary content.
+            if groups.len() == 1 && total >= 16 {
                 for s0 in 0..=(total - 16) {
                     let e0 = s0 + 16;
                     if s0 != 0 && e0 != total {
@@ -1501,6 +1512,56 @@ mod tests {
             masked.contains("[redacted:card]"),
             "masker must agree: {masked:?}"
         );
+    }
+
+    /// A SINGLE digit group of 13, 14 or 15 digits MUST NOT PANIC.
+    ///
+    /// The card scanner's second pass slides a FIXED 16-digit window across a
+    /// lone run, so it needs `total >= 16`. The outer gate only promised
+    /// `total >= 13` — enough for the first pass, whose window is `len <= total`.
+    /// A 13–15 digit reference or account number therefore underflowed
+    /// `total - 16`, and with `overflow-checks = true` that is a panic.
+    ///
+    /// This was not theoretical: `scan_pii` runs on every ingested row to
+    /// compute the `pii` flag, and the `pii` migration backfill runs it over
+    /// EVERY stored row at boot. One 13–15 digit id anywhere in the corpus made
+    /// the server panic at startup, and `KeepAlive` turned that into a crash
+    /// loop. The release that introduced the scanner shipped the outage.
+    ///
+    /// Red-first: dropping the `&& total >= 16` guard reds every arm.
+    #[test]
+    fn a_short_single_digit_group_never_panics_the_card_scanner() {
+        for digits in [
+            "1",                 // below the outer gate
+            "123456789012",      // 12 — below
+            "1234567890123",     // 13 — THE REGRESSION
+            "12345678901234",    // 14 — THE REGRESSION
+            "123456789012345",   // 15 — THE REGRESSION
+            "1234567890123456",  // 16 — the window fits
+            "12345678901234567", // 17
+        ] {
+            let text = format!("ref {digits}");
+            // The whole point: it RETURNS. A panic here is the bug.
+            let kinds = std::panic::catch_unwind(|| scan_pii(&text))
+                .unwrap_or_else(|_| panic!("scan_pii panicked on {text:?}"));
+            // And a non-card id stays unflagged — the guard must not start
+            // flagging short runs to avoid the underflow.
+            assert!(
+                !kinds.contains(&PiiKind::Card),
+                "{text:?} is not a card and must not be flagged: {kinds:?}"
+            );
+        }
+        // A real 16-digit card in the same shape is still detected, so the
+        // guard narrowed the slide rather than disabling the pass.
+        assert!(
+            scan_pii("card 4111111111111111").contains(&PiiKind::Card),
+            "the 16-digit card form must still be found"
+        );
+        // And the masker agrees — the same scanner backs both.
+        let mut masked = "ref 1234567890123".to_string();
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| mask_card(&mut masked)))
+            .expect("mask_card panicked on a 13-digit id");
+        assert!(!masked.contains("[redacted:card]"), "{masked:?}");
     }
 
     #[test]

@@ -1547,8 +1547,18 @@ fn the_legacy_fallback_clamps_its_own_allocation() {
          sized from `k`, and the only other bound is a handler clamp two modules \
          away, which a future caller can simply forget"
     );
+    // The clamp above bounds the QUERY (the SQL `LIMIT`); the CodeQL finding
+    // (`rust/uncontrolled-allocation-size`, alert #82) is about the ALLOCATION,
+    // and that query did not follow the bound from the shadowed `let k` through
+    // the later `k * 2` — it re-flagged the sink after the clamp landed. So the
+    // bound has to be legible ON the expression handed to the allocator. This
+    // arm is what keeps the two from being conflated again, and it is stricter
+    // than the previous form, which passed on the presence of `let k = k.min(`
+    // alone and so could not have caught the re-flag.
     assert!(
-        !body.contains("with_capacity(k * 2)") || body.contains("let k = k.min("),
-        "the allocation must be sized from the CLAMPED k"
+        body.contains("(k * 2).min(crate::config::MAX_K * 2)"),
+        "the capacity handed to with_capacity must itself be bounded by \
+         MAX_K * 2 — the `let k = k.min(..)` clamp bounds the SQL LIMIT, not \
+         the allocation CodeQL analyses"
     );
 }
