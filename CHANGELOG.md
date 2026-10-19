@@ -4,6 +4,30 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.21] — 2026-10-19 — the allocation ceiling
+
+One CodeQL finding closed: `perform_search_legacy` sized its result vector from
+a caller-supplied `k`, with the only bound a clamp in a handler two modules
+away. `MAX_K` is the ceiling the handlers already enforce, so the clamp
+narrows nothing legitimate — it moves the guarantee inside the function that
+allocates, where a future caller cannot simply forget it. No wire change, no
+schema change, no behavior change on any existing route.
+
+### Release notes
+
+**Security fixes**
+
+- `perform_search_legacy` clamps its own allocation to `MAX_K`. The legacy
+  vector fallback sized its result vector from the caller's `k`, and the only
+  thing keeping that bounded was a handler clamp two modules away — so a future
+  caller that forgot the clamp would inherit an unbounded allocation, with
+  nothing in the search module to notice. Not reachable on any shipped route;
+  fixed so it stays unreachable. The pin is structural (the function must
+  contain the clamp) because the allocation size is not observable from outside
+  the function — an earlier behavioral pin passed its own red-drill while
+  asserting nothing, and is recorded as the reason this one is built the way it
+  is.
+
 ## [1.29.20] — 2026-10-19 — the follow-through release
 
 Seven commits landed after 1.29.19 was cut, and this release is them: a
