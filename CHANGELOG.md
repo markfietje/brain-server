@@ -67,13 +67,24 @@ new penetration suite drives the real router with signed tokens.
   IMMEDIATE transaction, use the header domain's pool in multi-db mode, and
   require `purge` to delete. The legacy vector fallback takes the full filter
   bundle; the graph leg applies `source`/`sources` and a normalized `as_of`; the
-  KCS stale translations are domain-filtered; DSAR disclosure is
+  KCS worklist applies the record gate in SQL (`/kcs/articles` was
+  domain-filtered but not owner/scope-filtered, and it passed a hardcoded
+  `pii = false` to the read seam, so a flagged row's KCS content went out
+  unmasked) and its stale translations are domain-filtered; DSAR disclosure is
   authored/addressed only (erase and disclose are deliberately asymmetric) and
-  every free-text field rides the read seam; the UMP export signs with the
-  operator key when configured.
+  every free-text field rides the read seam; the UMP export sanitizes the row
+  and the client-controlled `ump_meta` overlay BEFORE signing, so a signature
+  no longer vouches for content that never met the seam; a source retire no
+  longer reads an unreadable `legal_holds` table as "no holds" — the one
+  erasure path that did, now failing closed like every sibling.
 
 - **Data protection.** Every production `INSERT INTO knowledge` names `pii`,
-  including the markdown `heading_path` the chunker removes from the body. The
+  including the markdown `heading_path` the chunker removes from the body, and
+  the migration recomputes the flag for every row already on disk — so an
+  upgrade flags rows the five silent write paths had left at the schema default,
+  and non-admin readers will start seeing `[redacted:…]` on memory that was
+  previously served raw. The email detector is Unicode- and offset-0-correct;
+  the card scanner handles dot/tab g
   email detector is Unicode- and offset-0-correct; the card scanner handles
   dot/tab groups, a card followed by another number, a card embedded at the edge
   of a longer run, and two adjacent PANs — without manufacturing a card out of
@@ -90,7 +101,55 @@ new penetration suite drives the real router with signed tokens.
   lane. Every body-only webhook lane keys its replay claim on the payload, so a
   captured delivery cannot replay with a fresh id. Both backup writers use a
   unique `create_new` 0600 sibling and rename, so a rewrite tightens the mode and
-  a planted symlink is replaced rather than followed.
+  a planted symlink is replaced rather than followed. A backup whose `.sha256`
+  sidecar is absent is now a refusal rather than a pass — a control that could
+  be switched off by deleting one file was not a control.
+
+- **The MCP bridge no longer inherits the operator by accident.** Three
+  fail-open defaults became refusals. `BRAIN_MCP_IDENTITY=agent` (the default)
+  on a SINGLE-token source used to fall back to the operator bearer under an
+  `agent` label — more authority than the label claims, because that bearer
+  authenticates with no principal, so every scope, capability and record gate
+  passed and `ump.get` redacted nothing; it now refuses to start, and the two
+  remedies are named in the receipt. `BRAIN_MCP_SCOPE=read` named only the five
+  tools that WRITE, so a read-scoped bridge still served a full audit-chain
+  read and a chain verify; `ump.audit` and `ump.audit.verify` are scope-gated
+  now. And `MCP_HTTP_TOKEN` is required on LOOPBACK too: loopback is a
+  reachability boundary, not an authentication one, and `check_auth` — which
+  granted every request when no token was configured — now denies.
+
+- **`/recall` no longer touches SQLite on the async runtime.** Four database
+  touches ran directly on tokio workers: `read_prototypes` (a `pool.get()` that
+  can wait out the pool timeout, plus a `CREATE TABLE IF NOT EXISTS` — a write
+  that can take the database's write lock), `read_centroids` in the routing
+  fallback, the composite record gate with `domain_profiles`, and the
+  scope-violation audit row. A read-only caller could occupy runtime workers
+  with blocking database work per request. All four are on the blocking pool,
+  and a structural pin walks the production region and reds any database call
+  outside one. `GET /search` also enriches evidence from the pool its hits came
+  from rather than the global database — ids are per-database, so a collision
+  attached another domain's `source.uri`, `heading_path`, revisions and
+  authority to a hit the caller never scoped.
+
+- **The compaction admission search is linear, not quadratic.** `admit` scanned
+  every candidate split and called `context::project` on each suffix — three
+  times over the same payloads, re-shaping them through the read seam to answer
+  "does this project, how many tokens, does the prefix project". Measured on the
+  25×4 KB window the loop's own tests seed: 1.8 s idle, 5.3 s under ~2.5× CPU
+  contention, which is what made
+  `c4_compaction_commit_vs_cancel_boundary` flaky — the test was waiting out
+  production work. `project`'s fold is now `Projection::step`, one implementation
+  of the per-event rules with two consumers: `project` builds messages,
+  `suffix_lengths` measures every split in a single pass (a suffix's serialized
+  length is a suffix sum of per-message lengths plus array framing). Three full
+  passes became one, and the pressure gate reuses the messages the fold built
+  instead of projecting a second time.
+  `one_pass_split_facts_equal_the_projections_they_replaced` pins the measured
+  facts byte-identical to the projections they replaced across four windows
+  built to hit every boundary that can differ — and it failed three times on the
+  way in (a one-byte JSON framing error, a backward scan checking the wrong row,
+  an event/message index skew), each of which would have shipped as a silently
+  different compaction split.
 
 - **A penetration suite now drives the real router** with signed JWTs:
   unauthenticated 401s, cross-tenant by-id/multi-get/recall/search, the
