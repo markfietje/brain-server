@@ -1624,10 +1624,10 @@ mod tests {
         // PRODUCTION REGION ONLY. This file's own test module names the same
         // functions this pin checks, so scanning it would find the pin's own
         // source text and fail forever.
-        let src = match whole.find("mod tests {") {
-            Some(i) => &whole[..i],
-            None => whole.as_str(),
-        };
+        let src = whole
+            .split_once("mod tests {")
+            .map_or(whole.as_str(), |(head, _)| head);
+        // the unread remainder is only the pin's own source text
         let _ = whole;
 
         // Line number -> true when the line sits inside a `spawn_blocking` block.
