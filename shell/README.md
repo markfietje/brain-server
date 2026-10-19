@@ -42,6 +42,41 @@ the test context sets `bypassCSP` because the built page's strict CSP pins the
 default origin only — the pin itself is asserted by the spec against
 `build/index.html`.
 
+## The universal bundle and its kernel sidecar (III-1)
+
+On macOS, `node shell/scripts/sidecar.mjs stage` MUST run before any
+`cargo test`/`cargo clippy`/`cargo build` of `src-tauri` — the measured
+failure otherwise is `resource path
+'binaries/brain-server-aarch64-apple-darwin' doesn't exist`, because
+`tauri.macos.conf.json` declares `externalBin` and `build.rs` resolves it at
+compile time. Linux never reads the overlay, so the Ubuntu lane is unaffected
+(the wiring deliberately does not live in the base `tauri.conf.json`).
+
+`stage` builds the kernel for `aarch64-apple-darwin` and
+`x86_64-apple-darwin`, lipos the universal binary, and writes
+`src-tauri/binaries/SIDECAR_PROVENANCE.json` (commit, describe, version,
+`x-api-version`, per-artifact sha256/size/archs). `src-tauri/binaries/` is
+GENERATED and gitignored: the record names a commit and hashes bytes a fresh
+clone does not have. `stage` refuses a dirty tree, because a build recorded
+against a commit it was not built from is a false provenance claim.
+
+```sh
+node shell/scripts/sidecar.mjs stage
+cd shell && pnpm tauri build --bundles app --target universal-apple-darwin
+node shell/scripts/sidecar.mjs verify \
+  "shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/Brain Shell.app"
+```
+
+`verify` walks the bundle and FINDS every Mach-O by path (never by `file`
+line count), checks the bundle seal, verifies each file with `--verify
+--strict --ignore-resources`, requires the hardened-runtime flag, checks arch
+parity and the sealed provenance record, and hashes the staged artifacts.
+Exit 2 means it cannot verify; exit 1 names every failure. The sidecar is
+ad-hoc signed (`signingIdentity: "-"`) with the hardened runtime ON; it has
+no secure timestamp and `spctl` rejects it, which is the expected ad-hoc
+result. A Developer ID signature, notarization, stapling and the clean-machine
+run are the III-5 tail.
+
 `pnpm gen:api` is the only command that intentionally rewrites the committed
 `src/lib/api/schema.d.ts`. `pnpm test` is non-mutating; CI performs a temporary
 regeneration and byte-compares the result. The kernel contract remains

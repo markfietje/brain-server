@@ -1,6 +1,13 @@
 # Rust
 /target/
 **/target/
+
+# III-1: the staged kernel sidecars + the build record are OUTPUTS of
+# shell/scripts/sidecar.mjs stage, never sources. The record names a commit
+# and hashes bytes that a fresh clone does not have; committing it would be a
+# provenance record for an artifact that is not in the tree.
+shell/src-tauri/binaries/
+
 *.pdb
 *.exe
 *.so

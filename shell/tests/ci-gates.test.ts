@@ -89,3 +89,27 @@ test('shell_ci_contract_is_fail_closed_clean_runner_and_e2e_gated', () => {
 	expect(readme).toContain('>=24 <27');
 	expect(readme).toContain('Node 24');
 });
+
+/**
+ * III-1 — the cert-free macOS bundle lane: stage both kernel arches, build
+ * the universal app, WALK every Mach-O, and plant an unsigned helper that
+ * must make the walk FAIL. No secrets, so it may run on the public mirror.
+ * Its first real execution is OWED until the next mirror push; the register
+ * row says so rather than claiming a run nobody has observed.
+ */
+test('the_macos_bundle_lane_stages_builds_and_walks', () => {
+	expect(workflow).toContain('bundle-macos:');
+	expect(workflow).toContain('runs-on: macos-latest');
+	expect(workflow).toContain('node shell/scripts/sidecar.mjs stage');
+	expect(workflow).toContain(
+		'pnpm tauri build --bundles app --target universal-apple-darwin'
+	);
+	expect(workflow).toContain('node shell/scripts/sidecar.mjs verify');
+	expect(workflow).toContain('targets: aarch64-apple-darwin,x86_64-apple-darwin');
+	expect(workflow).toContain('codesign --remove-signature');
+	expect(workflow).toContain('planted-helper');
+	// The lane is deliberately secret-free: ad-hoc signing needs no keychain.
+	const bundleJob = workflow.slice(workflow.indexOf('bundle-macos:'));
+	expect(bundleJob).not.toContain('secrets.');
+	expect(bundleJob).toContain('Contents/MacOS/brain-server" --version');
+});

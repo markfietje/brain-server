@@ -15,5 +15,14 @@
 				}
 			}
 		]
+	},
+	"bundle": {
+		"externalBin": ["binaries/brain-server"],
+		"resources": ["binaries/SIDECAR_PROVENANCE.json"],
+		"macOS": {
+			"minimumSystemVersion": "15.0",
+			"hardenedRuntime": true,
+			"signingIdentity": "-"
+		}
 	}
 }

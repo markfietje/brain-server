@@ -19,6 +19,12 @@
 		"strict": true,
 		"noUncheckedIndexedAccess": true,
 		"noImplicitOverride": true,
+		// `tests/sidecar-bundle.test.ts` imports the PURE exports of the
+		// plain-ESM `scripts/sidecar.mjs` (the walker's header parser and the
+		// provenance writer) so the pins drive the real functions, not a copy.
+		// Types are INFERRED from that one source; `checkJs` stays off, so the
+		// Node CLI is executed rather than type-policed.
+		"allowJs": true,
 		"paths": {
 			"$paraglide/*": [
 				"./src/paraglide/*"
