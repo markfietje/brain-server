@@ -748,7 +748,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Release a quarantined chunk back into retrieval (v0.9.7 Guard) */
+        /**
+         * Release a quarantined chunk back into retrieval (v0.9.7 Guard)
+         * @description Requires Admin scope AND the `release_quarantine` role capability. Scoped to the caller's `X-Brain-Domain`: a 404 is the same answer for a missing id, an id in another domain, an id whose record gate denies the caller, and an id that is not flagged, so this route is not an existence oracle. Clearing the flag re-admits a payload the injection screen quarantined, which is why the capability is a separate gate from Admin scope.
+         */
         post: operations["releaseQuarantine"];
         delete?: never;
         options?: never;
@@ -765,7 +768,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Delete a quarantined chunk (v0.9.7 Guard) */
+        /**
+         * Delete a quarantined chunk (v0.9.7 Guard)
+         * @description Requires Admin scope AND the `purge` role capability — the same gate as `POST /purge`, because this is the same destructive act on a flagged row. Scoped to the caller's `X-Brain-Domain`, with the same probe-blind 404 as the release route. The 403 is answered before the id resolves, so it leaks nothing about which ids are quarantined.
+         */
         post: operations["deleteQuarantine"];
         delete?: never;
         options?: never;
@@ -7166,6 +7172,13 @@ export interface operations {
                     };
                 };
             };
+            /** @description The caller's resolved roles do not carry the `release_quarantine` capability (Admin scope alone is not sufficient). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description No quarantined chunk with that id */
             404: {
                 headers: {
@@ -7199,8 +7212,22 @@ export interface operations {
                     };
                 };
             };
+            /** @description The caller's resolved roles do not carry the `purge` capability (Admin scope alone is not sufficient). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description No quarantined chunk with that id */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A legal hold is active on the chunk; the erasure is refused and the hold is named. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
