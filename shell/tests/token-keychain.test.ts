@@ -15,15 +15,22 @@ vi.mock('$app/state', () => ({
 // The IPC seam: a STATEFUL stub for the three commands the keychain round
 // added. `vi.mock` factories are hoisted, so the state lives in `vi.hoisted`
 // (a plain top-level `let` would red with "Cannot access before
-// initialization"). `store_kernel_token` returns null, the shape the command
-// produces — never the token.
-const keychain = vi.hoisted(() => ({ stored: null as string | null }));
+// initialization"). `store_kernel_token` returns the ROTATION's outcome
+// (III-3 §4.7) — never the token.
+const keychain = vi.hoisted(() => ({
+	stored: null as string | null,
+	rotation: null as {
+		kernelSynced: boolean;
+		dataRootMissing: boolean;
+		error: string | null;
+	} | null
+}));
 vi.mock('@tauri-apps/api/core', () => ({
 	invoke: vi.fn(async (command: string, args?: { token?: string }) => {
 		if (command === 'kernel_token') return keychain.stored;
 		if (command === 'store_kernel_token') {
 			keychain.stored = args?.token ?? null;
-			return null;
+			return keychain.rotation;
 		}
 		if (command === 'clear_kernel_token') {
 			keychain.stored = null;
@@ -73,6 +80,7 @@ function consoleSink(): { calls: string[]; restore: () => void } {
 beforeEach(() => {
 	setTauri();
 	keychain.stored = null;
+	keychain.rotation = null;
 	setBearer(null);
 	vi.clearAllMocks();
 });
@@ -145,6 +153,51 @@ test('the_settings_saves_to_the_keychain_and_clears_it', async () => {
 	await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith('clear_kernel_token'));
 	await waitFor(() => expect(keychain.stored).toBeNull());
 	expect(await screen.findByText(/No token configured/)).toBeTruthy();
+});
+
+/**
+ * III-3 §4.7 — the Settings save must say what happened to the RUNNING
+ * kernel. The keychain always holds the token, but a running kernel reads
+ * its bearer from the data root's auth-token, so the core rotates that file
+ * and reports whether it did.
+ */
+test('the_settings_reports_that_the_running_kernel_took_the_token', async () => {
+	keychain.rotation = { kernelSynced: true, dataRootMissing: false, error: null };
+	const user = userEvent.setup();
+	render(AppShellHost);
+
+	await user.click(screen.getByRole('button', { name: 'Settings' }));
+	await screen.findByRole('dialog');
+	const input = (await screen.findByLabelText('Kernel token')) as HTMLInputElement;
+	await user.type(input, SENTINEL);
+	await user.click(screen.getByRole('button', { name: 'Save token' }));
+
+	expect(
+		await screen.findByText(
+			'Token saved to the login keychain, and the running kernel is using it now.'
+		)
+	).toBeTruthy();
+});
+
+/**
+ * A rotation that did NOT reach the kernel must not be reported as a saved
+ * token: the user would act on the lie (they would not relaunch).
+ */
+test('a_rotation_that_failed_is_not_reported_as_saved', async () => {
+	keychain.rotation = { kernelSynced: false, dataRootMissing: false, error: 'insecureAuthFile' };
+	const user = userEvent.setup();
+	render(AppShellHost);
+
+	await user.click(screen.getByRole('button', { name: 'Settings' }));
+	await screen.findByRole('dialog');
+	const input = (await screen.findByLabelText('Kernel token')) as HTMLInputElement;
+	await user.type(input, SENTINEL);
+	await user.click(screen.getByRole('button', { name: 'Save token' }));
+
+	expect(
+		await screen.findByText(/the running kernel was not updated/)
+	).toBeTruthy();
+	expect(screen.queryByText('Token saved to the login keychain.')).toBeNull();
 });
 
 /**

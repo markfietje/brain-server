@@ -148,7 +148,9 @@
 	const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 	let tokenInput = $state('');
 	let tokenConfigured = $state(false);
-	let tokenState = $state<'idle' | 'saved' | 'cleared' | 'empty' | 'error'>('idle');
+	let tokenState = $state<
+		'idle' | 'saved' | 'rotated' | 'pending' | 'stale' | 'cleared' | 'empty' | 'error'
+	>('idle');
 
 	$effect(() => {
 		if (settingsOpen && inTauri) {
@@ -169,8 +171,24 @@
 		}
 		try {
 			const { invoke } = await import('@tauri-apps/api/core');
-			await invoke('store_kernel_token', { token });
-			tokenState = 'saved';
+			// The core answers with the ROTATION's outcome: the keychain holds
+			// the token either way, but a running kernel reads its bearer from
+			// the data root's auth-token. Reporting "saved" for a rotation
+			// that did not reach the kernel would be a lie the user acts on.
+			const outcome = (await invoke('store_kernel_token', { token })) as {
+				kernelSynced?: boolean;
+				dataRootMissing?: boolean;
+				error?: string | null;
+			} | null;
+			if (outcome?.error) {
+				tokenState = 'stale';
+			} else if (outcome?.kernelSynced) {
+				tokenState = 'rotated';
+			} else if (outcome?.dataRootMissing) {
+				tokenState = 'pending';
+			} else {
+				tokenState = 'saved';
+			}
 		} catch {
 			tokenState = 'error';
 		} finally {
@@ -304,6 +322,12 @@
 				</p>
 				{#if tokenState === 'saved'}
 					<p class="text-sm text-brand" role="status">{m["settings.token.saved"]()}</p>
+				{:else if tokenState === 'rotated'}
+					<p class="text-sm text-brand" role="status">{m["settings.token.rotated"]()}</p>
+				{:else if tokenState === 'pending'}
+					<p class="text-sm text-brand" role="status">{m["settings.token.pending"]()}</p>
+				{:else if tokenState === 'stale'}
+					<p class="text-sm text-destructive" role="alert">{m["settings.token.stale"]()}</p>
 				{:else if tokenState === 'cleared'}
 					<p class="text-sm text-brand" role="status">{m["settings.token.cleared"]()}</p>
 				{:else if tokenState === 'empty'}

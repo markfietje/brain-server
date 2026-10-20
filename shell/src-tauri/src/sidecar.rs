@@ -786,6 +786,148 @@ pub fn prepare_auth_file(data_root: &Path, token: &str) -> Result<PathBuf, Contr
     Ok(path)
 }
 
+/// What a token rotation did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthSync {
+    /// There is no data root yet (no consent): nothing was written. A
+    /// rotation NEVER creates the data root — the consent gate owns that.
+    NoDataRoot,
+    /// The kernel's token file was rewritten.
+    Rotated { path: PathBuf },
+}
+
+/// The rotation's outcome in the shape the Settings panel states plainly.
+/// `error` is a stable code (never the token) and means the keychain holds
+/// the new token while the RUNNING kernel still holds the old one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RotationDto {
+    /// The running kernel's token file was rewritten; the kernel's watcher
+    /// reloads it, so the new token is live without a restart.
+    pub kernel_synced: bool,
+    /// There is no data root yet: the next start writes the token itself.
+    pub data_root_missing: bool,
+    /// A stable code when the rotation failed.
+    pub error: Option<String>,
+}
+
+/// The Settings rotation path (plan §4.7).
+///
+/// The keychain is the SHELL's bearer. A RUNNING kernel reads its bearer from
+/// `<data_root>/auth-token`, and the kernel's `TokenStore` reloads that file
+/// when the path's mtime advances. A rotation that only wrote the keychain
+/// therefore left the running kernel on the OLD token until the app
+/// restarted — which is why the first pass recorded the sync as OWED.
+///
+/// The write is ATOMIC: a sibling temp file at 0600, fsynced, then renamed
+/// over the target. The kernel watches the PATH's mtime, so the rename is
+/// seen; and because a rename is atomic, a reader can never observe a
+/// half-written token — which an in-place truncate would.
+pub fn rotate_auth_file(data_root: &Path, token: &str) -> Result<AuthSync, ContractError> {
+    if !data_root.is_dir() {
+        return Ok(AuthSync::NoDataRoot);
+    }
+    let path = data_root.join(AUTH_FILE);
+
+    // The mode law, before the write: a group/world-readable token file is
+    // refused, not read and not silently tightened.
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_file() {
+                return Err(ContractError::Filesystem {
+                    path: path.display().to_string(),
+                    reason: "auth-token is not a regular file".to_string(),
+                });
+            }
+            let mode = metadata.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                return Err(ContractError::InsecureAuthFile {
+                    path: path.display().to_string(),
+                    mode,
+                });
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(ContractError::Filesystem {
+                path: path.display().to_string(),
+                reason: error.to_string(),
+            });
+        }
+    }
+
+    let temp = data_root.join(format!(".{AUTH_FILE}.rotate"));
+    let written = (|| -> Result<(), ContractError> {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&temp)
+            .map_err(|error| ContractError::Filesystem {
+                path: temp.display().to_string(),
+                reason: error.to_string(),
+            })?;
+        file.write_all(format!("{token}\n").as_bytes())
+            .and_then(|()| file.sync_all())
+            .map_err(|error| ContractError::Filesystem {
+                path: temp.display().to_string(),
+                reason: error.to_string(),
+            })?;
+        drop(file);
+        fs::set_permissions(&temp, fs::Permissions::from_mode(0o600)).map_err(|error| {
+            ContractError::Filesystem {
+                path: temp.display().to_string(),
+                reason: error.to_string(),
+            }
+        })?;
+        fs::rename(&temp, &path).map_err(|error| ContractError::Filesystem {
+            path: path.display().to_string(),
+            reason: error.to_string(),
+        })?;
+        Ok(())
+    })();
+    if written.is_err() {
+        // The temp file never outlives a failed rotation.
+        fs::remove_file(&temp).ok();
+    }
+    written?;
+
+    let mode = fs::metadata(&path)
+        .map_err(|error| ContractError::Filesystem {
+            path: path.display().to_string(),
+            reason: error.to_string(),
+        })?
+        .permissions()
+        .mode()
+        & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(ContractError::InsecureAuthFile {
+            path: path.display().to_string(),
+            mode,
+        });
+    }
+    Ok(AuthSync::Rotated { path })
+}
+
+/// The Tauri edge for the rotation: resolve the paths, then rotate. The
+/// rotation's outcome is stated, never swallowed.
+pub fn rotate_running_auth(app: &AppHandle, token: &str) -> Result<RotationDto, ContractError> {
+    let paths = app_paths(app)?;
+    match rotate_auth_file(&paths.data_root, token)? {
+        AuthSync::Rotated { .. } => Ok(RotationDto {
+            kernel_synced: true,
+            data_root_missing: false,
+            error: None,
+        }),
+        AuthSync::NoDataRoot => Ok(RotationDto {
+            kernel_synced: false,
+            data_root_missing: true,
+            error: None,
+        }),
+    }
+}
+
 /// 32 bytes from the OS random device, lowercase hex (64 chars).
 pub fn generate_token() -> Result<String, ContractError> {
     let mut bytes = [0u8; 32];

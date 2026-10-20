@@ -78,17 +78,40 @@ async fn kernel_token() -> Option<String> {
     .flatten()
 }
 
-/// III-2 — write the bearer to the login keychain. The value is trimmed and
-/// bounded before any store is touched; the error is a stable code, never the
-/// token. The store work runs on the blocking pool for the same reason the
-/// read does.
+/// III-2/III-3 — write the bearer to the login keychain AND rotate the
+/// running kernel's token file. The keychain is the SHELL's bearer; a
+/// running kernel reads ITS bearer from `<data_root>/auth-token`, and the
+/// kernel's `TokenStore` reloads that file when the path's mtime advances.
+/// Writing only the keychain left the running kernel on the OLD token until
+/// the app restarted — the first pass's OWED. The rotation's outcome comes
+/// back to the caller so the Settings panel can say what actually happened;
+/// a failed rotation is never reported as a saved-and-live token.
 #[tauri::command]
-async fn store_kernel_token(token: String) -> Result<(), String> {
+async fn store_kernel_token(
+    app: tauri::AppHandle,
+    token: String,
+) -> Result<sidecar::RotationDto, String> {
     let token = token::normalize(token).map_err(|e| e.code().to_string())?;
-    tauri::async_runtime::spawn_blocking(move || token::write_platform(&token))
+    let for_keychain = token.clone();
+    tauri::async_runtime::spawn_blocking(move || token::write_platform(&for_keychain))
         .await
         .map_err(|_| "keychain_write_failed".to_string())?
-        .map_err(|e| e.code().to_string())
+        .map_err(|e| e.code().to_string())?;
+
+    // The rotation is fs work, so it runs on the blocking pool too.
+    let rotated =
+        tauri::async_runtime::spawn_blocking(move || sidecar::rotate_running_auth(&app, &token))
+            .await
+            .map_err(|_| "rotation_task_failed".to_string())?;
+
+    match rotated {
+        Ok(dto) => Ok(dto),
+        Err(error) => Ok(sidecar::RotationDto {
+            kernel_synced: false,
+            data_root_missing: false,
+            error: Some(error.kind().to_string()),
+        }),
+    }
 }
 
 /// III-2 — remove the stored bearer. Clearing an absent item is success.

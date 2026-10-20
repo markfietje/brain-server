@@ -767,6 +767,110 @@ fn a_refused_start_creates_no_data_root_and_spawns_nothing() {
     );
 }
 
+// ── the Settings rotation (plan §4.7) ──────────────────────────────────────
+
+/// P17 — the rotation writes the RUNNING kernel's token file, at 0600, with
+/// the token the keychain now holds.
+#[test]
+fn a_rotation_writes_the_running_kernels_auth_file() {
+    let scratch = Scratch::new("rotate");
+    let data_root = scratch.path().join("kernel");
+    fs::create_dir_all(&data_root).expect("data root");
+    fs::set_permissions(&data_root, fs::Permissions::from_mode(0o700)).expect("root mode");
+
+    match sidecar::rotate_auth_file(&data_root, "rotated-token") {
+        Ok(sidecar::AuthSync::Rotated { path }) => {
+            assert_eq!(path, data_root.join(sidecar::AUTH_FILE));
+        }
+        other => panic!("the rotation must write the kernel's token file, got {other:?}"),
+    }
+    let path = data_root.join(sidecar::AUTH_FILE);
+    assert_eq!(fs::read_to_string(&path).expect("read"), "rotated-token\n");
+    assert_eq!(mode(&path), 0o600);
+}
+
+/// P18 — a rotation before the consent gate creates NOTHING. The data root
+/// belongs to the consent gate; a token write must not conjure it.
+#[test]
+fn a_rotation_before_consent_creates_nothing() {
+    let scratch = Scratch::new("rotate-no-consent");
+    let data_root = scratch.path().join("kernel");
+    assert_eq!(
+        sidecar::rotate_auth_file(&data_root, "token"),
+        Ok(sidecar::AuthSync::NoDataRoot)
+    );
+    assert!(!data_root.exists(), "a rotation created the data root");
+}
+
+/// P19 — the rotation obeys the mode law: a group/world-readable token file
+/// is refused, not read, not silently tightened, and not overwritten.
+#[test]
+fn a_rotation_refuses_a_world_readable_auth_file() {
+    let scratch = Scratch::new("rotate-insecure");
+    let data_root = scratch.path().join("kernel");
+    fs::create_dir_all(&data_root).expect("data root");
+    fs::set_permissions(&data_root, fs::Permissions::from_mode(0o700)).expect("root mode");
+    let path = data_root.join(sidecar::AUTH_FILE);
+    fs::write(&path, "old\n").expect("pre-existing auth file");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("loosen");
+
+    match sidecar::rotate_auth_file(&data_root, "new-token") {
+        Err(ContractError::InsecureAuthFile {
+            path: refused,
+            mode: 0o644,
+        }) => {
+            assert_eq!(refused, path.display().to_string());
+        }
+        other => panic!("a 0644 auth file must refuse the rotation, got {other:?}"),
+    }
+    // The refused rotation changed nothing.
+    assert_eq!(fs::read_to_string(&path).expect("read"), "old\n");
+}
+
+/// P20 — the rotation REPLACES the token file rather than rewriting it in
+/// place. The kernel's `TokenStore` watches the path's mtime, and a reader
+/// must never observe a half-written token: a rename gives both.
+#[test]
+fn a_rotation_replaces_the_token_file_atomically() {
+    use std::os::unix::fs::MetadataExt;
+
+    let scratch = Scratch::new("rotate-atomic");
+    let data_root = scratch.path().join("kernel");
+    fs::create_dir_all(&data_root).expect("data root");
+    fs::set_permissions(&data_root, fs::Permissions::from_mode(0o700)).expect("root mode");
+    let path = data_root.join(sidecar::AUTH_FILE);
+
+    assert!(matches!(
+        sidecar::rotate_auth_file(&data_root, "first"),
+        Ok(sidecar::AuthSync::Rotated { .. })
+    ));
+    let first = fs::metadata(&path).expect("metadata").ino();
+
+    assert!(matches!(
+        sidecar::rotate_auth_file(&data_root, "second"),
+        Ok(sidecar::AuthSync::Rotated { .. })
+    ));
+    let second = fs::metadata(&path).expect("metadata").ino();
+    assert_ne!(
+        first, second,
+        "the token file was rewritten in place; a reader could see a partial token"
+    );
+    assert_eq!(fs::read_to_string(&path).expect("read"), "second\n");
+    assert_eq!(mode(&path), 0o600);
+
+    // No temp file is left behind.
+    let leftovers: Vec<String> = fs::read_dir(&data_root)
+        .expect("read dir")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| name != sidecar::AUTH_FILE)
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "the rotation left files behind: {leftovers:?}"
+    );
+}
+
 // ── D5's token law ─────────────────────────────────────────────────────────
 
 #[test]
