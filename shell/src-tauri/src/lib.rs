@@ -146,6 +146,21 @@ async fn kernel_start(app: tauri::AppHandle, consent: bool) -> Result<sidecar::S
     .map_err(|error| format!("kernel_start task failed: {error}"))
 }
 
+/// III-4 — the WIRE diagnosis: what the webview would experience with the
+/// running kernel, asked of the kernel itself over the raw loopback stream.
+///
+/// The renderer cannot tell a blocked response from a rejected bearer from a
+/// dead port — the browser engine reports all three as one network failure —
+/// so the shell asks, and NAMES the fault: the origin is not allowed, the
+/// credential is rejected, no credential is configured, or nothing is
+/// listening. Read-only: it never resolves, generates or stores a credential.
+#[tauri::command]
+async fn kernel_wire_status() -> Result<sidecar::WireDto, String> {
+    tauri::async_runtime::spawn_blocking(|| sidecar::wire_status(sidecar::PORT))
+        .await
+        .map_err(|_| "wire_status task failed".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -156,6 +171,7 @@ pub fn run() {
             clear_kernel_token,
             kernel_status,
             kernel_start,
+            kernel_wire_status,
             recall_memory,
             shape_recall_command,
             verify_claim_command,

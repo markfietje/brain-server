@@ -37,8 +37,14 @@
 //!    refuses; the sidecar never runs unauthenticated. No error, log line or
 //!    DTO ever carries the token.
 //! 6. **Spawn is an allowlist.** `current_exe().parent()/brain-server`, no
-//!    arguments, `env_clear()` + the seven documented variables. No `sh -c`,
-//!    no user-controlled input, no inherited `BIND_PUBLIC`.
+//!    arguments, `env_clear()` + the EIGHT documented variables. No `sh -c`,
+//!    no user-controlled input, no inherited `BIND_PUBLIC`. The eighth is
+//!    `CORS_ORIGINS`, carrying THIS app's webview origin: without it the
+//!    kernel's CORS layer answers the webview's request without
+//!    `access-control-allow-origin`, the browser engine blocks the response,
+//!    and the webview sees a bare "network failure" for a kernel that is
+//!    running and healthy. The shell knows its own origin; the kernel's
+//!    default policy is untouched for every other deployment.
 //! 7. **The wait is bounded in Rust** (10 s, 200 ms polls, 300 ms per probe),
 //!    not in the webview, so the refusal is enforceable. A timeout kills the
 //!    child this process spawned and names the path, the wait and the last
@@ -65,6 +71,32 @@ use crate::token;
 /// given explicitly (never inherited).
 pub const PORT: u16 = 8765;
 pub const BIND: &str = "127.0.0.1";
+
+/// The WEBVIEW's origin — what the browser engine sends as `Origin`, and what
+/// the kernel's CORS layer must be told to allow.
+///
+/// Measured on the real bundle (2026-10-20): the webview's `GET
+/// /workflow/wizard/packs` carried `Origin: tauri://localhost`. macOS's Tauri
+/// custom protocol is `tauri://localhost`; on Windows and Linux the same
+/// protocol is served from `http://tauri.localhost`.
+///
+/// The kernel's CORS layer exact-matches the origin string
+/// (`AllowOrigin::predicate`), and its default allowlist is loopback
+/// dev-ports only (`http://localhost:3000,http://localhost:8080`). A kernel
+/// started WITHOUT this origin answers the webview without
+/// `access-control-allow-origin`; the browser engine then blocks the response
+/// and the webview reports a network failure for a kernel that is running.
+pub const APP_ORIGIN: &str = if cfg!(target_os = "macos") {
+    "tauri://localhost"
+} else {
+    "http://tauri.localhost"
+};
+
+/// The CORS allowlist the shell gives the kernel it spawns: THIS app's
+/// origin, and nothing else. The kernel is loopback-bound and requires a
+/// bearer, so the origin is the only thing that decides whether the *webview*
+/// may read a response — never who may call it.
+pub const SPAWNED_CORS_ORIGINS: &str = APP_ORIGIN;
 
 /// Bounded start: 10 s total, 200 ms polls, 300 ms per probe (connect + read).
 pub const WAIT_MS: u64 = 10_000;
@@ -593,6 +625,178 @@ fn parse_health(raw: &str) -> ProbeOutcome {
 }
 
 /// The pure version decision.
+/// What the WEBVIEW can actually do with the running kernel.
+///
+/// The webview's failures are opaque: a response the browser engine blocked,
+/// a rejected bearer and a dead port all reach the renderer as one "network
+/// error", and the shell's own copy of that message ("Could not reach the
+/// kernel") named none of them. The shell therefore asks the kernel DIRECTLY,
+/// over the raw stream that no browser policy constrains, what the webview
+/// would experience — and names the fault.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WireOutcome {
+    /// Nothing holds the port.
+    Unreachable,
+    /// The kernel answers, but NOT to this app's origin: its CORS allowlist
+    /// does not include the webview's origin, so the browser engine blocks
+    /// the response and the webview sees a bare network failure.
+    OriginNotAllowed { origin: String },
+    /// The kernel answers and allows the origin, but the shell holds no
+    /// credential — and the kernel requires one.
+    NoCredential,
+    /// The kernel answers, allows the origin, and REJECTS this app's bearer.
+    Unauthorized,
+    /// The wire works: the kernel answers, allows the origin, and accepts the
+    /// bearer.
+    Reachable,
+    /// The kernel answered with something this shell does not recognise. Not
+    /// "reachable" — an unrecognised answer is never a pass.
+    Unexpected { status: Option<u16> },
+}
+
+impl WireOutcome {
+    /// The DTO's `kind`: a stable, machine-readable name for the fault.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Unreachable => "unreachable",
+            Self::OriginNotAllowed { .. } => "origin_not_allowed",
+            Self::NoCredential => "no_credential",
+            Self::Unauthorized => "unauthorized",
+            Self::Reachable => "ok",
+            Self::Unexpected { .. } => "unexpected",
+        }
+    }
+}
+
+/// The wire diagnosis the renderer renders: the fault, named.
+#[derive(Debug, Clone, Serialize)]
+pub struct WireDto {
+    pub kind: String,
+    pub origin: String,
+}
+
+/// One raw HTTP GET over the loopback stream, returning the whole response
+/// as text. `None` means the peer said nothing at all.
+fn raw_get(
+    port: u16,
+    timeout: Duration,
+    path: &str,
+    origin: &str,
+    bearer: Option<&str>,
+) -> Option<String> {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, timeout) else {
+        return None;
+    };
+    if stream.set_read_timeout(Some(timeout)).is_err()
+        || stream.set_write_timeout(Some(timeout)).is_err()
+    {
+        return None;
+    }
+
+    let mut request =
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: {origin}\r\n");
+    if let Some(bearer) = bearer {
+        // The bearer travels on the loopback stream and NEVER leaves this
+        // function: no DTO, no log line, no error message carries it.
+        request.push_str(&format!("Authorization: Bearer {bearer}\r\n"));
+    }
+    request.push_str("Connection: close\r\n\r\n");
+    if stream.write_all(request.as_bytes()).is_err() {
+        return None;
+    }
+
+    let mut raw = Vec::new();
+    let read = (&mut stream)
+        .take(MAX_RESPONSE_BYTES as u64)
+        .read_to_end(&mut raw);
+    if read.is_err() && raw.is_empty() {
+        return None;
+    }
+    if raw.is_empty() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&raw).to_string())
+}
+
+/// The status code in a raw response's status line.
+pub fn response_status(raw: &str) -> Option<u16> {
+    let status = raw.split_whitespace().nth(1)?;
+    status.parse::<u16>().ok()
+}
+
+/// Whether a raw response allows the given origin — the fact the browser
+/// engine acts on. The CORS layer adds `access-control-allow-origin` when
+/// (and only when) the origin is allowed.
+pub fn allows_origin(raw: &str, origin: &str) -> bool {
+    let Some((head, _body)) = raw.split_once("\r\n\r\n") else {
+        return false;
+    };
+    for line in head.split("\r\n") {
+        if let Some((name, value)) = line.split_once(':')
+            && name
+                .trim()
+                .eq_ignore_ascii_case("access-control-allow-origin")
+        {
+            let value = value.trim();
+            return value == "*" || value.eq_ignore_ascii_case(origin);
+        }
+    }
+    false
+}
+
+/// Ask the running kernel what the WEBVIEW would experience.
+///
+/// Two requests, in this order, and the order is the point:
+///
+/// 1. The **origin** fact is read from `/health`, which the auth layer
+///    EXEMPTS (`/health`, `/ready`, `/version`, `/openapi.yaml`) — so the
+///    request reaches the CORS layer and the response carries (or lacks) the
+///    allow-origin. A 401 would NOT: the auth middleware sits OUTSIDE the
+///    CORS layer, so a rejected bearer produces a response with no
+///    allow-origin at all, and reading the origin off a 401 would blame CORS
+///    for an authorization fault.
+/// 2. The **credential** fact is read from `/stats`, an authenticated route:
+///    200 is a working wire, 401/403 is a rejected bearer.
+pub fn probe_wire(port: u16, timeout: Duration, origin: &str, bearer: Option<&str>) -> WireOutcome {
+    let Some(health) = raw_get(port, timeout, "/health", origin, None) else {
+        return WireOutcome::Unreachable;
+    };
+    if !allows_origin(&health, origin) {
+        return WireOutcome::OriginNotAllowed {
+            origin: origin.to_string(),
+        };
+    }
+    let Some(bearer) = bearer else {
+        return WireOutcome::NoCredential;
+    };
+    let Some(stats) = raw_get(port, timeout, "/stats", origin, Some(bearer)) else {
+        return WireOutcome::Unreachable;
+    };
+    match response_status(&stats) {
+        Some(code) if (200..300).contains(&code) => WireOutcome::Reachable,
+        Some(401) | Some(403) => WireOutcome::Unauthorized,
+        other => WireOutcome::Unexpected { status: other },
+    }
+}
+
+/// The wire diagnosis, read from the live kernel. Read-only: it never
+/// resolves, generates or stores a credential (a diagnostic must not mutate
+/// the keychain), so an absent credential is reported as absent.
+pub fn wire_status(port: u16) -> WireDto {
+    let bearer = token::resolve_platform(std::env::var("BRAIN_SHELL_TOKEN").ok());
+    let outcome = probe_wire(
+        port,
+        Duration::from_millis(PROBE_TIMEOUT_MS),
+        APP_ORIGIN,
+        bearer.as_deref(),
+    );
+    WireDto {
+        kind: outcome.kind().to_string(),
+        origin: APP_ORIGIN.to_string(),
+    }
+}
+
 pub fn decide(expected: &str, probe: &Probe) -> Decision {
     if probe.api_version != probe.body_version {
         return Decision::Inconsistent {
@@ -972,6 +1176,12 @@ pub fn command_spec(sidecar: &Path, data_root: &Path, auth_file: &Path) -> Sidec
             ),
             ("BRAIN_REQUIRE_AUTH".to_string(), "1".to_string()),
             ("RUST_LOG".to_string(), "warn".to_string()),
+            // The eighth key: this app's webview origin, so the kernel's CORS
+            // layer answers the webview with `access-control-allow-origin`.
+            // Without it the webview's request is blocked by the browser
+            // engine and the app reports "could not reach the kernel" for a
+            // kernel that is running and healthy (measured 2026-10-20).
+            ("CORS_ORIGINS".to_string(), SPAWNED_CORS_ORIGINS.to_string()),
         ],
     }
 }

@@ -76,6 +76,38 @@ fn stub(response: &'static str) -> (u16, std::thread::JoinHandle<()>) {
     (port, handle)
 }
 
+/// A stub that answers N requests IN ORDER and records what it was asked.
+/// The wire probe asks twice (the origin from the auth-EXEMPT `/health`, the
+/// credential from the authenticated `/stats`), so the ORDER is part of what
+/// the pins hold.
+fn stub_capture(
+    responses: &'static [&'static str],
+) -> (
+    u16,
+    std::thread::JoinHandle<()>,
+    Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("stub binds loopback");
+    let port = listener.local_addr().expect("stub address").port();
+    let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&seen);
+    let handle = std::thread::spawn(move || {
+        for response in responses {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut request = [0u8; 4096];
+            let read = stream.read(&mut request).unwrap_or(0);
+            recorder
+                .lock()
+                .expect("recorder lock")
+                .push(String::from_utf8_lossy(&request[..read]).to_string());
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    (port, handle, seen)
+}
+
 // ── P1 ─────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -348,9 +380,18 @@ fn the_sidecar_command_is_loopback_and_carries_the_paths() {
     );
 
     let env: std::collections::BTreeMap<String, String> = spec.env.into_iter().collect();
-    assert_eq!(env.len(), 7, "the env allowlist is exactly seven keys");
+    assert_eq!(env.len(), 8, "the env allowlist is exactly eight keys");
     assert_eq!(env.get("BIND_HOST").map(String::as_str), Some(BIND));
     assert_eq!(env.get("BIND_PORT").map(String::as_str), Some("8765"));
+    // The eighth key is this app's webview origin: without it the kernel's
+    // CORS layer answers the webview without `access-control-allow-origin`,
+    // the browser engine blocks the response, and the app reports "could not
+    // reach the kernel" for a kernel that is running and healthy.
+    assert_eq!(
+        env.get("CORS_ORIGINS").map(String::as_str),
+        Some(sidecar::APP_ORIGIN),
+        "the spawned kernel must allow this app's own origin"
+    );
     assert_eq!(
         env.get("BRAIN_DATA_ROOT").map(String::as_str),
         data_root.to_str()
@@ -887,4 +928,186 @@ fn the_generated_token_is_hex_and_the_module_has_no_log_sink() {
             "the contract module must carry no log sink: {sink}"
         );
     }
+}
+
+// ── III-4 · the wire the webview can actually use ───────────────────────────
+//
+// Three facts, measured on the real bundle on 2026-10-20 and pinned here:
+//
+//  1. The webview's request carries `Origin: tauri://localhost`.
+//  2. A kernel that does not allow that origin answers WITHOUT
+//     `access-control-allow-origin`; the browser engine then blocks the
+//     response and the renderer sees a bare network failure.
+//  3. The auth middleware sits OUTSIDE the CORS layer, so a 401 carries no
+//     allow-origin at all. The origin fact must therefore be read from the
+//     auth-EXEMPT `/health`, and the credential fact from an authenticated
+//     route — the order is the design, and it is pinned.
+
+const ORIGIN: &str = "tauri://localhost";
+
+/// A health answer that DOES allow the webview's origin.
+const HEALTH_ALLOWED: &str = concat!(
+    "HTTP/1.1 200 OK\r\n",
+    "x-api-version: 1.29.23\r\n",
+    "access-control-allow-origin: tauri://localhost\r\n",
+    "Content-Length: 2\r\n",
+    "Connection: close\r\n\r\n{}"
+);
+
+/// A health answer from a kernel that does NOT allow the webview's origin.
+const HEALTH_REFUSED: &str = concat!(
+    "HTTP/1.1 200 OK\r\n",
+    "x-api-version: 1.29.23\r\n",
+    "vary: origin\r\n",
+    "Content-Length: 2\r\n",
+    "Connection: close\r\n\r\n{}"
+);
+
+#[test]
+fn the_spawned_kernel_allows_this_apps_own_origin() {
+    // The app's origin is platform-shaped: macOS serves the Tauri custom
+    // protocol from `tauri://localhost`, Windows and Linux from
+    // `http://tauri.localhost`. The Ubuntu lane builds this crate too, so the
+    // expectation is platform-derived, never hard-coded to one.
+    let expected = if cfg!(target_os = "macos") {
+        "tauri://localhost"
+    } else {
+        "http://tauri.localhost"
+    };
+    assert_eq!(sidecar::APP_ORIGIN, expected);
+    // And the spawned kernel is told exactly that origin — no wildcard, no
+    // second origin: the allowlist is the app's own.
+    assert_eq!(sidecar::SPAWNED_CORS_ORIGINS, sidecar::APP_ORIGIN);
+    assert!(!sidecar::SPAWNED_CORS_ORIGINS.contains('*'));
+    assert!(!sidecar::SPAWNED_CORS_ORIGINS.contains(','));
+}
+
+#[test]
+fn a_response_without_the_allow_origin_is_not_allowed() {
+    // The fact the browser engine acts on, read off a raw response.
+    assert!(!sidecar::allows_origin(HEALTH_REFUSED, ORIGIN));
+    assert!(sidecar::allows_origin(HEALTH_ALLOWED, ORIGIN));
+    // A wildcard allows it; a FOREIGN origin does not.
+    assert!(sidecar::allows_origin(
+        "HTTP/1.1 200 OK\r\naccess-control-allow-origin: *\r\n\r\n{}",
+        ORIGIN
+    ));
+    assert!(!sidecar::allows_origin(
+        "HTTP/1.1 200 OK\r\naccess-control-allow-origin: http://evil.example\r\n\r\n{}",
+        ORIGIN
+    ));
+    // And a response with no header block at all allows nothing.
+    assert!(!sidecar::allows_origin("", ORIGIN));
+}
+
+#[test]
+fn a_kernel_that_does_not_allow_this_apps_origin_is_named() {
+    // The kernel answers, and the answer carries no allow-origin: the
+    // webview would be blocked, so the fault is named, not guessed.
+    let (port, server, _seen) = stub_capture(&[HEALTH_REFUSED]);
+    let outcome = sidecar::probe_wire(port, Duration::from_millis(500), ORIGIN, Some("a-bearer"));
+    server.join().expect("stub thread");
+    assert_eq!(
+        outcome,
+        sidecar::WireOutcome::OriginNotAllowed {
+            origin: ORIGIN.to_string()
+        }
+    );
+    assert_eq!(outcome.kind(), "origin_not_allowed");
+
+    // ANTI-VACUITY: the same probe against a kernel that DOES allow the
+    // origin is not blamed on CORS — it goes on to the credential.
+    let (port, server, _seen) = stub_capture(&[
+        HEALTH_ALLOWED,
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+    ]);
+    let outcome = sidecar::probe_wire(port, Duration::from_millis(500), ORIGIN, Some("a-bearer"));
+    server.join().expect("stub thread");
+    assert_eq!(outcome, sidecar::WireOutcome::Reachable);
+}
+
+#[test]
+fn the_wire_probe_names_a_rejected_bearer() {
+    // The origin is allowed, so the credential is the next fact: a 401 is
+    // an authorization fault, NOT a CORS fault.
+    let (port, server, _seen) = stub_capture(&[
+        HEALTH_ALLOWED,
+        "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n",
+    ]);
+    let outcome = sidecar::probe_wire(
+        port,
+        Duration::from_millis(500),
+        ORIGIN,
+        Some("the-wrong-bearer"),
+    );
+    server.join().expect("stub thread");
+    assert_eq!(outcome, sidecar::WireOutcome::Unauthorized);
+    assert_eq!(outcome.kind(), "unauthorized");
+
+    // And with NO credential at all, the fault is "none configured" — the
+    // kernel requires one, so every call would be rejected.
+    let (port, server, _seen) = stub_capture(&[HEALTH_ALLOWED]);
+    let outcome = sidecar::probe_wire(port, Duration::from_millis(500), ORIGIN, None);
+    server.join().expect("stub thread");
+    assert_eq!(outcome, sidecar::WireOutcome::NoCredential);
+    assert_eq!(outcome.kind(), "no_credential");
+}
+
+#[test]
+fn the_wire_probe_says_unreachable_when_nothing_answers() {
+    // A port that was bound and released: nothing holds it.
+    let port = {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        listener.local_addr().expect("addr").port()
+    };
+    let outcome = sidecar::probe_wire(port, Duration::from_millis(200), ORIGIN, Some("a-bearer"));
+    assert_eq!(outcome, sidecar::WireOutcome::Unreachable);
+    assert_eq!(outcome.kind(), "unreachable");
+}
+
+#[test]
+fn the_wire_probe_asks_the_origin_from_the_auth_exempt_route() {
+    // The ORDER is the design, and the measurement forced it: the auth
+    // middleware sits OUTSIDE the CORS layer, so a 401 carries no
+    // allow-origin. The origin must therefore be read from the auth-EXEMPT
+    // `/health`, and the credential from an authenticated route.
+    let (port, server, seen) = stub_capture(&[
+        HEALTH_ALLOWED,
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+    ]);
+    let outcome = sidecar::probe_wire(port, Duration::from_millis(500), ORIGIN, Some("a-bearer"));
+    server.join().expect("stub thread");
+    assert_eq!(outcome, sidecar::WireOutcome::Reachable);
+
+    let requests = seen.lock().expect("recorder lock").clone();
+    assert_eq!(requests.len(), 2, "the probe asks twice: {requests:?}");
+    assert!(
+        requests[0].starts_with("GET /health HTTP/1.1"),
+        "the origin is read from the auth-exempt route: {}",
+        requests[0]
+    );
+    assert!(
+        requests[1].starts_with("GET /stats HTTP/1.1"),
+        "the credential is read from an authenticated route: {}",
+        requests[1]
+    );
+    // BOTH carry the webview's origin — that is the header the kernel's CORS
+    // layer answers.
+    for request in &requests {
+        assert!(
+            request.contains(&format!("Origin: {ORIGIN}")),
+            "every probe request carries the app's origin: {request}"
+        );
+    }
+    // The credential rides ONLY on the authenticated request.
+    assert!(
+        !requests[0].contains("Authorization:"),
+        "the origin request is unauthenticated: {}",
+        requests[0]
+    );
+    assert!(
+        requests[1].contains("Authorization: Bearer a-bearer"),
+        "the credential request carries the bearer: {}",
+        requests[1]
+    );
 }

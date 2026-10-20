@@ -27,6 +27,21 @@ export async function refreshBearer(): Promise<boolean> {
 	return hasBearer();
 }
 
-export async function bootstrapToken(): Promise<void> {
-	await refreshBearer();
+/**
+ * The ONE credential read per app session.
+ *
+ * Memoized, and shared: the layout kicks the bootstrap off at startup, and
+ * the typed client's middleware awaits THIS promise before it attaches the
+ * bearer. Without the shared promise the first wire read was a RACE — the
+ * layout's `void bootstrapToken()` starts an async keychain read, the route's
+ * mount effect fired its one read before that read resolved, and the request
+ * went out with NO `Authorization` header, against a kernel that requires one
+ * and with nothing to retry it (the effect runs once). The credential is now
+ * a PRECONDITION of the first request, not a race with it.
+ */
+let pending: Promise<boolean> | null = null;
+
+export function bootstrapToken(): Promise<void> {
+	pending ??= refreshBearer();
+	return pending.then(() => undefined);
 }

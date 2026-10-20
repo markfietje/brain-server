@@ -13,8 +13,55 @@
 import createClient, { type Middleware } from 'openapi-fetch';
 import type { paths } from './schema';
 import { authHeaders } from './token';
+import { bootstrapToken } from './bootstrap';
 
 export const DEFAULT_BASE = 'http://127.0.0.1:8765';
+
+/** The wire faults the shell can NAME. A webview failure is opaque — the
+ * browser engine reports a blocked response, a rejected bearer and a dead
+ * port all as one network failure — so the Rust core asks the kernel what
+ * the webview would experience, and the renderer is told which fault it is.
+ */
+export type WireFault =
+	| 'unreachable'
+	| 'origin_not_allowed'
+	| 'no_credential'
+	| 'unauthorized'
+	| 'unexpected'
+	| 'unknown';
+
+/** A wire failure that carries its NAME. Never a guess: `unknown` is the
+ * honest answer when the core cannot be asked. */
+export class WireError extends Error {
+	readonly fault: WireFault;
+
+	constructor(fault: WireFault) {
+		super('wire_error');
+		this.name = 'WireError';
+		this.fault = fault;
+	}
+}
+
+const WIRE_FAULTS: readonly WireFault[] = [
+	'unreachable',
+	'origin_not_allowed',
+	'no_credential',
+	'unauthorized',
+	'unexpected'
+];
+
+/** Ask the Rust core which fault the webview is actually hitting. In the PWA
+ * there is no core, so the answer is `unknown` and the generic message
+ * stands — the operator owns their own kernel's policy there. */
+async function diagnoseWire(): Promise<WireFault> {
+	try {
+		const { invoke } = await import('@tauri-apps/api/core');
+		const dto = await invoke<{ kind: string }>('kernel_wire_status');
+		return WIRE_FAULTS.includes(dto.kind as WireFault) ? (dto.kind as WireFault) : 'unknown';
+	} catch {
+		return 'unknown';
+	}
+}
 
 /** The session origin override's sessionStorage key (settings panel). */
 export const SESSION_BASE_KEY = 'shell.apiBase';
@@ -54,11 +101,27 @@ export function apiBase(): string {
 /** Injects the runtime-held bearer (D7) — the token lives in token.ts and
  * nowhere else. */
 const bearerMiddleware: Middleware = {
-	onRequest({ request }) {
+	async onRequest({ request }) {
+		// The FIRST read must not race the credential. The layout kicks the
+		// bootstrap off, but the keychain read is async and a route's mount
+		// read used to beat it — the request went out with NO `Authorization`
+		// header, and (the mount effect runs once) nothing retried it.
+		// Awaiting the shared, memoized promise makes the credential a
+		// PRECONDITION of the first request.
+		await bootstrapToken();
 		for (const [name, value] of Object.entries(authHeaders())) {
 			request.headers.set(name, value);
 		}
 		return request;
+	}
+};
+
+/** Names a wire failure instead of collapsing it into one opaque error. The
+ * browser engine reports a blocked response, a rejected bearer and a dead
+ * port identically; the core asks the kernel which one it is. */
+const wireFaultMiddleware: Middleware = {
+	async onError() {
+		return new WireError(await diagnoseWire());
 	}
 };
 
@@ -98,12 +161,14 @@ const rawCaptureMiddleware: Middleware = {
 export let client = createClient<paths>({ baseUrl: activeBase });
 // Middleware registers imperatively in this openapi-fetch line (0.17).
 client.use(bearerMiddleware);
+client.use(wireFaultMiddleware);
 client.use(rawCaptureMiddleware);
 
 function rebuildClient(base: string): void {
 	activeBase = base;
 	client = createClient<paths>({ baseUrl: base });
 	client.use(bearerMiddleware);
+	client.use(wireFaultMiddleware);
 	client.use(rawCaptureMiddleware);
 }
 

@@ -8,7 +8,8 @@
 	// resumes; the answers export is the evidence artifact with the
 	// local-only telemetry.
 	import { m } from '$paraglide/messages.js';
-	import { fetchWizardPacks } from '#lib/api/client.js';
+	import { fetchWizardPacks, type WireFault } from '#lib/api/client.js';
+	import { faultOf, wireFaultMessage } from '#lib/api/wire-fault.js';
 	import { parsePack, type ResolvedPack } from '#lib/wizard/pack.js';
 	import { branchOf, classifyAnswer, firstStep } from '#lib/wizard/branch.js';
 	import { buildAnswersExport } from '#lib/wizard/answers.js';
@@ -29,7 +30,7 @@
 
 	type Mode =
 		| { kind: 'loading' }
-		| { kind: 'wire-error' }
+		| { kind: 'wire-error'; fault: WireFault }
 		| { kind: 'picking'; packs: CatalogEntry[] }
 		| { kind: 'flow'; pack: ResolvedPack; currentId: string; answers: Record<string, unknown> }
 		| { kind: 'abstain'; pack: ResolvedPack; questionId: string }
@@ -58,8 +59,11 @@
 			}
 			catalog = entries;
 			mode = { kind: 'picking', packs: entries };
-		} catch {
-			mode = { kind: 'wire-error' };
+		} catch (error) {
+			// The fault is NAMED: a blocked response, a rejected bearer and a
+			// dead port are three different problems with three different
+			// remedies, and the browser engine reports all three identically.
+			mode = { kind: 'wire-error', fault: faultOf(error) };
 		}
 	}
 
@@ -70,7 +74,7 @@
 		if (!parsed.ok) {
 			// The kernel validated it; the client refuses to render anything
 			// it cannot itself prove. Honest refusal, never a guess.
-			mode = { kind: 'wire-error' };
+			mode = { kind: 'wire-error', fault: 'unknown' };
 			return;
 		}
 		beginFlow();
@@ -174,7 +178,7 @@
 	{#if mode.kind === 'loading'}
 		<p aria-busy="true">…</p>
 	{:else if mode.kind === 'wire-error'}
-		<Alert variant="destructive">{m["wire.error"]()}</Alert>
+		<Alert variant="destructive">{wireFaultMessage(mode.fault)}</Alert>
 	{:else if mode.kind === 'picking'}
 		<Card class="p-5" aria-labelledby="pick-heading">
 			<h2 id="pick-heading" class="text-lg font-semibold tracking-tight">{m["pick.heading"]()}</h2>
