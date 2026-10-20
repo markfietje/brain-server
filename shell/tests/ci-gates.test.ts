@@ -4,6 +4,7 @@ import { expect, test } from 'vitest';
 import { shellRoot } from './fixtures';
 
 type PackageManifest = {
+	version?: string;
 	scripts: Record<string, string>;
 	engines?: Record<string, string>;
 };
@@ -112,6 +113,45 @@ test('the_macos_bundle_lane_stages_builds_and_walks', () => {
 	const bundleJob = workflow.slice(workflow.indexOf('bundle-macos:'));
 	expect(bundleJob).not.toContain('secrets.');
 	expect(bundleJob).toContain('Contents/MacOS/brain-server" --version');
+});
+
+/**
+ * III-4 prep — the shell's version is written in FOUR places, and the one the
+ * UPDATER compares is the runtime one (`tauri.conf.json` → the bundle's
+ * Info.plist). A release that bumps three of them ships an app that believes
+ * it is 0.1.0 while the manifest announces 0.1.1: the updater then offers the
+ * same build forever, and the npm package and the crate carry a number nobody
+ * diffed against a measurement. Nothing else in this tree holds these four
+ * together, so the four are held together here.
+ */
+test('the_shell_version_is_one_number_in_every_place_it_is_written', () => {
+	const tauriConf = JSON.parse(
+		readFileSync(join(shellRoot, 'src-tauri', 'tauri.conf.json'), 'utf8')
+	) as { version?: string };
+	const cargoToml = readFileSync(join(shellRoot, 'src-tauri', 'Cargo.toml'), 'utf8');
+	const cargoLock = readFileSync(join(shellRoot, 'src-tauri', 'Cargo.lock'), 'utf8');
+
+	const packageVersion = manifest.version;
+	// The `[package]` section is first, so the first line-anchored `version =`
+	// is the crate's own.
+	const cargoVersion = /^version = "([^"]+)"/m.exec(cargoToml)?.[1];
+	const lockVersion = /\nname = "brain-shell"\nversion = "([^"]+)"\n/.exec(cargoLock)?.[1];
+
+	expect(packageVersion, 'package.json carries no version').toBeTruthy();
+	expect(cargoVersion, 'src-tauri/Cargo.toml carries no package version').toBeTruthy();
+	expect(lockVersion, 'the lockfile carries no brain-shell version').toBeTruthy();
+	expect(tauriConf.version, 'tauri.conf.json carries no version').toBeTruthy();
+
+	// The runtime version is the one the updater compares, so it leads.
+	expect(
+		tauriConf.version,
+		'the runtime version (tauri.conf.json) must equal the package version'
+	).toBe(packageVersion);
+	expect(cargoVersion, 'Cargo.toml must carry the package version').toBe(packageVersion);
+	expect(lockVersion, 'the lockfile must carry the package version').toBe(packageVersion);
+
+	// And it is a version, not a label.
+	expect(packageVersion).toMatch(/^\d+\.\d+\.\d+$/);
 });
 
 /**
