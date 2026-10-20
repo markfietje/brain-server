@@ -290,6 +290,19 @@ extension AppleFMProbeTests {
 func multiTurnMemoryIsMeasuredNotAssumed() async throws {
     #if canImport(FoundationModels)
     guard #available(macOS 27.0, *) else { return }
+    // The model may be legitimately ABSENT: on a macOS 27 image the
+    // framework compiles and links and dyld-binds, but
+    // `SystemLanguageModel.default.availability` is
+    // `.unavailable(deviceNotEligible)` — and the REQUEST then throws
+    // `ModelManagerError 1046` rather than returning zero. That throw is
+    // CORRECT (a measurement that cannot be taken must not report a
+    // number), so the fix belongs here, not in `measure`: this test has to
+    // skip the way its three siblings already do, rather than assume a model
+    // exists because the framework compiled.
+    guard case .available = SystemLanguageModel.default.availability else {
+        print("on-device model unavailable — multi-turn memory not measured here")
+        return
+    }
     let secret = "184/97"
 
     // Same surface the latency test above already drives successfully, which is
