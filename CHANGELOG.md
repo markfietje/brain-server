@@ -75,26 +75,58 @@ and by the update section's absence.
 
 - **`scripts/install-service.sh` failed at the link step**, so the operator
   could not install the kernel: `Undefined symbols for architecture arm64:
-  "___isPlatformVersionAtLeast"`, referenced from the ONNX Runtime's CoreML
-  objects. The cause is the **2026-10-20 08:09 lockfile refresh**
-  (`2ae4462d`, "refresh all seven lockfiles to the 2026-10-20 latest"),
-  which took `fastembed` 7.1.0 → 7.1.2 and `ort` rc.13 → **rc.15** — because
-  `fastembed` and `ort` were required with a CARET, not the exact pin the
-  manifest's own comments describe ("to unify with `fastembed`'s exact-pinned
-  `ort = =2.0.0-rc.13`"). `fastembed` 7.1.2 exact-pins `ort = "=2.0.0-rc.15"`,
-  whose **macOS** ONNX Runtime artifact cannot be linked into this repository's
-  `minos 11.0` binary: its CoreML objects carry an availability-gated symbol
-  the 11.0 link cannot resolve. The build now pins both exactly
-  (`fastembed = "=7.1.0"`, `ort = "=2.0.0-rc.13"`) — the state the manifest
-  says it is in — and links again.
+  "___isPlatformVersionAtLeast"`, referenced from
+  `onnxruntime::coreml::util::CoreMLVersion()`. The build now links again,
+  and `fastembed`/`ort` are pinned exactly, which is the state the manifest's
+  own comments describe ("to unify with `fastembed`'s exact-pinned
+  `ort = =2.0.0-rc.13`") and which a CARET could not hold.
 
-  **The public release never saw it**: `release.yml` builds
-  `--features bench,migrate`, which does not pull `ort` in, so the v1.29.23
-  release shipped and CI stayed green while the **local** build — the one that
-  adds `rerank-tier` — was broken. **No CI lane builds `rerank-tier` on
-  macOS**, and the ONNX Runtime's macOS artifact is exactly where the coupling
-  breaks. A macOS lane with that feature is the guard this defect needs, and
-  it is named here rather than left to rot.
+  **The cause, measured rather than guessed.** The 2026-10-20 08:09 lockfile
+  refresh (`2ae4462d`) took `fastembed` 7.1.0 → 7.1.2 and `ort` rc.13 →
+  rc.15, and those two `ort-sys` releases fetch **different ONNX Runtime
+  builds for macOS** — `ms@1.28.0` before, `ms@1.31.0` after. The two
+  artifacts differ in ONE way that matters: the newer one adds
+  `ep_factory_coreml.cc.o` to the main static library, which wires the
+  **CoreML execution provider into the EP factory table** — so the provider
+  becomes reachable from the ordinary session path, the linker pulls
+  `host_utils.mm.o` in with it, and that object needs
+  `___isPlatformVersionAtLeast`. **No macOS 27.0 SDK ships that symbol**
+  (a full-SDK sweep finds nothing under any spelling, and the machine has
+  only the 27.0 SDK), so the link cannot be satisfied. The older artifact
+  keeps the provider inert, and the 1.29.21 binary that linked on 2026-10-19
+  contains none of the CoreML symbols — the object was never pulled in.
+  `ort/coreml` is OFF in this build, so no feature switch reaches it: the
+  provider is compiled INTO the static library, not into the Rust binding.
+
+  **There is no other macOS artifact to choose.** Both `ort-sys` releases
+  offer exactly two macOS distributions — `aarch64-apple-darwin+coreml` and
+  `+coreml,webgpu` — so "pick the build without CoreML" is not on the
+  table.
+
+  **The forward path exists, and it is a deployment change rather than a
+  version bump.** `ort`'s `load-dynamic` strategy never links the static
+  archive — the ONNX Runtime becomes a dylib loaded at runtime — so the
+  artifact that needs the missing symbol is not a link input at all. That
+  means shipping `libonnxruntime.dylib` beside the binary and giving it an
+  rpath, and the distribution tarball carries only the static archive, so
+  the dylib has to come from somewhere else and be pinned like every other
+  artifact. Building ONNX Runtime from source without the CoreML provider is
+  the other way, and it is a build-time dependency this repository does not
+  have. Both are operator decisions — they change what the installer
+  delivers — and neither is a version bump. Until one is taken, the exact
+  pins are the working state, and the upstream question — *the pyke macOS
+  ONNX Runtime 1.31.0 references `isPlatformVersionAtLeast`, which the
+  macOS 27 SDK does not ship, so its macOS artifact no longer links* — is the
+  thing to raise.
+
+  **The public release never saw it, and that is the guard this defect
+  needs**: `release.yml` builds `--features bench,migrate`, which does not
+  pull `ort` in, so v1.29.23 shipped and CI stayed green while the **local**
+  build — the one that adds `rerank-tier` — was broken. **No CI lane builds
+  `rerank-tier` on macOS**, and the ONNX Runtime's macOS artifact is exactly
+  where the coupling breaks. A macOS lane with that feature is named here
+  rather than left to rot; it is OWED to its first runner execution like the
+  other macOS lanes.
 
 ## [Unreleased] — the webview's wire can reach the kernel (III-4a)
 
