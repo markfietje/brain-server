@@ -237,7 +237,13 @@ impl UpdateDto {
         self
     }
 
-    fn refused(mut self, kind: &str, expected: Option<String>, observed: Option<String>) -> Self {
+    fn refused(
+        mut self,
+        kind: &str,
+        expected: Option<String>,
+        observed: Option<String>,
+        detail: Option<String>,
+    ) -> Self {
         self.state = "refused".to_string();
         self.kind = Some(kind.to_string());
         self.expected = expected.clone();
@@ -250,7 +256,7 @@ impl UpdateDto {
             (Some(expected), Some(observed)) => {
                 format!("{kind}: expected {expected}, found {observed}")
             }
-            _ => kind.to_string(),
+            _ => detail.unwrap_or_else(|| kind.to_string()),
         });
         self
     }
@@ -318,7 +324,7 @@ pub async fn check(app: &tauri::AppHandle) -> Result<UpdateDto, String> {
             kind,
             expected,
             observed,
-        } => Ok(dto.refused(kind, expected, observed)),
+        } => Ok(dto.refused(kind, expected, observed, None)),
         Decision::Allowed { offered_kernel } => {
             Ok(dto.available(&offered_version, &offered_kernel))
         }
@@ -353,7 +359,7 @@ pub async fn install(app: &tauri::AppHandle) -> Result<UpdateDto, String> {
             kind,
             expected,
             observed,
-        } => return Ok(dto.refused(kind, expected, observed)),
+        } => return Ok(dto.refused(kind, expected, observed, None)),
         Decision::Allowed { .. } => {}
     }
 
@@ -362,10 +368,16 @@ pub async fn install(app: &tauri::AppHandle) -> Result<UpdateDto, String> {
     // of reporting a bare error string.
     let bytes = match update.download(|_, _| {}, || {}).await {
         Ok(bytes) => bytes,
-        Err(error) => return Ok(dto.unreachable(&download_error(&error))),
+        Err(error) => {
+            let message = download_error(&error);
+            return Ok(match refusal_kind(&error) {
+                Some(kind) => dto.refused(kind, None, None, Some(message)),
+                None => dto.unreachable(&message),
+            });
+        }
     };
     if let Err(error) = verify_artifact(&update, &bytes) {
-        return Ok(dto.refused("signature_rejected", None, Some(error)));
+        return Ok(dto.refused("signature_rejected", None, None, Some(error)));
     }
     if let Err(error) = update.install(bytes) {
         return Ok(dto.unreachable(&install_error(&error)));
@@ -382,6 +394,20 @@ pub async fn install(app: &tauri::AppHandle) -> Result<UpdateDto, String> {
 /// bare error string.
 pub fn verify_artifact(update: &Update, bytes: &[u8]) -> Result<(), String> {
     update.verify(bytes).map_err(|error| error.to_string())
+}
+
+/// The refusal a plugin error IS, when it is one.
+///
+/// A signature that does not verify is a REFUSAL — the artifact is not the
+/// pinned key's — and not an unreachable endpoint. Rendering it as
+/// "unreachable" would send the operator looking at the network instead of
+/// at the thing that is actually wrong.
+fn refusal_kind(error: &UpdaterError) -> Option<&'static str> {
+    match error {
+        UpdaterError::Minisign(_) => Some("signature_rejected"),
+        UpdaterError::SignedVersionMismatch { .. } => Some("signed_version_mismatch"),
+        _ => None,
+    }
 }
 
 /// The plugin's download error, said in the app's own words.

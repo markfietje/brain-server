@@ -156,12 +156,6 @@
 		if (settingsOpen && inTauri) {
 			tokenState = 'idle';
 			void refreshTokenStatus();
-			// The panel states the CURRENT version and the current kernel
-			// version, and only the core knows either of them (the kernel's
-			// comes from the sealed provenance). So opening the panel asks
-			// the core once — the check is bounded, and an endpoint that
-			// cannot be reached is its OWN state, not an empty line.
-			void checkForUpdate();
 		}
 	});
 
@@ -236,37 +230,47 @@
 	let updateOfferedKernel = $state('');
 	let updateReason = $state('');
 
+	type UpdateOutcome = {
+		state?: string;
+		currentVersion?: string;
+		currentKernel?: string | null;
+		offeredVersion?: string | null;
+		offeredKernel?: string | null;
+		expected?: string | null;
+		observed?: string | null;
+		lastError?: string | null;
+	};
+
+	/**
+	 * Apply what the core answered. The install answers with the SAME DTO as
+	 * the check, and its answer is the one that matters: a refusal names its
+	 * reason, and dropping it would render a refusal as nothing at all.
+	 */
+	function applyOutcome(outcome: UpdateOutcome | null): void {
+		updateCurrentVersion = outcome?.currentVersion ?? updateCurrentVersion;
+		updateCurrentKernel = outcome?.currentKernel ?? updateCurrentKernel;
+		updateOfferedVersion = outcome?.offeredVersion ?? '';
+		updateOfferedKernel = outcome?.offeredKernel ?? '';
+		updateReason = outcome?.lastError ?? '';
+		const state = outcome?.state;
+		if (state === 'available') {
+			updateState = 'available';
+		} else if (state === 'current') {
+			updateState = 'current';
+		} else if (state === 'unreachable') {
+			updateState = 'unreachable';
+		} else if (state === 'refused') {
+			updateState = 'refused';
+		} else {
+			updateState = 'error';
+		}
+	}
+
 	async function checkForUpdate(): Promise<void> {
 		updateState = 'checking';
 		try {
 			const { invoke } = await import('@tauri-apps/api/core');
-			const outcome = (await invoke('update_check')) as {
-				state?: string;
-				currentVersion?: string;
-				currentKernel?: string | null;
-				offeredVersion?: string | null;
-				offeredKernel?: string | null;
-				expected?: string | null;
-				observed?: string | null;
-				lastError?: string | null;
-			} | null;
-			updateCurrentVersion = outcome?.currentVersion ?? '';
-			updateCurrentKernel = outcome?.currentKernel ?? '';
-			updateOfferedVersion = outcome?.offeredVersion ?? '';
-			updateOfferedKernel = outcome?.offeredKernel ?? '';
-			updateReason = outcome?.lastError ?? '';
-			const state = outcome?.state;
-			if (state === 'available') {
-				updateState = 'available';
-			} else if (state === 'current') {
-				updateState = 'current';
-			} else if (state === 'unreachable') {
-				updateState = 'unreachable';
-			} else if (state === 'refused') {
-				updateState = 'refused';
-			} else {
-				updateState = 'error';
-			}
+			applyOutcome((await invoke('update_check')) as UpdateOutcome | null);
 		} catch {
 			updateState = 'error';
 		}
@@ -276,10 +280,7 @@
 		updateState = 'checking';
 		try {
 			const { invoke } = await import('@tauri-apps/api/core');
-			await invoke('update_install');
-			// The install relaunches the app; if it did not, the outcome says
-			// why.
-			updateState = 'idle';
+			applyOutcome((await invoke('update_install')) as UpdateOutcome | null);
 		} catch {
 			updateState = 'error';
 		}
@@ -317,7 +318,16 @@
 				variant="ghost"
 				size="icon-sm"
 				aria-label={m["nav.settings"]()}
-				onclick={() => (settingsOpen = true)}
+				onclick={() => {
+					settingsOpen = true;
+					// The panel states the CURRENT version and the current
+					// kernel version, and only the core knows either of them
+					// (the kernel's comes from the sealed provenance). So
+					// opening the panel asks the core once: the check is
+					// bounded, and an endpoint that cannot be reached is its
+					// OWN state, not an empty line.
+					if (inTauri) void checkForUpdate();
+				}}
 			>
 				<SettingsIcon aria-hidden="true" />
 			</Button>
