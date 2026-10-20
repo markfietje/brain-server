@@ -1,6 +1,6 @@
 {
 	"name": "brain-shell",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"private": true,
 	"description": "The SvelteTauri shell: the typed-wire skeleton + the wizard renderer (the C9 consumer). A pure protocol client — zero business logic; every read is a typed kernel call.",
 	"type": "module",

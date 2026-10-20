@@ -164,10 +164,30 @@ async fn kernel_wire_status() -> Result<sidecar::WireDto, String> {
         .map_err(|_| "wire_status task failed".to_string())
 }
 
+/// III-4 — the update CHECK. Read-only: it never installs and never writes.
+/// The answer is a DTO, never a thrown error, and `unreachable` is its own
+/// state — an endpoint that cannot be reached is never "you are up to date".
+#[tauri::command]
+async fn update_check(app: tauri::AppHandle) -> Result<updater::UpdateDto, String> {
+    updater::check(&app).await
+}
+
+/// III-4 — the update INSTALL. The same gate, then the download, then the
+/// install and the relaunch. A refusal never reaches the download.
+#[tauri::command]
+async fn update_install(app: tauri::AppHandle) -> Result<updater::UpdateDto, String> {
+    updater::install(&app).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(sidecar::KernelState::default())
+        // III-4 — the updater plugin, and NOTHING of it to the webview: the
+        // capability grants no `updater:*` permission, so the renderer cannot
+        // check or install anything. The Rust core owns both, and it reads
+        // the pinned public key from the app's own configuration.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             kernel_token,
             store_kernel_token,
@@ -175,6 +195,8 @@ pub fn run() {
             kernel_status,
             kernel_start,
             kernel_wire_status,
+            update_check,
+            update_install,
             recall_memory,
             shape_recall_command,
             verify_claim_command,

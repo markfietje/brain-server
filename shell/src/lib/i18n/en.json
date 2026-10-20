@@ -315,5 +315,14 @@
 	"gate.refused.dataRoot": "Data folder",
 	"gate.refused.waited": "Waited",
 	"gate.refused.lastError": "Last error",
-	"gate.refused.retry": "Retry"
+	"gate.refused.retry": "Retry",
+	"settings.update.heading": "Software update",
+	"settings.update.current": "Running version {version} — bundled kernel {kernel}.",
+	"settings.update.check": "Check for updates",
+	"settings.update.install": "Install this update",
+	"settings.update.uptodate": "You are up to date.",
+	"settings.update.available": "Update {version} is available (kernel {kernel}).",
+	"settings.update.unreachable": "The update endpoint could not be reached.",
+	"settings.update.refused": "Refused: {reason}",
+	"settings.update.error": "The update check failed."
 }

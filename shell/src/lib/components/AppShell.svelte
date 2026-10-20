@@ -209,6 +209,75 @@
 			await refreshTokenStatus();
 		}
 	}
+
+	// ── settings: the software update (III-4; Tauri only) ─────────────────
+	// The Rust core owns the check and the install; the webview is granted no
+	// updater permission and only ever sees a DTO. `unreachable` is its OWN
+	// state: an endpoint that cannot be reached is never "you are up to date",
+	// and a refusal names its reason rather than reading like an answer.
+	type UpdateState =
+		| 'idle'
+		| 'checking'
+		| 'current'
+		| 'available'
+		| 'unreachable'
+		| 'refused'
+		| 'error';
+	let updateState = $state<UpdateState>('idle');
+	let updateCurrentVersion = $state('');
+	let updateCurrentKernel = $state('');
+	let updateOfferedVersion = $state('');
+	let updateOfferedKernel = $state('');
+	let updateReason = $state('');
+
+	async function checkForUpdate(): Promise<void> {
+		updateState = 'checking';
+		try {
+			const { invoke } = await import('@tauri-apps/api/core');
+			const outcome = (await invoke('update_check')) as {
+				state?: string;
+				currentVersion?: string;
+				currentKernel?: string | null;
+				offeredVersion?: string | null;
+				offeredKernel?: string | null;
+				expected?: string | null;
+				observed?: string | null;
+				lastError?: string | null;
+			} | null;
+			updateCurrentVersion = outcome?.currentVersion ?? '';
+			updateCurrentKernel = outcome?.currentKernel ?? '';
+			updateOfferedVersion = outcome?.offeredVersion ?? '';
+			updateOfferedKernel = outcome?.offeredKernel ?? '';
+			updateReason = outcome?.lastError ?? '';
+			const state = outcome?.state;
+			if (state === 'available') {
+				updateState = 'available';
+			} else if (state === 'current') {
+				updateState = 'current';
+			} else if (state === 'unreachable') {
+				updateState = 'unreachable';
+			} else if (state === 'refused') {
+				updateState = 'refused';
+			} else {
+				updateState = 'error';
+			}
+		} catch {
+			updateState = 'error';
+		}
+	}
+
+	async function installUpdate(): Promise<void> {
+		updateState = 'checking';
+		try {
+			const { invoke } = await import('@tauri-apps/api/core');
+			await invoke('update_install');
+			// The install relaunches the app; if it did not, the outcome says
+			// why.
+			updateState = 'idle';
+		} catch {
+			updateState = 'error';
+		}
+	}
 </script>
 
 <svelte:window onkeydown={onKeydown} />
@@ -334,6 +403,43 @@
 					<p class="text-sm text-destructive" role="alert">{m["settings.token.empty"]()}</p>
 				{:else if tokenState === 'error'}
 					<p class="text-sm text-destructive" role="alert">{m["settings.token.error"]()}</p>
+				{/if}
+			</div>
+			<div class="grid gap-2">
+				<h3 class="text-sm font-semibold">{m["settings.update.heading"]()}</h3>
+				<p class="text-xs text-muted-foreground">
+					{m["settings.update.current"]({
+						version: updateCurrentVersion,
+						kernel: updateCurrentKernel
+					})}
+				</p>
+				<div class="flex flex-wrap gap-2">
+					<Button onclick={checkForUpdate} disabled={updateState === 'checking'}>
+						{m["settings.update.check"]()}
+					</Button>
+					{#if updateState === 'available'}
+						<Button onclick={installUpdate}>{m["settings.update.install"]()}</Button>
+					{/if}
+				</div>
+				{#if updateState === 'current'}
+					<p class="text-sm text-brand" role="status">{m["settings.update.uptodate"]()}</p>
+				{:else if updateState === 'available'}
+					<p class="text-sm text-brand" role="status">
+						{m["settings.update.available"]({
+							version: updateOfferedVersion,
+							kernel: updateOfferedKernel
+						})}
+					</p>
+				{:else if updateState === 'unreachable'}
+					<p class="text-sm text-destructive" role="alert">
+						{m["settings.update.unreachable"]()}
+					</p>
+				{:else if updateState === 'refused'}
+					<p class="text-sm text-destructive" role="alert">
+						{m["settings.update.refused"]({ reason: updateReason })}
+					</p>
+				{:else if updateState === 'error'}
+					<p class="text-sm text-destructive" role="alert">{m["settings.update.error"]()}</p>
 				{/if}
 			</div>
 		{/if}

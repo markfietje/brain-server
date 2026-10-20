@@ -315,5 +315,14 @@
 	"gate.refused.dataRoot": "Carpeta de datos",
 	"gate.refused.waited": "Espera",
 	"gate.refused.lastError": "Último error",
-	"gate.refused.retry": "Reintentar"
+	"gate.refused.retry": "Reintentar",
+	"settings.update.heading": "Actualización de software",
+	"settings.update.current": "Versión en ejecución {version} — kernel incluido {kernel}.",
+	"settings.update.check": "Buscar actualizaciones",
+	"settings.update.install": "Instalar esta actualización",
+	"settings.update.uptodate": "Está todo actualizado.",
+	"settings.update.available": "La actualización {version} está disponible (kernel {kernel}).",
+	"settings.update.unreachable": "No se pudo alcanzar el punto de conexión de actualizaciones.",
+	"settings.update.refused": "Rechazada: {reason}",
+	"settings.update.error": "La comprobación de actualizaciones falló."
 }

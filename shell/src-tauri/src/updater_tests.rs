@@ -257,7 +257,7 @@ fn the_updater_module_reads_exactly_one_environment_variable_and_it_is_the_endpo
             },
         };
         let close = tail.find(')').expect("a closed environment read");
-        reads.push(format!("{call}({}", tail[..close].trim()));
+        reads.push(format!("{call}({})", tail[..close].trim()));
         rest = &tail[close..];
     }
 

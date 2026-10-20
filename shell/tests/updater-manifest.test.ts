@@ -104,6 +104,10 @@ function fixture(options: FixtureOptions = {}): Fixture {
 	// The tree the writer checks: a clean repository with ONE commit.
 	mkdirSync(join(root, 'shell', 'src-tauri', 'binaries'), { recursive: true });
 	mkdirSync(join(root, 'shell', 'src-tauri'), { recursive: true });
+	// The staged record is an OUTPUT, never a source — the real repository
+	// ignores it for the same reason, so the fixture ignores it too and the
+	// tree stays clean while the record names the commit.
+	writeFileSync(join(root, '.gitignore'), 'shell/src-tauri/binaries/\n');
 	writeFileSync(
 		join(root, 'shell', 'src-tauri', 'tauri.conf.json'),
 		`${JSON.stringify({ version: shellVersion }, null, 2)}\n`

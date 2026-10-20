@@ -315,5 +315,14 @@
 	"gate.refused.dataRoot": "Dossier de données",
 	"gate.refused.waited": "Attente",
 	"gate.refused.lastError": "Dernière erreur",
-	"gate.refused.retry": "Réessayer"
+	"gate.refused.retry": "Réessayer",
+	"settings.update.heading": "Mise à jour du logiciel",
+	"settings.update.current": "Version en cours d’exécution {version} — kernel inclus {kernel}.",
+	"settings.update.check": "Rechercher des mises à jour",
+	"settings.update.install": "Installer cette mise à jour",
+	"settings.update.uptodate": "Vous êtes à jour.",
+	"settings.update.available": "La mise à jour {version} est disponible (kernel {kernel}).",
+	"settings.update.unreachable": "Le point de terminaison de mise à jour est injoignable.",
+	"settings.update.refused": "Refusé : {reason}",
+	"settings.update.error": "La vérification de mise à jour a échoué."
 }

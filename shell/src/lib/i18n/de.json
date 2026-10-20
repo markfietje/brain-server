@@ -315,5 +315,14 @@
 	"gate.refused.dataRoot": "Datenordner",
 	"gate.refused.waited": "Gewartet",
 	"gate.refused.lastError": "Letzter Fehler",
-	"gate.refused.retry": "Erneut versuchen"
+	"gate.refused.retry": "Erneut versuchen",
+	"settings.update.heading": "Software-Update",
+	"settings.update.current": "Laufende Version {version} — mitgelieferter Kernel {kernel}.",
+	"settings.update.check": "Nach Updates suchen",
+	"settings.update.install": "Dieses Update installieren",
+	"settings.update.uptodate": "Sie sind auf dem neuesten Stand.",
+	"settings.update.available": "Update {version} ist verfügbar (Kernel {kernel}).",
+	"settings.update.unreachable": "Der Update-Endpunkt war nicht erreichbar.",
+	"settings.update.refused": "Abgelehnt: {reason}",
+	"settings.update.error": "Die Update-Prüfung ist fehlgeschlagen."
 }

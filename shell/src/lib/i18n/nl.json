@@ -315,5 +315,14 @@
 	"gate.refused.dataRoot": "Gegevensmap",
 	"gate.refused.waited": "Gewacht",
 	"gate.refused.lastError": "Laatste fout",
-	"gate.refused.retry": "Opnieuw proberen"
+	"gate.refused.retry": "Opnieuw proberen",
+	"settings.update.heading": "Software-update",
+	"settings.update.current": "Actuele versie {version} — meegeleverde kernel {kernel}.",
+	"settings.update.check": "Controleren op updates",
+	"settings.update.install": "Deze update installeren",
+	"settings.update.uptodate": "U bent up-to-date.",
+	"settings.update.available": "Update {version} is beschikbaar (kernel {kernel}).",
+	"settings.update.unreachable": "Het update-eindpunt was niet bereikbaar.",
+	"settings.update.refused": "Geweigerd: {reason}",
+	"settings.update.error": "De updatecontrole is mislukt."
 }
