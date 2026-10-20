@@ -398,7 +398,15 @@ mod onnx {
         pub fn load(model_path: &str, tokenizer_path: &str) -> anyhow::Result<OnnxScorer> {
             // ort::Error is !Send/!Sync (holds raw pointers + dyn Any), so it
             // can't flow through `?` into anyhow::Result — map to a string.
-            let session = Session::builder()
+            // rc.15 removed the implicit global environment: the caller must
+            // build one and pass it. This scorer loads once per process (the
+            // `OnceLock` in `try_load`), so the local environment covers the
+            // session's whole lifetime; the builder clones it, as fastembed's
+            // own `Session::builder(&environment)` call does.
+            let environment = ort::init()
+                .build()
+                .map_err(|e| anyhow::anyhow!("ort environment: {e:?}"))?;
+            let session = Session::builder(&environment)
                 .map_err(|e| anyhow::anyhow!("ort session builder: {e:?}"))?
                 .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)
                 .map_err(|e| anyhow::anyhow!("ort opt level: {e:?}"))?
