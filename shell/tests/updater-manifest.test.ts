@@ -42,18 +42,26 @@ function tempDir(prefix = 'brain-updater-'): string {
 	return directory;
 }
 
-/** A `.sig` file with the given trusted comment, in the shape minisign writes. */
+/**
+ * A `.sig` file with the given trusted comment, in the shape minisign writes.
+ *
+ * The FILE's content is the BASE64 of the four-line text — that is what the
+ * bundler writes beside the artifact, and what the manifest's `signature`
+ * field carries. (The writer reads the trusted comment out of the DECODED
+ * text; a fixture written as plain text would model a different file.)
+ */
 function signatureFile(trustedComment: string): string {
 	const packet = Buffer.alloc(74);
 	packet.write('Ed', 0, 'ascii');
 	const global = Buffer.alloc(64);
-	return [
+	const text = [
 		'untrusted comment: signature from minisign secret key',
 		packet.toString('base64'),
 		`trusted comment: ${trustedComment}`,
 		global.toString('base64'),
 		''
 	].join('\n');
+	return `${Buffer.from(text, 'utf8').toString('base64')}\n`;
 }
 
 /** A minimal but real `Info.plist` for a built `.app`. */

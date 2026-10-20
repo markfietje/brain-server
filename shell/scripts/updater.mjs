@@ -158,7 +158,17 @@ export function bundleVersion(bundle) {
  */
 export function signatureBinding(signaturePath) {
 	if (!existsSync(signaturePath)) return null;
-	const text = readFileSync(signaturePath, 'utf8');
+	// The `.sig` file's CONTENT is the base64 of the minisign signature text —
+	// the same string the manifest's `signature` field carries. The trusted
+	// comment is on the THIRD line of the decoded text.
+	const encoded = readFileSync(signaturePath, 'utf8').trim();
+	let text;
+	try {
+		text = Buffer.from(encoded, 'base64').toString('utf8');
+	} catch {
+		return null;
+	}
+	if (!text.includes('trusted comment: ')) return null;
 	const lines = text.split('\n');
 	const comment = lines.find((line) => line.startsWith('trusted comment: '));
 	if (comment === undefined) return null;
