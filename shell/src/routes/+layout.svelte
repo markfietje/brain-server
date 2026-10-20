@@ -3,6 +3,7 @@
 	import { bootstrapToken } from '#lib/api/bootstrap.js';
 	import { applyPlatformAttr } from '#lib/platform.js';
 	import AppShell from '#lib/components/AppShell.svelte';
+	import KernelGate from '#lib/components/KernelGate.svelte';
 
 	// Native platform feel: <html data-platform> keys the design tokens, and
 	// form controls stay NATIVE (the OS webview draws its own popups/combos).
@@ -18,6 +19,8 @@
 	let { children } = $props();
 </script>
 
-<AppShell>
-	{@render children()}
-</AppShell>
+<KernelGate>
+	<AppShell>
+		{@render children()}
+	</AppShell>
+</KernelGate>
