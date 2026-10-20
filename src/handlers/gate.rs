@@ -469,6 +469,16 @@ pub async fn list_proposals(
     let since = q.since;
     let pool = super::resolve_domain_pool(&state.registry, Some(authz_domain))?;
 
+    // The queue is a REVIEWER surface, so reading it takes the reviewer's
+    // capability — the same one `/proposals/{id}/approve` and
+    // `/proposals/{id}/reject` already spend. A principal that cannot ACT on
+    // the queue must not READ it: a pending proposal is unapproved memory text
+    // with an owner, and the plugin's own default (`proposalTools: false`)
+    // says the agent does not watch the review queue. The HTTP route honours
+    // that posture server-side; the capability gate is where it is stated, so
+    // no future client can widen it by choosing a different verb.
+    super::authorize_role(&principal.0, &pool, "approve")?;
+
     // The queue is a reviewer surface: a pending proposal is unapproved memory
     // text with an owner and a reviewer note. The record gate's resolved owner
     // set rides into the query, so an owner-bound caller reads its own queue

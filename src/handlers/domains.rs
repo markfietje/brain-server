@@ -114,6 +114,13 @@ pub async fn domains(
 ) -> Result<Json<DomainsResponse>, HandlerError> {
     // AuthZ read gate. `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
+    // The domain census is the operator console's SHAPE, not corpus content: it
+    // names every domain the deployment carries, including the ones this
+    // principal may not read. The `console` capability is the console's own —
+    // granted to the shipped presets whose `panels_default` includes a
+    // console-data panel, refused for the rest (the machine principal among
+    // them). The opaque operator (`None`) is the superuser path.
+    super::authorize_role(&principal.0, &state.pool, "console")?;
     let multi_db = state.registry.is_multi_db();
     let pool = state.pool.clone();
 

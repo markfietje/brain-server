@@ -30,6 +30,13 @@ pub async fn list_roles(
     principal: OptPrincipal,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
+    // The role table is the operator console's POLICY, not corpus content: it
+    // names every capability a principal can spend. The `console` capability
+    // is the console's own — granted to the shipped presets whose
+    // `panels_default` includes a console-data panel, refused for the rest
+    // (the machine principal among them). The opaque operator (`None`) is the
+    // superuser path and is unaffected.
+    super::authorize_role(&principal.0, &state.pool, "console")?;
     let pool = state.pool.clone();
     let roles = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
         let conn = pool.get().map_err(HandlerError::db_down)?;

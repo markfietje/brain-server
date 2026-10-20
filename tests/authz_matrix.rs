@@ -588,7 +588,19 @@ const LAYOUT_CONDITIONAL: &[&str] = &["/consolidate/propose"];
 /// write-scoped role-less principal is refused, and so is the agent class.
 /// `/proposals` is NOT here: it is owner-bound rather than closed, so a
 /// read-scoped caller still gets its own queue.
-const REVIEWER_POSTURE_ROWS: &[&str] = &["/quarantine", "/decayed"];
+const REVIEWER_POSTURE_ROWS: &[&str] = &[
+    "/quarantine",
+    "/decayed",
+    // The review queue is a REVIEWER surface: reading it takes the reviewer's
+    // `approve` capability — the same one `/proposals/{id}/approve` and
+    // `/proposals/{id}/reject` spend. A principal that cannot act on the queue
+    // must not read it: a pending proposal is unapproved memory text with an
+    // owner, and the plugin's own default (`proposalTools: false`) says the
+    // agent does not watch the review queue. A role-less principal is refused
+    // here by `APPROVAL_CAPABILITIES`, so this is a reviewer-posture row and
+    // not a read row.
+    "/proposals",
+];
 const APPROVAL_ROLE_ROWS: &[&str] = &[
     "/proposals/{id}/approve",
     "/proposals/{id}/reject",
@@ -1884,6 +1896,60 @@ async fn agent_principal_denied_admin_routes() {
     }
 }
 
+/// The agent is a scoped CORPUS-read principal, never an operator-console
+/// reader.
+///
+/// The `agent` role carries `read` + `write` and no `approve` — so it can
+/// neither promote a capture nor, by the same act, READ the human review
+/// queue. The queue is the operator's decision surface: it holds what a human
+/// has NOT yet blessed, and the plugin's own default (`proposalTools: false`)
+/// says the agent does not watch it. The HTTP route must honour that posture
+/// too — a bearer that cannot spend `approve` must not read the queue `approve`
+/// acts on. The same shape holds for the operator console's own shape: the
+/// role table, the domain census and the corpus counters are console state,
+/// not corpus content.
+///
+/// The status vocabulary differs per surface and the pin says so: the three
+/// hard surfaces are 403; `/stats` is a legacy soft-deny route (it answers a
+/// deny with the 200 shell the wire contract pins), so the proof there is
+/// that the COUNTS ARE ABSENT, not that the status is 403.
+#[tokio::test]
+async fn agent_principal_cannot_read_the_operator_console_surfaces() {
+    let srv = twokey_server();
+
+    // The hard surfaces: 403, and no payload.
+    for path in ["/proposals", "/roles", "/domains"] {
+        let (st, body) = send_body(&srv, Some(TWOKEY_AGENT), path, "GET", "").await;
+        assert_eq!(
+            st,
+            StatusCode::FORBIDDEN,
+            "{path} is the operator console, not the agent's corpus — got {st}: {body}"
+        );
+    }
+
+    // `/stats` is DELIBERATELY not gated. It is the console's overview
+    // counters, the overview page reads it, and a read principal already
+    // reads the corpus these counters describe — so gating it would cost
+    // the console its first screen to buy almost nothing. The pin states
+    // that boundary so it reads as a decision, not an oversight.
+    let (st, body) = send_body(&srv, Some(TWOKEY_AGENT), "/stats", "GET", "").await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "/stats is the console's overview read and stays open to a read principal: {body}"
+    );
+
+    // The operator is untouched on every one of them.
+    for path in ["/proposals", "/roles", "/domains", "/stats"] {
+        let (st, body) = send_body(&srv, Some(TWOKEY_OP), path, "GET", "").await;
+        assert_ne!(
+            st,
+            StatusCode::FORBIDDEN,
+            "{path} must stay open to the operator, got {st}: {body}"
+        );
+    }
+}
+
 /// Review posture: the agent's ingest lands as a pending proposal (202) and
 /// the agent CANNOT promote it — the approve gate 403s (the `agent` role
 /// carries no `approve` capability).
@@ -2432,6 +2498,18 @@ async fn probe_blind_404_on_foreign_run() {
 /// roles, so the empty-roles skip never fires) — those speak the denied
 /// vocabulary. Admin rows 403 outright.
 const ROLE_GATED_FOR_AGENT: &[&str] = &[
+    // The operator console is not the corpus. The role table and the domain
+    // census describe what the deployment holds — console state, not corpus
+    // content — so they take the `console` capability, and the agent class
+    // (can:["read","write","shared_pool"]) is refused. A role-less
+    // principal still passes (the console gate is not an approval
+    // capability), so this narrows the AGENT, not the console.
+    "/roles",
+    "/domains",
+    // The review queue's LIST is a reviewer surface (see
+    // REVIEWER_POSTURE_ROWS) — the agent can neither act on the queue nor
+    // read it.
+    "/proposals",
     // R115: consolidation mutates retrieval state (supersession writes
     // `valid_to`; undo restores it) with no approver anywhere in the lane —
     // the human-promotion invariant's seventh surface, refused by class.
