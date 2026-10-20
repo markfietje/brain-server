@@ -3,20 +3,26 @@
 // carried the D7 token pass-through, which reads the OPERATOR'S OWN
 // environment at runtime so the token never enters the JS bundle. Phase I
 // adds `recall.rs`: the recall wire's BOUNDS and its reading of the
-// kernel's answer. No fs, no shell, no http, no process plugins; NO unsafe.
+// kernel's answer. III-3 adds `sidecar.rs`, the ONE module that reverses the
+// fs/process half of the posture: it owns the data root, the consent marker,
+// the auth file, the log, and the bundled kernel's lifecycle. It adds no
+// HTTP client (the health probe is a raw loopback `TcpStream`) and no Tauri
+// plugin; there is NO unsafe.
 //
 // The core does NOT hold the wire. `capabilities/main.json` states the
 // posture this file now matches: the webview reaches the kernel over the
 // pinned loopback origin through the page's own fetch, and never through
 // Tauri. What lives here is the part that must not live in a renderer or in
-// Swift — the bounds, and the classification of what came back, including the
-// refusal that must never render as "no results".
+// Swift — the bounds, the classification of what came back (including the
+// refusal that must never render as "no results"), and the kernel contract's
+// detect/start/refuse edges.
 #![warn(clippy::all)]
 #![deny(clippy::cargo)]
 #![forbid(unsafe_code)]
 
 pub mod forget;
 pub mod recall;
+pub mod sidecar;
 pub mod verify;
 
 mod token;
@@ -25,6 +31,8 @@ mod token;
 mod forget_tests;
 #[cfg(test)]
 mod recall_tests;
+#[cfg(test)]
+mod sidecar_tests;
 #[cfg(test)]
 mod token_tests;
 #[cfg(test)]
@@ -47,6 +55,8 @@ pub use verify::{
     VerifyDecision, VerifyDoc, VerifyOutcome, VerifyRefusal, VerifyRequest, WireVerify,
     authorize as authorize_verify, shape_verify, shape_verify_command, verify_claim_command,
 };
+
+use tauri::Manager;
 
 /// D7 / III-2 — the bearer token's runtime injection point. Read order: the
 /// login keychain (service `app.brain.shell/token`, account `default`), then
@@ -90,13 +100,39 @@ async fn clear_kernel_token() -> Result<(), String> {
         .map_err(|e| e.code().to_string())
 }
 
+/// III-3 — detect. Reads the sealed provenance and probes `/health`; it never
+/// spawns, never creates a directory, and never kills a listener it did not
+/// start. A refusal is a DTO the gate renders, not a thrown error.
+#[tauri::command]
+async fn kernel_status(app: tauri::AppHandle) -> Result<sidecar::StatusDto, String> {
+    tauri::async_runtime::spawn_blocking(move || sidecar::status(&app))
+        .await
+        .map_err(|error| format!("kernel_status task failed: {error}"))
+}
+
+/// III-3 — start (consent → token → auth file → spawn → bounded wait). The
+/// wait runs on the blocking pool, NOT in the webview: the 10 s bound and the
+/// timeout kill are only enforceable on this side.
+#[tauri::command]
+async fn kernel_start(app: tauri::AppHandle, consent: bool) -> Result<sidecar::StatusDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<sidecar::KernelState>();
+        sidecar::start(&app, state.inner(), consent, sidecar::WAIT_MS)
+    })
+    .await
+    .map_err(|error| format!("kernel_start task failed: {error}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        .manage(sidecar::KernelState::default())
         .invoke_handler(tauri::generate_handler![
             kernel_token,
             store_kernel_token,
             clear_kernel_token,
+            kernel_status,
+            kernel_start,
             recall_memory,
             shape_recall_command,
             verify_claim_command,
@@ -104,6 +140,16 @@ pub fn run() {
             forget_memory,
             shape_forget_command
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running the shell");
+        .build(tauri::generate_context!())
+        .expect("error while building the shell");
+    app.run(|handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            // Only the child this process spawned is held; an attached kernel
+            // is not ours to stop. A kill failure is the one thing the exit
+            // path can still say out loud.
+            if let Some(error) = sidecar::shutdown_app(handle) {
+                eprintln!("brain-shell: the spawned kernel could not be killed: {error}");
+            }
+        }
+    });
 }
