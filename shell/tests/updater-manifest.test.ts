@@ -289,7 +289,11 @@ test('the_manifest_writer_names_the_sealed_kernel_version_and_refuses_a_stale_re
  * trust.
  */
 test('the_manifest_writer_refuses_a_version_the_artifact_does_not_carry', () => {
-	const fixtureValue = fixture({ artifactVersion: '0.1.0' });
+	// The signature is made for the ANNOUNCED version, so the only refusal
+	// the writer can reach here is the one this pin is about. (With the
+	// signature binding the artifact's own version, the writer would refuse
+	// for a different law and this pin would pass on the wrong refusal.)
+	const fixtureValue = fixture({ artifactVersion: '0.1.0', signedVersion: '0.1.2' });
 
 	// Announcing 0.1.2 for an artifact that says 0.1.0 is refused, and the
 	// refusal names both versions.
@@ -297,11 +301,15 @@ test('the_manifest_writer_refuses_a_version_the_artifact_does_not_carry', () => 
 	expect(relabel.status).toBe(2);
 	expect(relabel.stderr).toContain('0.1.2');
 	expect(relabel.stderr).toContain('0.1.0');
+	// ... and it is THIS law that refused it, not another one.
+	expect(relabel.stderr).toContain("the artifact's own version is 0.1.0, not the announced 0.1.2");
 
-	// The version the artifact carries is accepted.
-	const honest = write(fixtureValue, ['--version', '0.1.0']);
+	// The version the artifact carries is accepted — with a signature made
+	// for it, which is what a real release looks like.
+	const honestFixture = fixture({ artifactVersion: '0.1.0', signedVersion: '0.1.0' });
+	const honest = write(honestFixture, ['--version', '0.1.0']);
 	expect(honest.status, honest.stderr).toBe(0);
-	expect(manifestOf(fixtureValue).version).toBe('0.1.0');
+	expect(manifestOf(honestFixture).version).toBe('0.1.0');
 });
 
 // ── P6 · the private key is in no tracked file ────────────────────────────
