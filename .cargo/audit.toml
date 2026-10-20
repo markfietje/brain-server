@@ -40,11 +40,32 @@
 # VariantStrIter / GVariant child iteration. Accepted as tolerable risk;
 # Dependabot alert #3 dismissed 2026-09-23 on the same grounds.
 #
+# RUSTSEC-2026-0367 / 0368 / 0369 (zip 4.6.1): the ZIP extractor's one-shot
+# `extract()` — SUID/SGID bits preserved, symlink targets escaping the
+# destination directory, and Unix permissions applied through symlinks.
+#
+# WINDOWS-ONLY IN OUR GRAPH. tauri-plugin-updater 2.14 declares `zip` under
+# `[target.'cfg(target_os = "windows")'.dependencies]` (optional,
+# `version = "4"`), and the shell enables no plugin features
+# (`tauri-plugin-updater = { version = "2.14", features = [] }`), so
+# `cargo tree -i zip` on macOS prints NOTHING — the crate is not even
+# COMPILED on the platform we ship. The plugin's macOS and Linux paths
+# extract with `tar` + `flate2` (GzDecoder + tar::Archive), which is the tgz
+# the updater already ships; `zip` is only the Windows artifact path. There
+# is no Windows build and no Windows CI lane, so nothing we publish builds
+# the vulnerable code.
+#
+# The fix IS available upstream (zip >= 9.0.0), but the plugin's `zip = "4"`
+# requirement cannot reach it — 9.0.0 does not satisfy it — so the bump
+# needs a tauri-plugin-updater release first. That is the re-check trigger.
+#
 # Re-check triggers (any one → revisit these ignores):
 #   - model2vec-rs releases with hf-hub >= 0.5  (clears number_prefix)
 #   - tokenizers release without paste          (clears paste)
 #   - a real vulnerability lands against either crate (re-evaluate posture)
 #   - tauri 2.x bumps gtk ≥ 0.19 / glib ≥ 0.20  (clears RUSTSEC-2024-0429)
+#   - tauri-plugin-updater releases whose `zip` requirement reaches >= 9.0.0
+#     (clears RUSTSEC-2026-0367/0368/0369)
 #
 # Re-check with: cargo audit (exit 0 required for green CI).
 [advisories]
@@ -57,4 +78,7 @@ ignore = [
     "RUSTSEC-2024-0436", # paste — clears when tokenizers drops paste
     "RUSTSEC-2024-0429", # glib — clears when tauri bumps gtk >= 0.19 / glib >= 0.20
     "RUSTSEC-2025-0119", # number_prefix — clears when model2vec-rs ships hf-hub >= 0.5
+    "RUSTSEC-2026-0367", # zip — windows-only path in tauri-plugin-updater; the zip feature is off and no windows build ships; clears when the plugin's zip requirement reaches >= 9.0.0
+    "RUSTSEC-2026-0368", # zip — as above
+    "RUSTSEC-2026-0369", # zip — as above
 ]

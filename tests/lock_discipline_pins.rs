@@ -545,7 +545,7 @@ fn no_ignored_advisory_is_fixed_in_the_current_lock() {
         }
     }
     assert!(
-        pairs.len() >= 4,
+        pairs.len() >= 7,
         "the ignore list shrank without its register row: {} entries",
         pairs.len()
     );
