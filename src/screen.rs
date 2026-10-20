@@ -398,15 +398,20 @@ mod onnx {
         pub fn load(model_path: &str, tokenizer_path: &str) -> anyhow::Result<OnnxScorer> {
             // ort::Error is !Send/!Sync (holds raw pointers + dyn Any), so it
             // can't flow through `?` into anyhow::Result — map to a string.
-            // rc.15 removed the implicit global environment: the caller must
-            // build one and pass it. This scorer loads once per process (the
-            // `OnceLock` in `try_load`), so the local environment covers the
-            // session's whole lifetime; the builder clones it, as fastembed's
-            // own `Session::builder(&environment)` call does.
-            let environment = ort::init()
-                .build()
-                .map_err(|e| anyhow::anyhow!("ort environment: {e:?}"))?;
-            let session = Session::builder(&environment)
+            //
+            // The IMPLICIT global environment, which is what the PINNED
+            // `ort = "=2.0.0-rc.13"` provides: `Session::builder()` takes no
+            // environment there, and the explicit `EnvironmentBuilder` API
+            // arrived in rc.15. The pin is not a preference — the manifest
+            // declares `ort = "=2.0.0-rc.13"` to unify with fastembed's own
+            // exact pin, and rc.15's ONNX Runtime macOS artifact no longer
+            // links (it references `isPlatformVersionAtLeast`, which the
+            // macOS 27 SDK does not ship), so rc.15 is not reachable here.
+            //
+            // The lifetime argument is unchanged either way: this scorer
+            // loads ONCE per process (the `OnceLock` in `try_load`), so the
+            // environment's lifetime is the session's whole lifetime.
+            let session = Session::builder()
                 .map_err(|e| anyhow::anyhow!("ort session builder: {e:?}"))?
                 .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)
                 .map_err(|e| anyhow::anyhow!("ort opt level: {e:?}"))?
