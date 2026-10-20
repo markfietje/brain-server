@@ -4,6 +4,51 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — the webview's wire can reach the kernel (III-4a)
+
+**Fixed**
+
+- **The shipped app could not talk to its own kernel.** The wizard showed
+  *"Could not reach the kernel"* for a kernel that was running, healthy and
+  answering `curl` perfectly. Three defects, none visible to a drill that
+  exercises the kernel with `curl`:
+  - **CORS.** The webview's request carries `Origin: tauri://localhost`; the
+    kernel's CORS layer exact-matches origins and its default allowlist is
+    loopback dev-ports only, and the shell's spawn passed `env_clear()` + seven
+    keys with no `CORS_ORIGINS` among them — so the kernel answered the
+    webview without `access-control-allow-origin`, the browser engine blocked
+    the response, and the renderer saw a bare network failure. The e2e sets
+    `CORS_ORIGINS` for its own origin, so CI never saw the real app's case.
+    **The spawn's eighth key is now `CORS_ORIGINS`, carrying this app's own
+    origin and nothing else.**
+  - **The credential race.** The layout's `void bootstrapToken()` starts an
+    async keychain read and the route's mount effect fired its one read
+    before it resolved, so the request went out with no `Authorization`
+    header and nothing retried it. The bootstrap is now memoized and shared,
+    and the typed client's request middleware awaits it: the credential is a
+    precondition of the first read, not a race with it.
+  - **The unnamed refusal.** A blocked response, a rejected bearer and a dead
+    port all reached the renderer as one message. The Rust core now asks the
+    kernel what the webview would experience (`kernel_wire_status`) and the
+    renderer names the fault — unreachable, origin-not-allowed, no-credential,
+    unauthorized — with the remedy in the sentence.
+
+**Verified on a real bundle (2026-10-20)**
+
+- From a zero state: consent → `Continue` → the kernel starts → the wizard
+  loads **"Choose a form"** — the packs arrive on the FIRST read. The live
+  kernel's environment is exactly eight vars with
+  `CORS_ORIGINS=tauri://localhost`; it answers that origin with the
+  allow-origin and a foreign origin with none. The two refusals are named on
+  the real screen: *"The running kernel does not allow this app's origin…"*
+  and *"The running kernel rejected this app's credential…"*.
+
+**Known**
+
+- A **rebuilt** app's signature no longer matches the keychain item's ACL, so
+  macOS asks the operator to allow the access — every rebuild asks again
+  until the app has a stable signing identity (III-5's Developer ID).
+
 ## [Unreleased] — the shell's kernel contract (III-3)
 
 **New**

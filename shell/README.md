@@ -165,6 +165,10 @@ with no readable bearer refuses; the PWA bypasses without invoking Tauri.
 | A rotation reaches the RUNNING kernel | the drill (the panel wrote the keychain; the running kernel took the new token and rejected the old one — no restart) | green |
 | The bundle is staged and verified | `stage` + `tauri build` + `verify` at this round's commit | green at the tip; see below |
 | The GUI drill was performed on a real bundle | §6 manual, seven steps, read off the screen | **green — all seven steps ran** |
+| The webview's wire can reach the kernel | the spawn's 8th key (`CORS_ORIGINS=tauri://localhost`) + the drill (the wizard loaded "Choose a form" on the FIRST read) | **green — the cold start now works** |
+| The kernel allows THIS app's origin, and only it | the live kernel answers `tauri://localhost` with the allow-origin and a foreign origin with none | green |
+| The first read carries the credential | the shared, memoized bootstrap the client awaits; the drill's cold start loaded the packs | green |
+| A wire failure is NAMED, not guessed | the drill: *"The running kernel does not allow this app's origin…"* and *"The running kernel rejected this app's credential…"* | green |
 
 **Verified 2026-10-20 (second pass):** `node shell/scripts/sidecar.mjs stage`
 (`source_dirty: false`, kernel and `x-api-version` both `1.29.23`), then
@@ -193,8 +197,8 @@ bundle, driven through the accessibility API and read back off the screen.
 3. **Continue** → the sidecar starts; `curl -i` shows `x-api-version: 1.29.23`
    and `{"status":"ok","version":"1.29.23"}`; the data root is 0700,
    `brain.db` and `auth-token` are 0600; the unauthenticated `/recall` is
-   401; and the live kernel's environment is exactly the seven allowlisted
-   keys.
+   401; and the live kernel's environment is exactly the **eight** allowlisted
+   keys (the eighth is `CORS_ORIGINS` — see the next section).
 4. An orderly quit leaves **no child**; the relaunch produces exactly one
    kernel on the port.
 5. A **9.9.9 stub** in the bundle → the refusal names **both versions**
@@ -209,6 +213,66 @@ login keychain (`security find-generic-password` read it back), the running
 kernel's `<data-root>/auth-token` was rewritten, the kernel took the NEW token
 and rejected the old one with a 401 — **no restart** — and the panel said "the
 running kernel is using it now."
+
+## The webview's wire can actually reach the kernel (III-4)
+
+**The app could not talk to its own kernel.** Three defects, none of them
+visible to a drill that exercised the kernel with `curl` (no `Origin`, no
+bearer) — and none of them to the e2e, which compensates for exactly what the
+app omitted. They were found by driving the **real bundle** and reading the
+captured request off the wire.
+
+1. **CORS.** The webview's request carries `Origin: tauri://localhost` (the
+   captured request says so). The kernel's CORS layer exact-matches origins
+   and its default allowlist is loopback dev-ports only, and the shell's spawn
+   passed `env_clear()` + seven keys with **no `CORS_ORIGINS` among them** — so
+   the kernel answered the webview without `access-control-allow-origin`, the
+   browser engine blocked the response, and the app reported *"Could not reach
+   the kernel"* for a kernel that was running and healthy. The e2e sets
+   `CORS_ORIGINS` for its own origin (`e2e/global-setup.ts`), so CI never saw
+   the real app's case. **Fix:** the spawn's **eighth** key is
+   `CORS_ORIGINS`, carrying **this app's own origin and nothing else**. The
+   kernel stays loopback-bound and auth-required; the origin decides only
+   whether the *webview* may read a response, never who may call it.
+2. **The credential race.** The layout kicks the credential read off
+   (`void bootstrapToken()`), the keychain read is async, and the route's
+   mount effect fired its **one** read before it resolved: the captured
+   request was a plain `GET` with **no `Authorization` header and no
+   preflight**, against a kernel that requires one, with nothing to retry it.
+   **Fix:** the bootstrap is memoized and shared, and the typed client's
+   request middleware awaits it — the credential is a *precondition* of the
+   first read, not a race with it. Every route benefits; no route changed.
+3. **The unnamed refusal.** The browser engine reports a blocked response, a
+   rejected bearer and a dead port identically, so one message covered all
+   three. **Fix:** the Rust core asks the kernel what the webview would
+   experience (`kernel_wire_status`) and the renderer **names** the fault.
+
+The origin fact is read from the **auth-exempt** `/health` and the credential
+fact from an authenticated route, because the auth middleware sits **outside**
+the CORS layer: a 401 carries no allow-origin, so reading the origin off a
+401 would blame CORS for an authorization fault. That is measured, not
+assumed.
+
+**The drill (2026-10-20, the real bundle):** from a zero state the app asked
+for consent; `Continue` started the kernel; and the wizard loaded **"Choose a
+form"** — the packs arrived on the **first** read. The live kernel's
+environment is exactly **eight** vars (nothing inherited) with
+`CORS_ORIGINS=tauri://localhost`; it answers that origin with the
+allow-origin and a foreign origin with none. The two refusals are named on the
+real screen:
+
+- a kernel that does not allow the origin → *"The running kernel does not
+  allow this app's origin, so the browser blocked its answer. Start the
+  kernel with CORS_ORIGINS naming the shell's origin."*
+- a kernel that holds a different bearer → *"The running kernel rejected this
+  app's credential. Save the current token in Settings."*
+
+**A drill lesson, recorded because it cost the round a stuck screen:** a
+**rebuilt** app's signature no longer matches the keychain item's ACL, so
+macOS asks the operator to allow the access — and an unattended drill waits on
+that dialog forever. The grant is the operator's call; the drill's own data
+root is removed afterwards, and the operator's launchd kernel is restored
+(`launchctl bootstrap`, verified `200 OK`, `x-api-version: 1.29.21`).
 
 **Still owed, not claimed:** the first Ubuntu lane run with this lock, the
 `bundle-macos` lane's first runner execution, and the `cargo metadata --no-deps`

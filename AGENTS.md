@@ -269,6 +269,87 @@
 > UI change is three branches in the Settings panel and a DTO the core
 > already knew how to produce.
 
+> **R130 "Reachable" (Phase III-4a, 2026-10-20): the shipped app could not
+> talk to its own kernel, and every drill so far had been blind to it.**
+> Three rounds of GUI drills drove the real bundle, and the app rendered
+> correctly every time — the refusal path, the consent screen, the 0700/0600
+> law, the rotation. What none of them could see is the thing the USER
+> cannot see either: after the kernel starts, the app still cannot read a
+> single answer from it. The wizard showed *"Could not reach the kernel"* —
+> for a kernel that was running, healthy, and answering `curl` perfectly.
+>
+> **The three defects, found by reading the captured request off the wire.**
+> (1) **CORS.** The webview's request carries `Origin: tauri://localhost` —
+> captured, not assumed. The kernel's CORS layer exact-matches origins, its
+> default allowlist is loopback dev-ports only, and the shell's spawn passed
+> `env_clear()` + seven keys with **no `CORS_ORIGINS` among them** — so the
+> kernel answered the webview without `access-control-allow-origin`, the
+> browser engine blocked the response, and the renderer saw a network failure.
+> The e2e sets `CORS_ORIGINS` for its own origin (`e2e/global-setup.ts:249`),
+> so **CI compensates for exactly the step the real app omits** — which is
+> why six rounds of drills and a green e2e never saw it. The drills used
+> `curl`, which has no `Origin` and no bearer, and no CORS.
+> (2) **The credential race.** The layout kicks the credential read off
+> (`void bootstrapToken()`); the keychain read is async; the route's mount
+> effect fired its ONE read before it resolved — so the captured request was
+> a plain `GET` with **no `Authorization` header and no preflight**, against a
+> kernel that requires one, and the effect runs once, so nothing retried it.
+> (3) **The unnamed refusal.** The browser engine reports a blocked response,
+> a rejected bearer and a dead port identically, so one sentence covered all
+> three — the generic refusal this tree's own law forbids.
+>
+> **The fixes.** The spawn's **EIGHTH** key is `CORS_ORIGINS`, carrying this
+> app's own origin and nothing else: the kernel stays loopback-bound and
+> auth-required, and the origin decides only whether the *webview* may read a
+> response, never who may call it. The bootstrap is memoized and shared, and
+> the typed client's request middleware **awaits** it — the credential is a
+> precondition of the first read, not a race with it; every route benefits
+> and no route changed. And the Rust core now asks the kernel what the
+> webview would experience (`kernel_wire_status`), so the renderer **names**
+> the fault: unreachable, origin-not-allowed, no-credential, unauthorized.
+> The origin fact is read from the **auth-exempt** `/health` and the
+> credential fact from an authenticated route, because the auth middleware
+> sits **outside** the CORS layer — a 401 carries no allow-origin, so
+> reading the origin off a 401 would blame CORS for an authorization fault.
+> Measured, not assumed.
+>
+> **The drill (the real bundle, 2026-10-20).** From a zero state: consent,
+> `Continue`, the kernel starts — and the wizard loads **"Choose a form"**.
+> The packs arrived on the FIRST read. The live kernel's environment is
+> exactly **eight** vars (nothing inherited) with
+> `CORS_ORIGINS=tauri://localhost`; it answers that origin with the
+> allow-origin and a foreign origin with none. And the two refusals are named
+> on the real screen where the old build said *"Could not reach the kernel"*:
+> *"The running kernel does not allow this app's origin, so the browser blocked
+> its answer. Start the kernel with CORS_ORIGINS naming the shell's origin."*
+> and *"The running kernel rejected this app's credential. Save the current
+> token in Settings."*
+>
+> **Two lessons worth keeping, one of them cost the round a stuck screen.**
+> (a) A **rebuilt** app's signature no longer matches the keychain item's
+> ACL, so macOS asks the OPERATOR to allow the access — and an unattended
+> drill waits on that dialog forever. It is the operator's call (the user
+> entered the password); the drill's data root is removed afterwards and the
+> operator's launchd kernel is restored and verified. (b) A drill that
+> exercises the kernel with `curl` proves the KERNEL works; it says nothing
+> about whether the APP can talk to it. The wire is the browser's wire now:
+> `Origin`, `Authorization`, and the engine's own policies.
+>
+> **Still OWED, named not hidden:** the keychain re-prompt is a **stable
+> signing identity** (III-5's Developer ID) — until then every rebuild asks
+> the operator again; the first Ubuntu lane run with this lock; the
+> `bundle-macos` lane's first runner execution; III-4's updater (its
+> execution prompt is written and measured — see the plans repo), III-5 and
+> III-6; and the `cargo metadata --no-deps` conversion of the S2/S3 Cargo
+> arms.
+>
+> **ponytail:** one env key added to an allowlist that was already seven, one
+> memoized promise, one middleware await, one command, one DTO, one fault
+> enum, one new module, four i18n strings × five catalogs; no new dependency,
+> no new crate, no new plugin, no new capability, no `dangerous*` flag, no
+> route changed, no unsafe. The whole round is the difference between the
+> kernel answering and the APP being able to read the answer.
+
 > **R123 "Tally": the suite is measured, and the register says who owes.**
 > The test suite is the largest artifact in this repo and nothing had ever
 > counted what it is *made of*. `scripts/test-census.py` classifies every
