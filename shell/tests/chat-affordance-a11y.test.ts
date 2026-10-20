@@ -51,6 +51,14 @@ vi.mock('@tauri-apps/api/core', () => ({
 	})
 }));
 
+// Same construction-order law as chat-surface.test.ts: the typed client holds
+// the `fetch` it was created with, so the stub must exist before this import.
+vi.stubGlobal('__TAURI_INTERNALS__', {});
+vi.stubGlobal(
+	'fetch',
+	vi.fn(async () => new Response(JSON.stringify({ hits: [], decision: 'ok' }), { status: 200 }))
+);
+
 const chatModule = await import('../src/routes/chat/+page.svelte');
 
 const ANSWERED = {

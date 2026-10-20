@@ -283,11 +283,19 @@ function output(result: SpawnSyncReturns<string>): string {
 test('the_walker_finds_every_mach_o_by_path_not_by_line', () => {
 	const fixture = makeFixture();
 
-	// The trap, measured: two fat files produce SIX Mach-O lines.
+	// The trap, measured: macOS `file` prints a summary plus one line per slice,
+	// so two fat files produce SIX Mach-O lines. Ubuntu's `file` prints one line
+	// per fat file (two), and the census below -- not the platform's prose -- is
+	// the contract. The line-count arm is therefore macOS-only; the walker and
+	// the SET assertions still run on both.
 	const lines = execFileSync('file', [fixture.main, fixture.sidecar], { encoding: 'utf8' })
 		.split('\n')
 		.filter((line) => line.includes('Mach-O'));
-	expect(lines).toHaveLength(6);
+	if (process.platform === 'darwin') {
+		expect(lines).toHaveLength(6);
+	} else {
+		expect(lines.length).toBeGreaterThan(0);
+	}
 
 	const result = verify(fixture.bundle, fixture.staged);
 	expect(result.status).toBe(0);

@@ -62,6 +62,16 @@ vi.mock('@tauri-apps/api/core', () => ({
 	})
 }));
 
+// `client.ts` constructs the openapi-fetch client at module load and captures
+// `fetch` then. Stub BEFORE the route import: a stub installed in renderChat is
+// too late, which turns this into a live-loopback-kernel probe — green on a
+// developer box with a running kernel, `unreachable` on the Ubuntu lane.
+vi.stubGlobal('__TAURI_INTERNALS__', {});
+vi.stubGlobal(
+	'fetch',
+	vi.fn(async () => new Response(JSON.stringify({ hits: [], decision: 'ok' }), { status: 200 }))
+);
+
 const chatModule = await import('../src/routes/chat/+page.svelte');
 
 /**
