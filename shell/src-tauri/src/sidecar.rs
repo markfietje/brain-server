@@ -16,8 +16,12 @@
 //!    shell's own version and never a literal. Missing/unparseable is a
 //!    refusal (fail closed).
 //! 2. **Observed** is the `x-api-version` response header of `GET /health`;
-//!    the body's `version` must agree with it. A listener that does not
-//!    answer as a Brain kernel is `Foreign` and is never killed.
+//!    the body's `version` must agree with it. A listener that ANSWERS as
+//!    something other than a Brain kernel is `Foreign` and is never killed.
+//!    A port that is held but SILENT is `Unanswered`: it refuses at
+//!    preflight (a held port is never spawned over) and is waited for inside
+//!    the bounded start, because a kernel that has bound the port and is
+//!    still booting says nothing at all.
 //! 3. **Attach, never double-start.** A matching kernel is adopted. A
 //!    mismatch, a foreign listener or an inconsistent answer is refused
 //!    without spawning. Only `NotRunning` reaches the start path.
@@ -93,10 +97,21 @@ pub struct Probe {
     pub body_version: String,
 }
 
-/// What a single probe found. `NotRunning` is the only state that may start.
+/// What a single probe found.
+///
+/// `NotRunning` is the only state that may start. `Unanswered` (the port is
+/// held, but nothing came back inside the timeout) and `Foreign` (something
+/// ANSWERED, and it was not a Brain kernel) are two different facts and are
+/// kept apart: the plan defines `Foreign` by the shape of the ANSWER, and
+/// silence is silence. At preflight both refuse — a held port is never
+/// spawned over — but inside the bounded wait only a WRONG answer ends the
+/// wait early. A kernel that has bound the port and is still booting says
+/// nothing, and a child that died on boot says nothing either; calling both
+/// "foreign" would refuse a healthy kernel and misreport a crash.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProbeOutcome {
     NotRunning,
+    Unanswered,
     Foreign,
     Inconsistent { header: String, body: String },
     Probe(Probe),
@@ -475,11 +490,13 @@ pub fn load_provenance(path: &Path) -> Result<Provenance, ContractError> {
             "x_api_version {x_api_version} is not a semver version"
         )));
     }
-    if kernel_version != x_api_version {
-        return Err(invalid(format!(
-            "kernel_version {kernel_version} disagrees with x_api_version {x_api_version}"
-        )));
-    }
+    // NOT a rule: `kernel_version` and `x_api_version` are sealed from TWO
+    // sources (the kernel's Cargo version and the wire's openapi version) and
+    // the sealer checks each against its own source, not against the other.
+    // A skew between them is a VERSION MISMATCH, and the contract reports
+    // that — naming both versions on screen. Calling it a missing record
+    // would be false (the file is present, readable and well formed) and it
+    // would replace a named mismatch with an opaque sentence.
     Ok(Provenance {
         kernel_version,
         x_api_version,
@@ -502,9 +519,10 @@ pub fn probe(port: u16, timeout: Duration) -> ProbeOutcome {
     let request =
         format!("GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
     if stream.write_all(request.as_bytes()).is_err() {
-        // The connect succeeded, so something holds the port; it just does
-        // not speak HTTP. That is a foreign listener, never a start signal.
-        return ProbeOutcome::Foreign;
+        // The connect succeeded, so something holds the port; it just did
+        // not speak HTTP. That is SILENCE, not a wrong answer — a child that
+        // died on boot looks exactly like this.
+        return ProbeOutcome::Unanswered;
     }
 
     let mut raw = Vec::new();
@@ -514,17 +532,19 @@ pub fn probe(port: u16, timeout: Duration) -> ProbeOutcome {
         .is_err()
         && raw.is_empty()
     {
-        return ProbeOutcome::Foreign;
+        // The peer held the connection and said nothing before the timeout.
+        return ProbeOutcome::Unanswered;
     }
     if raw.is_empty() {
-        return ProbeOutcome::Foreign;
+        return ProbeOutcome::Unanswered;
     }
     parse_health(&String::from_utf8_lossy(&raw))
 }
 
 fn parse_health(raw: &str) -> ProbeOutcome {
     let Some((head, body)) = raw.split_once("\r\n\r\n") else {
-        return ProbeOutcome::Foreign;
+        // No header terminator: the answer never arrived. Not a wrong answer.
+        return ProbeOutcome::Unanswered;
     };
     let mut lines = head.split("\r\n");
     let status = lines.next().unwrap_or("");
@@ -605,6 +625,13 @@ pub fn preflight(expected: &str, outcome: ProbeOutcome, sidecar: &Path) -> Prefl
             }
         },
         ProbeOutcome::Foreign => Preflight::Refuse(ContractError::ForeignListener { port: PORT }),
+        ProbeOutcome::Unanswered => {
+            // A held port is never spawned over, whatever is holding it. The
+            // refusal is the same shape as a foreign listener's: from outside
+            // the contract, a port that does not answer as a Brain kernel is
+            // not ours to touch.
+            Preflight::Refuse(ContractError::ForeignListener { port: PORT })
+        }
         ProbeOutcome::Inconsistent { header, body } => {
             Preflight::Refuse(ContractError::InconsistentVersions { header, body })
         }
@@ -866,6 +893,15 @@ where
             ProbeOutcome::Foreign => {
                 return WaitOutcome::Refused(ContractError::ForeignListener { port: PORT });
             }
+            ProbeOutcome::Unanswered => {
+                // SILENCE is not a verdict: the child we spawned may still be
+                // booting (it binds the port before it can answer a cold
+                // start), and a child that died on boot says nothing either.
+                // Both keep the wait alive until the deadline, which is what
+                // turns a crash into a named StartTimeout instead of a false
+                // "that is not a Brain kernel".
+                last = format!("the port {BIND}:{PORT} is held but nothing answered");
+            }
             ProbeOutcome::Inconsistent { header, body } => {
                 return WaitOutcome::Refused(ContractError::InconsistentVersions { header, body });
             }
@@ -983,11 +1019,25 @@ pub fn start(app: &AppHandle, state: &KernelState, consent: bool, wait_ms: u64) 
         Ok(paths) => paths,
         Err(error) => return StatusDto::refused(error, None, false),
     };
+    start_with_paths(&paths, state, consent, wait_ms)
+}
+
+/// The start path with the paths already resolved. The Tauri edge above is
+/// the only part that knows about `AppHandle`; this is the half a pin can
+/// drive with temp directories — and the half where the ORDER of the
+/// refusals is observable: a refusal creates no data root and spawns no
+/// child, because the manifest is read before anything is written.
+pub fn start_with_paths(
+    paths: &AppPaths,
+    state: &KernelState,
+    consent: bool,
+    wait_ms: u64,
+) -> StatusDto {
     let manifest = paths.resource_dir.join(PROVENANCE_REL);
     let provenance = match load_provenance(&manifest) {
         Ok(provenance) => provenance,
         Err(error) => {
-            return StatusDto::refused(error, Some(&paths), consent_granted(&paths.config_dir));
+            return StatusDto::refused(error, Some(paths), consent_granted(&paths.config_dir));
         }
     };
     let consent = consent_granted(&paths.config_dir) || consent;
@@ -995,14 +1045,10 @@ pub fn start(app: &AppHandle, state: &KernelState, consent: bool, wait_ms: u64) 
     let outcome = probe(PORT, Duration::from_millis(PROBE_TIMEOUT_MS));
     match preflight(&provenance.x_api_version, outcome, &paths.sidecar) {
         Preflight::Attach { version } => {
-            return StatusDto::already_running(
-                &version,
-                &paths,
-                consent_granted(&paths.config_dir),
-            );
+            return StatusDto::already_running(&version, paths, consent_granted(&paths.config_dir));
         }
         Preflight::Refuse(error) => {
-            return StatusDto::refused(error, Some(&paths), consent_granted(&paths.config_dir));
+            return StatusDto::refused(error, Some(paths), consent_granted(&paths.config_dir));
         }
         Preflight::Start => {}
     }
@@ -1028,25 +1074,25 @@ pub fn start(app: &AppHandle, state: &KernelState, consent: bool, wait_ms: u64) 
         pid
     } else {
         if let Err(error) = consent_gate(&paths.config_dir, &paths.data_root, consent) {
-            return StatusDto::refused(error, Some(&paths), consent_granted(&paths.config_dir));
+            return StatusDto::refused(error, Some(paths), consent_granted(&paths.config_dir));
         }
         let token = match resolve_token() {
             Ok(token) => token,
             Err(error) => {
-                return StatusDto::refused(error, Some(&paths), consent_granted(&paths.config_dir));
+                return StatusDto::refused(error, Some(paths), consent_granted(&paths.config_dir));
             }
         };
         let auth_file = match prepare_auth_file(&paths.data_root, &token) {
             Ok(path) => path,
             Err(error) => {
-                return StatusDto::refused(error, Some(&paths), consent_granted(&paths.config_dir));
+                return StatusDto::refused(error, Some(paths), consent_granted(&paths.config_dir));
             }
         };
         let spec = command_spec(&paths.sidecar, &paths.data_root, &auth_file);
         let log = match open_log(&paths.data_root) {
             Ok(log) => log,
             Err(error) => {
-                return StatusDto::refused(error, Some(&paths), consent_granted(&paths.config_dir));
+                return StatusDto::refused(error, Some(paths), consent_granted(&paths.config_dir));
             }
         };
         let mut command = build_command(&spec);
@@ -1062,7 +1108,7 @@ pub fn start(app: &AppHandle, state: &KernelState, consent: bool, wait_ms: u64) 
                         sidecar: spec.program,
                         reason: error.to_string(),
                     },
-                    Some(&paths),
+                    Some(paths),
                     consent_granted(&paths.config_dir),
                 );
             }
@@ -1084,12 +1130,12 @@ pub fn start(app: &AppHandle, state: &KernelState, consent: bool, wait_ms: u64) 
     );
     match outcome {
         WaitOutcome::Ready { version } => {
-            StatusDto::started(&version, pid, &paths, consent_granted(&paths.config_dir))
+            StatusDto::started(&version, pid, paths, consent_granted(&paths.config_dir))
         }
         WaitOutcome::Refused(error) => {
             let report = shutdown(state);
             let mut dto =
-                StatusDto::refused(error, Some(&paths), consent_granted(&paths.config_dir));
+                StatusDto::refused(error, Some(paths), consent_granted(&paths.config_dir));
             append_kill_error(&mut dto, &report);
             dto
         }
@@ -1107,7 +1153,7 @@ pub fn start(app: &AppHandle, state: &KernelState, consent: bool, wait_ms: u64) 
             };
             let report = shutdown(state);
             let mut dto =
-                StatusDto::refused(error, Some(&paths), consent_granted(&paths.config_dir));
+                StatusDto::refused(error, Some(paths), consent_granted(&paths.config_dir));
             append_kill_error(&mut dto, &report);
             dto
         }

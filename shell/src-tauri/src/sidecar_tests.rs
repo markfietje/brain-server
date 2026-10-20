@@ -19,7 +19,8 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use super::sidecar::{
@@ -456,7 +457,6 @@ fn the_expected_version_is_the_sealed_provenance() {
     for body in [
         r#"{"kernel_version":"1.29.23","x_api_version":""}"#,
         r#"{"kernel_version":"1.29","x_api_version":"1.29"}"#,
-        r#"{"kernel_version":"1.29.23","x_api_version":"9.9.9"}"#,
         r#"{"kernel_version":"  ","x_api_version":"1.29.23"}"#,
     ] {
         fs::write(&manifest, body).expect("write malformed fixture");
@@ -472,6 +472,37 @@ fn the_expected_version_is_the_sealed_provenance() {
         sidecar::load_provenance(&scratch.path().join("absent.json")),
         Err(ContractError::MissingProvenance { .. })
     ));
+
+    // A record whose two sealed fields DISAGREE is not a broken record. The
+    // sealer checks `kernel_version` against the kernel's Cargo version and
+    // `x_api_version` against the wire's openapi version, each against its own
+    // source — it does not require the two to be equal. So the shell reads
+    // the record, takes `x_api_version` as the expectation, and lets the
+    // contract report the skew as the NAMED mismatch it is.
+    fs::write(
+        &manifest,
+        r#"{"kernel_version":"1.29.23","x_api_version":"9.9.9"}"#,
+    )
+    .expect("write skewed fixture");
+    let skewed = sidecar::load_provenance(&manifest).expect("a skewed record still parses");
+    assert_eq!(skewed.kernel_version, "1.29.23");
+    assert_eq!(skewed.x_api_version, "9.9.9");
+    let decision = sidecar::decide(
+        &skewed.x_api_version,
+        &Probe {
+            api_version: "1.29.23".to_string(),
+            body_version: "1.29.23".to_string(),
+        },
+    );
+    match &decision {
+        Decision::Mismatch { expected, observed } => {
+            assert_eq!(expected, "9.9.9");
+            assert_eq!(observed, "1.29.23");
+            let text = decision.to_string();
+            assert!(text.contains("9.9.9") && text.contains("1.29.23"));
+        }
+        other => panic!("a skewed record must be a named mismatch, got {other:?}"),
+    }
 
     // The expected version's source is the MANIFEST, never the shell's own
     // package.json. The needle is assembled so the scan cannot match itself.
@@ -540,6 +571,200 @@ fn the_shell_adds_no_http_client() {
     for dependency in ["reqwest", "ureq", "hyper"] {
         assert!(!source.contains(dependency));
     }
+}
+
+// ── the second pass: silence, attach, and the refusals that write nothing ──
+
+/// P13 — a kernel that binds the port BEFORE it can answer is still a kernel.
+/// The probe's 300 ms timeout sees an empty socket, which is silence, not a
+/// wrong answer: the bounded wait must keep waiting for it instead of
+/// refusing it as a foreign listener and killing the child it just spawned.
+#[test]
+fn a_kernel_that_answers_after_the_probe_timeout_is_waited_for() {
+    const ANSWER: &str = concat!(
+        "HTTP/1.1 200 OK\r\n",
+        "x-api-version: 1.29.23\r\n",
+        "Connection: close\r\n\r\n",
+        "{\"status\":\"ok\",\"version\":\"1.29.23\"}"
+    );
+
+    // The stub accepts the first connection and holds it silent past the
+    // probe's timeout (the boot), then answers every later request.
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("stub binds loopback");
+    listener
+        .set_nonblocking(true)
+        .expect("the stub listens without blocking");
+    let port = listener.local_addr().expect("stub address").port();
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = std::thread::spawn(move || {
+        let stop = server_stop;
+        let mut first = true;
+        while !stop.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut request = [0u8; 1024];
+                    let _ = stream.read(&mut request);
+                    if first {
+                        first = false;
+                        std::thread::sleep(Duration::from_millis(600));
+                        continue;
+                    }
+                    let _ = stream.write_all(ANSWER.as_bytes());
+                }
+                Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => return,
+            }
+        }
+    });
+
+    let outcome = sidecar::wait_bounded(
+        || sidecar::probe(port, Duration::from_millis(300)),
+        "1.29.23",
+        5_000,
+        200,
+    );
+    stop.store(true, Ordering::Relaxed);
+    server.join().ok();
+    match outcome {
+        WaitOutcome::Ready { version } => assert_eq!(version, "1.29.23"),
+        other => panic!("a late answer must be waited for, got {other:?}"),
+    }
+
+    // Anti-vacuity: a WRONG answer still ends the wait at once. Silence is
+    // the only thing that is waited through.
+    let (port, server) = stub(concat!(
+        "HTTP/1.1 200 OK\r\n",
+        "x-api-version: 9.9.9\r\n",
+        "Connection: close\r\n\r\n",
+        "{\"status\":\"ok\",\"version\":\"9.9.9\"}"
+    ));
+    let started = Instant::now();
+    let outcome = sidecar::wait_bounded(
+        || sidecar::probe(port, Duration::from_millis(300)),
+        "1.29.23",
+        5_000,
+        200,
+    );
+    server.join().expect("stub thread");
+    assert!(
+        matches!(
+            outcome,
+            WaitOutcome::Refused(ContractError::VersionMismatch { .. })
+        ),
+        "a wrong answer must refuse, got {outcome:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+/// P14 — a port that is held but SILENT is never spawned over. The refusal is
+/// the same shape as a foreign listener's, because from outside the contract
+/// a port that does not answer as a Brain kernel is not ours to touch.
+#[test]
+fn a_silent_listener_is_refused_before_any_start() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("stub binds loopback");
+    listener
+        .set_nonblocking(true)
+        .expect("the stub listens without blocking");
+    let port = listener.local_addr().expect("stub address").port();
+    let stop = Arc::new(AtomicBool::new(false));
+    let silent_stop = stop.clone();
+    let silent = std::thread::spawn(move || {
+        let stop = silent_stop;
+        let mut held = Vec::new();
+        while !stop.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => held.push(stream),
+                Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => return,
+            }
+        }
+    });
+
+    let outcome = sidecar::probe(port, Duration::from_millis(200));
+    assert_eq!(outcome, ProbeOutcome::Unanswered);
+    stop.store(true, Ordering::Relaxed);
+    silent.join().ok();
+
+    let scratch = Scratch::new("silent");
+    let present = scratch.path().join("brain-server");
+    fs::write(&present, b"stub").expect("write stub binary");
+    match sidecar::preflight("1.29.23", outcome, &present) {
+        Preflight::Refuse(ContractError::ForeignListener { port: seen }) => {
+            assert_eq!(seen, PORT);
+        }
+        other => panic!("a held port must refuse, got {other:?}"),
+    }
+}
+
+/// P15 — attach, never double-start. A matching running kernel is adopted
+/// even when the bundled binary is absent (the shell does not need the bundle
+/// to attach), and a DIFFERENT version is refused rather than adopted or
+/// spawned over.
+#[test]
+fn a_matching_kernel_is_attached_and_never_respawned() {
+    let scratch = Scratch::new("attach");
+    let absent = scratch.path().join("absent");
+
+    match sidecar::preflight(
+        "1.29.23",
+        ProbeOutcome::Probe(Probe {
+            api_version: "1.29.23".to_string(),
+            body_version: "1.29.23".to_string(),
+        }),
+        &absent,
+    ) {
+        Preflight::Attach { version } => assert_eq!(version, "1.29.23"),
+        other => panic!("a matching kernel must be attached, got {other:?}"),
+    }
+
+    match sidecar::preflight(
+        "1.29.23",
+        ProbeOutcome::Probe(Probe {
+            api_version: "9.9.9".to_string(),
+            body_version: "9.9.9".to_string(),
+        }),
+        &absent,
+    ) {
+        Preflight::Refuse(ContractError::VersionMismatch { expected, observed }) => {
+            assert_eq!(expected, "1.29.23");
+            assert_eq!(observed, "9.9.9");
+        }
+        other => panic!("a differing kernel must refuse, got {other:?}"),
+    }
+}
+
+/// P16 — a refusal writes NOTHING. The start path reads the sealed manifest
+/// before it creates anything, so a missing record leaves no data root, no
+/// consent marker and no child.
+#[test]
+fn a_refused_start_creates_no_data_root_and_spawns_nothing() {
+    let scratch = Scratch::new("start-refusal");
+    let paths = sidecar::AppPaths {
+        // No manifest inside: the resource dir is empty.
+        resource_dir: scratch.path().join("resources"),
+        data_root: scratch.path().join("kernel"),
+        config_dir: scratch.path().join("config"),
+        sidecar: scratch.path().join("brain-server"),
+    };
+    let state = KernelState::default();
+
+    let dto = sidecar::start_with_paths(&paths, &state, true, 200);
+    assert_eq!(dto.state, "refused");
+    assert_eq!(dto.kind.as_deref(), Some("missingProvenance"));
+    assert!(!paths.data_root.exists(), "a refusal created the data root");
+    assert!(
+        !paths.config_dir.exists(),
+        "a refusal wrote the consent config directory"
+    );
+    assert!(
+        state.child.lock().expect("child lock").is_none(),
+        "a refusal spawned a child"
+    );
 }
 
 // ── D5's token law ─────────────────────────────────────────────────────────
