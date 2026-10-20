@@ -4,6 +4,68 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.24] — 2026-10-20 — the updater ships with a pinned key, and the review queue stops being the agent's to read
+
+The macOS shell can now update itself, and the update path refuses in three
+distinct, named ways rather than one vague one. A release is fetched over
+HTTPS, its signature is checked against the one public key pinned in the app's
+own configuration, and the offered build must also name the kernel version
+this machine is actually running. A wrong key, an unknown kernel version and an
+unreachable endpoint are three different outcomes, and none of them is ever
+reported as "you are up to date". There is no path, anywhere, to change that
+pinned key at runtime.
+
+Alongside it, the agent's own credential stopped being able to read the
+human review queue. The queue is the operator's decision surface — what a
+person has not yet blessed — so the shared view of it now takes the
+reviewer's capability, while a principal's own scoped view is untouched. The
+console's own shape (the role table, the domain census) became a separate
+permission, granted per role as data rather than by a hardcoded exception.
+
+Captures also stopped being written straight into memory: they are queued for
+human review, and channel-originated captures no longer reach a recall. The
+agent's credential is scoped to one domain instead of every domain in the
+corpus.
+
+### Release notes
+
+**New**
+
+- The macOS shell updates itself. A published release is fetched over HTTPS,
+  its minisign signature is checked against the single public key pinned in
+  the app's own configuration, and the offered build must name the kernel
+  version this machine is running. A wrong key, an unknown kernel version and
+  an unreachable endpoint are three distinct, named outcomes — and an update
+  that is refused leaves the installed version untouched and says so.
+- The shipped app can now read its own kernel's answers. The kernel sidecar
+  is started with this app's own origin in its allowlist, and a rejected
+  credential is named as a rejected credential rather than as an unreachable
+  kernel.
+
+**Improvements**
+
+- The agent's credential can no longer read the human review queue, the role
+  table or the domain census. Reading the shared review queue takes the
+  reviewer's capability; a principal's own view of its own queue is
+  unchanged. The console's own shape is a separate permission, granted per
+  role as data rather than by a special case for one class of caller.
+- Captures are queued for human review instead of being written straight into
+  long-term memory, and captures that came from a channel are excluded from
+  recall rather than merely labelled.
+- The agent's credential is scoped to a single domain instead of every domain
+  the corpus happens to contain.
+
+**Bug fixes**
+
+- The macOS on-device measurement probe now skips, and prints why, where the
+  machine cannot run the model. Previously the request threw on a runner that
+  has the framework but no entitlement, and the build failed on it.
+- The dependency audit no longer fails on a Windows-only archive path that is
+  not built on any platform this project publishes. The measurement and the
+  condition that would make the exemption stale are recorded with it.
+- The optional prompt-classifier tier compiles again against the pinned
+  inference runtime, and the macOS build links again.
+
 ## [Unreleased] — the updater: where the bytes come from, and whose they are (III-4)
 
 **Added**
