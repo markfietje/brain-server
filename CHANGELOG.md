@@ -14,7 +14,7 @@ moved; the only kernel-code change is the structural pin over `release.sh`.
 
 ### Release notes
 
-**Added**
+**New**
 
 - The shell's kernel bearer has one persistent home: a login-keychain generic
   password (service `app.brain.shell/token`, account `default`), read before
@@ -57,7 +57,7 @@ moved; the only kernel-code change is the structural pin over `release.sh`.
   anti-shortcut bound, and why the plausible strengthening
   `firstFragmentAtMs > 0` is false about the machine.
 
-**Fixed**
+**Bug fixes**
 
 - `shell/src/lib/api/schema.d.ts` is regenerated with `pnpm gen:api` after
   v1.29.22's contract edits left it stale; the committed bytes match the drift
@@ -65,10 +65,10 @@ moved; the only kernel-code change is the structural pin over `release.sh`.
 
 **Owed, not claimed**
 
-- The app-level keychain acceptance (bundle → Settings → save a sentinel →
-  quit → relaunch → configured → Clear) needs GUI interaction and remains
-  owed. The shell's Ubuntu and `bundle-macos` lanes are dispatched against this
-  tag; their verdict is the runner's, not this file's.
+The app-level keychain acceptance (bundle → Settings → save a sentinel → quit →
+relaunch → configured → Clear) needs GUI interaction and remains owed. The
+shell's Ubuntu and `bundle-macos` lanes are dispatched against this tag; their
+verdict is the runner's, not this file's.
 
 ## [1.29.22] — 2026-10-19 — the outage, and the pin that cried wolf
 
