@@ -4,6 +4,51 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — the shell's kernel contract (III-3)
+
+**New**
+
+- The macOS shell's kernel contract: detect, start, refuse. `sidecar.rs` reads
+  the expected version from the bundle's sealed
+  `SIDECAR_PROVENANCE.json`, probes `GET /health` over a raw
+  `std::net::TcpStream` (the `x-api-version` header must agree with the body),
+  attaches to a matching running kernel, and refuses a mismatch, a foreign
+  listener, an inconsistent answer, a missing sidecar/provenance, an
+  unusable keychain or an insecure auth file. Only `NotRunning` reaches a
+  spawn; only a child this process created is killed.
+- `KernelGate` sits above the app chrome: a first run asks for storage
+  consent (data root named, local-only, 0700/0600 law, Cancel leaves no
+  directory), a recorded consent starts without the dialog, and every refusal
+  names both versions or the binary/timeout. The PWA continues to bypass the
+  gate: its serving origin owns the wire.
+- Start is bounded in Rust (10 s, 200 ms polls, 300 ms per probe) with
+  `env_clear()` + a seven-key allowlist (`BIND_HOST=127.0.0.1`,
+  `BIND_PORT=8765`, `BRAIN_DATA_ROOT`, `BRAIN_DB_PATH`, `AUTH_TOKEN_FILE`,
+  `BRAIN_REQUIRE_AUTH=1`, `RUST_LOG=warn`); no argv, no `sh -c`, no
+  `tauri-plugin-shell`, no HTTP client dependency.
+
+**Changed**
+
+- `shell/src-tauri/src/lib.rs` manages `KernelState`, registers
+  `kernel_status`/`kernel_start`, and switches to `App::run` so
+  `RunEvent::Exit` can kill the spawned sidecar. The module comment now
+  records the one fs/process reversal rather than claiming "no fs, no
+  process".
+- 31 gate strings added to all five catalogs (en/de/fr/es/nl); the parity pin
+  holds at 310 keys.
+
+**Owed, not claimed**
+
+- The manual GUI drill on a real bundle (consent/Cancel/Continue, curl header,
+  quit leaves no child, `9.9.9` mismatch, SIGKILL restart, foreign listener)
+  was not run unattended.
+- Settings token rotation writes the keychain but does not update a RUNNING
+  sidecar's `<data-root>/auth-token`; the kernel's mtime watcher is not fed
+  until restart.
+- `S2`/`S3`'s Cargo arms are text scans (a comment naming `reqwest` turns them
+  red); the behavioral conversion is a `cargo metadata --no-deps` dependency
+  check. Recorded in the gate-law register.
+
 ## [1.29.23] — 2026-10-20 — the shell joins the release line, and the drift gate moves in front of the tag
 
 Eight commits after v1.29.22: the Phase III shell groundwork (the transport

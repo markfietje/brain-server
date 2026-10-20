@@ -85,6 +85,74 @@ typed `{action,id,version,row_digest,row}` contract and the required
 server-issued `row_digest` on the single-row detail response. M6-S2 remains
 unbuilt.
 
+## The kernel contract on the user's machine (III-3)
+
+The macOS bundle carries a kernel sidecar, and the shell owns exactly three
+edges around it: **detect**, **start**, **refuse**. The gate (`KernelGate`)
+sits ABOVE the chrome: a refusal renders no nav and no app content.
+
+- **Expected = the sealed provenance.** `x_api_version` is read from
+  `Contents/Resources/binaries/SIDECAR_PROVENANCE.json` inside the bundle,
+  never from `package.json` and never from the shell's own version. A missing
+  or unparseable record is `MissingProvenance`, never "unknown → allow".
+- **Detect is a raw loopback probe.** `GET /health` over `std::net::TcpStream`
+  (300 ms connect/read), parsing the `x-api-version` response header and the
+  JSON body. The body's `version` must equal the header. A 200 without the
+  header is a foreign listener; it is never killed and never adopted.
+- **Start is bounded in Rust.** Consent → token → auth file → spawn → wait
+  at most 10 s (200 ms polls). The webview never owns the wait. A timeout
+  kills the child this process spawned and names the binary, the data root,
+  the wait and the last error.
+- **Attach, never double-start.** A running kernel with the expected version
+  is adopted. A mismatch, a foreign listener or an inconsistent answer is a
+  refusal: no spawn, no second port, no kill.
+- **Env allowlist, no shell.** `env_clear()` + `BIND_HOST=127.0.0.1`,
+  `BIND_PORT=8765`, `BRAIN_DATA_ROOT`, `BRAIN_DB_PATH`, `AUTH_TOKEN_FILE`,
+  `BRAIN_REQUIRE_AUTH=1`, `RUST_LOG=warn`; no argv, no `sh -c`, no inherited
+  operator credentials. The auth token is the shell's own (keychain →
+  `BRAIN_SHELL_TOKEN`); it is never logged and never enters a DTO.
+- **Paths and modes (macOS).** Data root `~/Library/Application
+  Support/app.brain.shell/kernel` (0700); consent marker `~/Library/
+  Application Support/app.brain.shell/consent-v1.json` (0600, OUTSIDE the
+  data root); `auth-token` and `brain-server.log` 0600; the kernel's
+  `brain.db` is 0600. Consent Cancel returns before the data root is created.
+- **Exit.** `RunEvent::Exit` kills only the child this process spawned; an
+  attached kernel is not ours to stop.
+
+The gate's UI pins drive the state machine at the IPC seam: a refusal renders
+no children; consent Cancel never calls `kernel_start`; Continue calls it once
+with `consent: true`; a recorded consent starts without the dialog; a start
+with no readable bearer refuses; the PWA bypasses without invoking Tauri.
+
+| Claim | Evidence | Verdict |
+|---|---|---|
+| Detect reads the kernel's version surface | P1–P3 + the real-sidecar curl (`x-api-version: 1.29.23`, body `{"status":"ok","version":"1.29.23"}`) | green |
+| Start is bounded | P4 + P8 + the 10 s/200 ms/300 ms constants | green |
+| A mismatch/foreign/timeout is named and blocks the app | P1–P3, P11, the drill list below | green locally; GUI OWED |
+| Consent refused ⇒ no data directory | P5 | green |
+| Data is private: 0700 root, 0600 auth/DB | P6/P7 + the curl run's `stat` | green |
+| No orphan: the child is killed on exit | P10 | green |
+| Expected is the sealed provenance, not `package.json` | S1 + S4 | green |
+| No shell plugin / no new HTTP client | S2/S3 | green (text scans; see the register) |
+| The bundle is staged and verified | `stage` at `2ae4462d`, `source_dirty: false`; `verify` on the built bundle | recorded below |
+| The GUI drill was performed on a real bundle | §6 manual, seven steps | **OWED unless run** |
+
+**Verified 2026-10-20:** `stage` at `2ae4462d` (`source_dirty: false`, kernel and
+`x-api-version` both `1.29.23`), then
+`pnpm --dir shell tauri build --bundles app --target universal-apple-darwin`
+(48.82 MiB) and
+`node shell/scripts/sidecar.mjs verify "…/Brain Shell.app"` →
+`ok — bundle seal, 2 Mach-O files, hardened runtime, arch parity [x86_64
+arm64], provenance 1.29.23 @ 2ae4462dceb8`.
+
+**OWED (not claimed):** the manual GUI drill on a real bundle — consent
+screen, Cancel leaves no data root, Continue starts, `curl -i` shows the
+header, quit leaves no child, a `9.9.9` stub names both versions, SIGKILL
+restart, and a foreign listener refusal — needs a GUI session and was not run
+unattended. Also OWED: the Settings token rotation writes the keychain but
+does not update a RUNNING sidecar's `<data-root>/auth-token`; the kernel's
+mtime watcher is not fed until the app is restarted.
+
 ## CI and supply-chain boundary
 
 Shell CI runs from a clean checkout on `shell/**`, `openapi.yaml`, the canonical

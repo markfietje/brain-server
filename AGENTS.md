@@ -1,5 +1,70 @@
 # Agent Execution Log — brain-server
 
+> **R127 "Kernel Contract" (Phase III-3, 2026-10-20): the shell's
+> detect · start · refuse, pinned before it starts.** The macOS bundle now
+> owns its kernel's lifecycle: `shell/src-tauri/src/sidecar.rs` reads the
+> expected version from the sealed `SIDECAR_PROVENANCE.json` (never
+> `package.json`), probes `GET /health` over a raw `TcpStream`, attaches to a
+> matching kernel, and refuses a mismatch/foreign listener/inconsistent
+> answer/missing sidecar/provenance/keychain/insecure auth file. Only
+> `NotRunning` reaches a spawn; only the child this process created is killed
+> on `RunEvent::Exit`. `KernelGate` sits above the chrome, so a refusal
+> renders no nav and no app content; the PWA still bypasses. The spawn is
+> `current_exe().parent()/brain-server` with `env_clear()` + seven keys; the
+> wait is 10 s in Rust (200 ms polls, 300 ms probes); consent is a 0600 marker
+> OUTSIDE the 0700 data root; `auth-token` and the log are 0600.
+>
+> **Twelve drills run, every one reverted; the failing text:**
+> P1 expected→observed `left: Mismatch { expected: "9.9.9", observed:
+> "9.9.9" }`; P2 parser trusts the body `left: Probe(Probe { api_version:
+> "1.0.0", body_version: "2.0.0" })`; P3 accepts a headerless 200 `left:
+> Probe(...) right: Foreign`; P4 deadline removed **HUNG** and was killed
+> after 12 s (no text — the hang is the red); P5 create above the gate `a
+> refusal created the data root`; P6 chmod removed `the data root is not
+> owner-only` (0755); P7 silently chmodding `a 0644 auth file must refuse,
+> got Ok(...)`; P8 `BIND_HOST=0.0.0.0` `left: Some("0.0.0.0") right:
+> Some("127.0.0.1")`; P9 wrong subdir `.../Contents/MacOS/Resources/
+> brain-server`; P10 kill dropped `shutdown waited 5.005256875s; the child
+> was not killed`; P11 children on refusal `expected <p
+> data-testid="host-content"></p> to be null`; P12a start-on-mount never
+> rendered the consent dialog (Cancel had no button); P12b `consent: false`
+> `expected { consent: false } to deeply equal { consent: true }`.
+> S1 package.json fallback `sidecar.rs must not read package.json`; S2 a
+> comment naming the plugin `the shell plugin must not be a dependency`;
+> S3 a comment naming reqwest `an HTTP client edge was added: reqwest`; S4
+> hand-edited version `provenance kernel_version: record 9.9.9 != Cargo.toml
+> 1.29.23`.
+>
+> **Two findings worth keeping.** (1) `let state = $state(...)` is a
+> svelte-check RED: svelte2tsx reads `$state` as the store subscription of a
+> variable named `state` (`Block-scoped variable '$state' used before its
+> declaration`), so the gate's variable is `gate`; the component still uses
+> runes normally. (2) S2/S3 are TEXT scans — a comment naming `reqwest` turns
+> them red. A real `shell:default` grant is refused EARLIER by the Tauri
+> build script (`Permission shell:default not found`), a stronger witness;
+> the `cargo metadata --no-deps` conversion is owed in the register, not
+> claimed. P10's first pin only asserted "no process", which a bare `wait()`
+> satisfies after the sleeper exits; it now bounds the call at 2 s.
+>
+> **OWED, not green:** the seven-step GUI drill (consent/Cancel/Continue,
+> curl, quit leaves no child, 9.9.9 stub, SIGKILL restart, foreign listener)
+> needs a GUI session and was not run unattended. The Settings rotation
+> writes the keychain but does not update a RUNNING sidecar's
+> `<data-root>/auth-token`; the kernel's mtime watcher is not fed until
+> restart. III-2's app-level keychain drill remains OWED. The bundle stage ran
+> at `2ae4462d` (`source_dirty: false`, `1.29.23`); the staged aarch64 binary
+> answered a real curl with `x-api-version: 1.29.23` and body
+> `{"status":"ok","version":"1.29.23"}`, and the 0700/0600 modes were
+> measured. The plan's `verify --bundle <path>` spelling is wrong — the
+> script's real form is `verify <bundle> [--staged <dir>]`; the bundle built
+> (48.82 MiB) and verified: `ok — bundle seal, 2 Mach-O files, hardened
+> runtime, arch parity [x86_64 arm64], provenance 1.29.23 @ 2ae4462dceb8`.
+>
+> **ponytail:** one Rust module, one test module, one component, one UI test
+> file; no new dependency, no new crate, no second transport, no shell
+> plugin, no unsafe; the 31 strings ride the existing five catalogs and the
+> parity pin; the register row is the deliverable, not a framework.
+
 > **R123 "Tally": the suite is measured, and the register says who owes.**
 > The test suite is the largest artifact in this repo and nothing had ever
 > counted what it is *made of*. `scripts/test-census.py` classifies every
