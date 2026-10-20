@@ -132,6 +132,16 @@ sits ABOVE the chrome: a refusal renders no nav and no app content.
   `brain.db` is 0600. Consent Cancel returns before the data root is created.
 - **Exit.** `RunEvent::Exit` kills only the child this process spawned; an
   attached kernel is not ours to stop.
+- **A rotation reaches the running kernel.** The login keychain holds the
+  shell's bearer; a RUNNING kernel reads its bearer from
+  `<data-root>/auth-token`, and the kernel's `TokenStore` reloads that file
+  when the path's mtime advances. So the Settings save writes the keychain
+  **and** rotates that file — atomically (a 0600 temp file, fsynced, then
+  renamed over the target, so a reader never sees a half-written token) —
+  and it says what happened: the panel reports "the running kernel is using
+  it now", or that the kernel has not started yet, or that the running
+  kernel was **not** updated. It never reports "saved" for a rotation that
+  did not reach the kernel.
 
 The gate's UI pins drive the state machine at the IPC seam: a refusal renders
 no children; consent Cancel never calls `kernel_start`; Continue calls it once
@@ -146,14 +156,15 @@ with no readable bearer refuses; the PWA bypasses without invoking Tauri.
 | A held port is never spawned over | P14 (a silent holder refuses at preflight) | green |
 | A matching kernel is attached, never respawned | P15 (attached even with the binary absent; a differing one refuses) | green |
 | A refusal writes nothing | P5 + P16 (no data root, no consent marker, no child) | green |
-| A mismatch/foreign/timeout is named and blocks the app | P1–P3, P11, the drill list below | green locally; GUI OWED |
-| Consent refused ⇒ no data directory | P5 | green |
-| Data is private: 0700 root, 0600 auth/DB | P6/P7 + the curl run's `stat` | green |
-| No orphan: the child is killed on exit | P10 | green |
+| A mismatch/foreign/timeout is named and blocks the app | P1–P3, P11, the drill list below | green locally; GUI drill green |
+| Consent refused ⇒ no data directory | P5 + P16 + the drill (Cancel pressed on the real screen) | green |
+| Data is private: 0700 root, 0600 auth/DB | P6/P7 + the drill's `stat` | green |
+| No orphan: the child is killed on exit | P10 + the drill (an orderly quit left no child) | green |
 | Expected is the sealed provenance, not `package.json` | S1 + S4 | green |
 | No shell plugin / no new HTTP client | S2/S3 | green (text scans; see the register) |
+| A rotation reaches the RUNNING kernel | the drill (the panel wrote the keychain; the running kernel took the new token and rejected the old one — no restart) | green |
 | The bundle is staged and verified | `stage` + `tauri build` + `verify` at this round's commit | green at the tip; see below |
-| The GUI drill was performed on a real bundle | §6 manual, seven steps | **OWED unless run** |
+| The GUI drill was performed on a real bundle | §6 manual, seven steps, read off the screen | **green — all seven steps ran** |
 
 **Verified 2026-10-20 (second pass):** `node shell/scripts/sidecar.mjs stage`
 (`source_dirty: false`, kernel and `x-api-version` both `1.29.23`), then
@@ -171,13 +182,37 @@ staged and built AGAIN at the branch's tip, after this section: `verify` is
 green there too, and that build's record names the tip's own commit, because
 a record names the commit it was built from.
 
-**OWED (not claimed):** the manual GUI drill on a real bundle — consent
-screen, Cancel leaves no data root, Continue starts, `curl -i` shows the
-header, quit leaves no child, a `9.9.9` stub names both versions, SIGKILL
-restart, and a foreign listener refusal — needs a GUI session and was not run
-unattended. Also OWED: the Settings token rotation writes the keychain but
-does not update a RUNNING sidecar's `<data-root>/auth-token`; the kernel's
-mtime watcher is not fed until the app is restarted.
+**The GUI drill, performed (2026-10-20):** all seven steps ran on this real
+bundle, driven through the accessibility API and read back off the screen.
+
+1. With the data root and the consent marker removed, the consent screen
+   appears: "Start the local kernel?", the local-only sentence, the 0700/0600
+   law, the data folder named, Continue and Cancel.
+2. **Cancel** → no data root, no marker, no kernel; the blocked screen says
+   "The kernel was not started and no data folder was created."
+3. **Continue** → the sidecar starts; `curl -i` shows `x-api-version: 1.29.23`
+   and `{"status":"ok","version":"1.29.23"}`; the data root is 0700,
+   `brain.db` and `auth-token` are 0600; the unauthenticated `/recall` is
+   401; and the live kernel's environment is exactly the seven allowlisted
+   keys.
+4. An orderly quit leaves **no child**; the relaunch produces exactly one
+   kernel on the port.
+5. A **9.9.9 stub** in the bundle → the refusal names **both versions**
+   ("Expected version 1.29.23", "Reported version 9.9.9"), renders no app
+   content, and our own spawned child is killed.
+6. `SIGKILL` the sidecar → the relaunch has it back in **1 s**.
+7. A **foreign listener** on 8765 → refused, **not stopped**, and no second
+   kernel is spawned.
+
+The rotation was measured in the same session: the Settings Save wrote the
+login keychain (`security find-generic-password` read it back), the running
+kernel's `<data-root>/auth-token` was rewritten, the kernel took the NEW token
+and rejected the old one with a 401 — **no restart** — and the panel said "the
+running kernel is using it now."
+
+**Still owed, not claimed:** the first Ubuntu lane run with this lock, the
+`bundle-macos` lane's first runner execution, and the `cargo metadata --no-deps`
+conversion of the S2/S3 Cargo arms (they are text scans today).
 
 ## CI and supply-chain boundary
 

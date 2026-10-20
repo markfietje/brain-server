@@ -56,18 +56,34 @@ are consistent at that tag.
 - **Two of the round's own laws get their pins:** a matching kernel is
   attached rather than respawned (even with the bundled binary absent), and a
   refused start writes nothing — no data root, no consent marker, no child.
+- **The Settings rotation now reaches the running kernel.** The login
+  keychain holds the shell's bearer, but a running kernel reads its bearer
+  from `<data-root>/auth-token`, so saving a token to the keychain alone left
+  the kernel on the old token until a restart. The save rotates that file
+  too — atomically (a 0600 temp file, fsynced, then renamed over the target,
+  so the kernel's mtime watcher sees it and no reader sees a half-written
+  token) — and the panel reports what happened: the running kernel is using
+  it, the kernel has not started yet, or the running kernel was **not**
+  updated. It no longer reports "saved" for a rotation that did not land.
 - The bundle is re-staged, rebuilt and re-verified at this round's tip: the
   sealer checks the record's commit against the tree's HEAD, so a bundle
   staged before the round's own commits is stale at the tip.
 
+**Verified on a real bundle (2026-10-20):** the seven-step GUI drill ran
+end-to-end — the consent screen, Cancel leaving no data root, Continue
+starting the sidecar (`x-api-version: 1.29.23`, the body agreeing; the data
+root 0700, `brain.db`/`auth-token` 0600; the unauthenticated `/recall` 401;
+the live kernel's environment exactly the seven allowlisted keys), an orderly
+quit leaving no child, a `9.9.9` stub producing a refusal that names both
+versions with no app content, a SIGKILLed sidecar back in 1 s, and a foreign
+listener refused without being stopped. The rotation was measured in the same
+session: the running kernel took the new token and rejected the old one, with
+no restart.
+
 **Owed, not claimed**
 
-- The manual GUI drill on a real bundle (consent/Cancel/Continue, curl header,
-  quit leaves no child, `9.9.9` mismatch, SIGKILL restart, foreign listener)
-  was not run unattended.
-- Settings token rotation writes the keychain but does not update a RUNNING
-  sidecar's `<data-root>/auth-token`; the kernel's mtime watcher is not fed
-  until restart.
+- The first Ubuntu lane run with this lock, and the `bundle-macos` lane's
+  first runner execution.
 - `S2`/`S3`'s Cargo arms are text scans (a comment naming `reqwest` turns them
   red); the behavioral conversion is a `cargo metadata --no-deps` dependency
   check. Recorded in the gate-law register.

@@ -179,6 +179,96 @@
 > contract's new fact is a distinction BETWEEN two refusals the gate
 > already had.
 
+> **R129 "Rotation" (Phase III-3c, 2026-10-20): the two OWED items are
+> closed, and one of them closes another round's OWED with it.** R127 left
+> two: plan §4.7's Settings sync (the keychain held the token; the RUNNING
+> kernel read its bearer from `<data-root>/auth-token`, so a rotation left
+> the kernel on the old token until a restart) and the seven-step GUI drill.
+> III-2's app-level keychain acceptance was a third, borrowed from R127.
+>
+> **The rotation.** `store_kernel_token` now writes the keychain AND
+> rotates the kernel's token file, and it says what happened: the outcome
+> (rotated / no data root yet / failed) reaches the Settings panel, which
+> no longer reports "saved" for a rotation that did not reach the kernel.
+> The write is **atomic** — a 0600 temp file, fsynced, then **renamed**
+> over the target — for two reasons the kernel's own code decides: its
+> `auth::TokenStore` watches the PATH's mtime, so the rename is seen
+> (and a rotation is live **without** a restart, which is stronger than
+> §4.7 assumed), and because a rename is atomic, a reader can never
+> observe a half-written token, which an in-place truncate would. The
+> mode law holds before and after; a rotation before the consent gate
+> creates nothing. Six pins: `a_rotation_writes_the_running_kernels_auth_
+> file`, `a_rotation_before_consent_creates_nothing`, `a_rotation_refuses_
+> a_world_readable_auth_file`, `a_rotation_replaces_the_token_file_
+> atomically`, `the_settings_reports_that_the_running_kernel_took_the_
+> token`, `a_rotation_that_failed_is_not_reported_as_saved`. All six
+> red-proved: P17 `the rotation must write the kernel's token file, got
+> Ok(NoDataRoot)`; P18 `a rotation created the data root`; P19 `a 0644 auth
+> file must refuse the rotation, got Ok(Rotated { path: … })`; P20 `the
+> token file was rewritten in place; a reader could see a partial token`
+> (`left: 243289144 right: 243289144` — the same inode, which is the whole
+> point); P21 `Unable to find an element with the text: Token saved to the
+> login keychain, and the running kernel is using it now.`; P22 `Unable
+> to find an element with the text: /the running kernel was not
+> updated/.`
+>
+> **The GUI drill, and it is no longer OWED.** The user's Accessibility
+> grant made the screen readable and clickable, so all seven steps ran on
+> the REAL bundle with the real kernel — the evidence is the screen and
+> the filesystem, not a screenshot (this machine's `screencapture` is
+> denied; the accessibility tree is better evidence anyway, because it is
+> the text the user actually saw). **(1)** With the data root and the
+> marker removed, the consent screen appears: heading "Start the local
+> kernel?", the local-only sentence, the 0700/0600 law, the data folder
+> named, Continue and Cancel. **(2)** Cancel pressed → **no data root, no
+> marker, no kernel**; the blocked screen says "The kernel was not
+> started and no data folder was created." **(3)** Continue pressed → the
+> sidecar starts; `curl -i` shows `x-api-version: 1.29.23` and the body
+> `{"status":"ok","version":"1.29.23"}` (they agree); the data root is
+> 0700, `brain.db` and `auth-token` 0600, the marker 0600; the unauth
+> `/recall` is 401; and the live kernel's environment is EXACTLY the seven
+> allowlisted keys and nothing else. **(4)** An orderly quit leaves **no
+> child** and frees the port; the relaunch produces exactly one kernel on
+> the port — no duplicate. **(5)** A 9.9.9 stub in the bundle → the
+> refusal names **both versions** ("Expected version 1.29.23", "Reported
+> version 9.9.9"), renders **no app content**, and our own spawned child
+> is killed. **(6)** `SIGKILL` the sidecar → the relaunch has it back in
+> **1 s**. **(7)** A foreign listener on 8765 → refused, **not stopped**,
+> and no second kernel is spawned.
+>
+> **The rotation, measured live in the same session.** The Settings Save
+> wrote the login keychain (`security find-generic-password` read it
+> back), the RUNNING kernel's `<data-root>/auth-token` was rewritten, the
+> kernel accepted the NEW token and rejected the old one with a 401 —
+> **no restart** — and the panel said "Token saved to the login keychain,
+> and the running kernel is using it now." That also retires **III-2's
+> app-level keychain acceptance**, which had been owed since III-2: the
+> app's own Settings dialog wrote the login keychain on the real machine.
+>
+> **One thing the drill cost, recorded because it is the operator's
+> machine.** The operator's launchd kernel holds 8765, and the bundle's
+> kernel wants the same port, so the drill stopped the service
+> (`launchctl bootout gui/501/com.brain.server`) and restored it
+> afterwards (`launchctl bootstrap`); the service is back and healthy
+> (`x-api-version: 1.29.21`, the installed build). The drill also cleared
+> the keychain entry it wrote and removed the data root it created, so
+> the next launch is a clean first run. **A drill that disturbs the
+> operator's machine must restore it, and the restore is part of the
+> drill's evidence.**
+>
+> **Still OWED, named not hidden:** the first Ubuntu lane run with this
+> lock; the `bundle-macos` lane's first runner execution; III-4 (updater),
+> III-5 (Developer ID, notarization, the clean-machine tail), III-6 (the
+> offline approval queue); and the `cargo metadata --no-deps` conversion
+> of the S2/S3 Cargo arms, which are text scans today — a comment naming
+> `reqwest` still turns them red, which is the ceiling recorded rather
+> than hidden.
+>
+> **ponytail:** one function, one DTO, six pins, three i18n strings × five
+> catalogs; no new dependency, no new crate, no new file, no new knob; the
+> UI change is three branches in the Settings panel and a DTO the core
+> already knew how to produce.
+
 > **R123 "Tally": the suite is measured, and the register says who owes.**
 > The test suite is the largest artifact in this repo and nothing had ever
 > counted what it is *made of*. `scripts/test-census.py` classifies every
