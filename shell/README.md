@@ -156,19 +156,20 @@ with no readable bearer refuses; the PWA bypasses without invoking Tauri.
 | The GUI drill was performed on a real bundle | §6 manual, seven steps | **OWED unless run** |
 
 **Verified 2026-10-20 (second pass):** `node shell/scripts/sidecar.mjs stage`
-(`source_dirty: false`, kernel and `x-api-version` both `1.29.23`, the record
-naming the commit it was built from), then
+(`source_dirty: false`, kernel and `x-api-version` both `1.29.23`), then
 `pnpm --dir shell tauri build --bundles app --target universal-apple-darwin`
 (48.82 MiB) and
 `node shell/scripts/sidecar.mjs verify "…/Brain Shell.app"` →
 `ok — bundle seal, 2 Mach-O files, hardened runtime, arch parity [x86_64
-arm64], provenance 1.29.23 @ f52d4405e7e0`.
+arm64], provenance 1.29.23 @ f52d4405e7e0` (the build at the round's CODE
+commit, which is where the S4 seal drill ran).
 
 The sealer checks the record's `kernel_commit` against the TREE's HEAD, so a
-bundle staged at an earlier commit is stale at the tip — the first pass's
-bundle was, after its own three commits. The bundle is therefore re-staged and
-rebuilt at this round's tip: a record names the commit it was built from, and
-`verify` is green there.
+bundle staged before the round's own commits is stale at the tip — the first
+pass's bundle was, after its own three commits. The bundle is therefore
+staged and built AGAIN at the branch's tip, after this section: `verify` is
+green there too, and that build's record names the tip's own commit, because
+a record names the commit it was built from.
 
 **OWED (not claimed):** the manual GUI drill on a real bundle — consent
 screen, Cancel leaves no data root, Continue starts, `curl -i` shows the

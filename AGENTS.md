@@ -155,10 +155,12 @@
 > `kernel_commit` against the TREE's HEAD, so R127's own three commits made
 > its staged record stale: `verify` at the tip reported a commit skew, and
 > the shell binary inside the bundle was R127's, not R128's. The bundle was
-> re-staged, rebuilt and re-verified at this round's commit (`ok — bundle
+> re-staged, rebuilt and re-verified at R128's code commit (`ok — bundle
 > seal, 2 Mach-O files, hardened runtime, arch parity [x86_64 arm64],
-> provenance 1.29.23 @ f52d4405e7e0`). A record names the commit it was
-> built from, so the tip's own hash is the one the final rebuild carries.
+> provenance 1.29.23 @ f52d4405e7e0`), and then staged and built AGAIN after
+> this note, so the tip's own `verify` is green too. A record names the
+> commit it was built from — that is why the seal is re-staged at the end
+> and not merely once.
 >
 > **OWED, not green, and unchanged by this round:** the seven-step GUI
 > drill (consent/Cancel/Continue, curl, quit leaves no child, 9.9.9 stub,
