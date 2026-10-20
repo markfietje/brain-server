@@ -95,17 +95,31 @@ sits ABOVE the chrome: a refusal renders no nav and no app content.
   `Contents/Resources/binaries/SIDECAR_PROVENANCE.json` inside the bundle,
   never from `package.json` and never from the shell's own version. A missing
   or unparseable record is `MissingProvenance`, never "unknown → allow".
+  The shell READS the sealed record; it does not re-derive it. The record's
+  two version fields are sealed from two sources (the kernel's Cargo version
+  and the wire's openapi version) and `sidecar.mjs stage` already refuses to
+  seal them out of step, so a skew between them is reported as the version
+  mismatch it is — both versions named — not as a missing record.
 - **Detect is a raw loopback probe.** `GET /health` over `std::net::TcpStream`
   (300 ms connect/read), parsing the `x-api-version` response header and the
   JSON body. The body's `version` must equal the header. A 200 without the
   header is a foreign listener; it is never killed and never adopted.
+- **Silence is not a wrong answer.** A port that is held but says NOTHING is
+  `Unanswered`, and the two facts are kept apart. At preflight both refuse —
+  a held port is never spawned over — but inside the bounded start only a
+  wrong ANSWER ends the wait early. A kernel that has bound the port and is
+  still booting says nothing, and a child that died on boot says nothing
+  too: the first is waited for, the second becomes the named
+  `StartTimeout` (with the exit status in `last`) instead of a false "that
+  is not a Brain kernel".
 - **Start is bounded in Rust.** Consent → token → auth file → spawn → wait
   at most 10 s (200 ms polls). The webview never owns the wait. A timeout
   kills the child this process spawned and names the binary, the data root,
   the wait and the last error.
 - **Attach, never double-start.** A running kernel with the expected version
-  is adopted. A mismatch, a foreign listener or an inconsistent answer is a
-  refusal: no spawn, no second port, no kill.
+  is adopted — even when the bundled binary is absent, because adopting a
+  running kernel does not need the bundle. A mismatch, a foreign listener or
+  an inconsistent answer is a refusal: no spawn, no second port, no kill.
 - **Env allowlist, no shell.** `env_clear()` + `BIND_HOST=127.0.0.1`,
   `BIND_PORT=8765`, `BRAIN_DATA_ROOT`, `BRAIN_DB_PATH`, `AUTH_TOKEN_FILE`,
   `BRAIN_REQUIRE_AUTH=1`, `RUST_LOG=warn`; no argv, no `sh -c`, no inherited
@@ -128,22 +142,33 @@ with no readable bearer refuses; the PWA bypasses without invoking Tauri.
 |---|---|---|
 | Detect reads the kernel's version surface | P1–P3 + the real-sidecar curl (`x-api-version: 1.29.23`, body `{"status":"ok","version":"1.29.23"}`) | green |
 | Start is bounded | P4 + P8 + the 10 s/200 ms/300 ms constants | green |
+| A booting kernel is waited for, not refused as foreign | P13 (a stub that answers after the probe timeout is adopted) | green |
+| A held port is never spawned over | P14 (a silent holder refuses at preflight) | green |
+| A matching kernel is attached, never respawned | P15 (attached even with the binary absent; a differing one refuses) | green |
+| A refusal writes nothing | P5 + P16 (no data root, no consent marker, no child) | green |
 | A mismatch/foreign/timeout is named and blocks the app | P1–P3, P11, the drill list below | green locally; GUI OWED |
 | Consent refused ⇒ no data directory | P5 | green |
 | Data is private: 0700 root, 0600 auth/DB | P6/P7 + the curl run's `stat` | green |
 | No orphan: the child is killed on exit | P10 | green |
 | Expected is the sealed provenance, not `package.json` | S1 + S4 | green |
 | No shell plugin / no new HTTP client | S2/S3 | green (text scans; see the register) |
-| The bundle is staged and verified | `stage` at `2ae4462d`, `source_dirty: false`; `verify` on the built bundle | recorded below |
+| The bundle is staged and verified | `stage` + `tauri build` + `verify` at this round's commit | green at the tip; see below |
 | The GUI drill was performed on a real bundle | §6 manual, seven steps | **OWED unless run** |
 
-**Verified 2026-10-20:** `stage` at `2ae4462d` (`source_dirty: false`, kernel and
-`x-api-version` both `1.29.23`), then
+**Verified 2026-10-20 (second pass):** `node shell/scripts/sidecar.mjs stage`
+(`source_dirty: false`, kernel and `x-api-version` both `1.29.23`, the record
+naming the commit it was built from), then
 `pnpm --dir shell tauri build --bundles app --target universal-apple-darwin`
 (48.82 MiB) and
 `node shell/scripts/sidecar.mjs verify "…/Brain Shell.app"` →
 `ok — bundle seal, 2 Mach-O files, hardened runtime, arch parity [x86_64
-arm64], provenance 1.29.23 @ 2ae4462dceb8`.
+arm64], provenance 1.29.23 @ f52d4405e7e0`.
+
+The sealer checks the record's `kernel_commit` against the TREE's HEAD, so a
+bundle staged at an earlier commit is stale at the tip — the first pass's
+bundle was, after its own three commits. The bundle is therefore re-staged and
+rebuilt at this round's tip: a record names the commit it was built from, and
+`verify` is green there.
 
 **OWED (not claimed):** the manual GUI drill on a real bundle — consent
 screen, Cancel leaves no data root, Continue starts, `curl -i` shows the

@@ -65,6 +65,118 @@
 > plugin, no unsafe; the 31 strings ride the existing five catalogs and the
 > parity pin; the register row is the deliverable, not a framework.
 
+> **R128 "Second Pass" (Phase III-3b, 2026-10-20): the round's own diff,
+> read against the plan, and it did not survive the reading.** R127 shipped
+> the kernel contract with twelve pins, four structural locks, sixteen
+> red-proofs and a green bundle. This round is the adversarial lane over
+> R127's own diff — the same job R121 did to R115–R120 — and it found
+> three defects, all in the Rust contract, none of them in the plan's
+> wording.
+>
+> **1. Silence was reported as "that is not a Brain kernel."** The probe
+> returned `Foreign` for three different facts: a listener that answered
+> wrong, a listener that answered NOTHING, and a peer that reset the
+> connection. The plan defines `Foreign` by the shape of the ANSWER
+> ("non-200 / no header / non-Brain body") — silence is not in that list.
+> Two consequences, both real: a kernel that binds the port BEFORE it can
+> answer a cold start says nothing for longer than the 300 ms probe, so it
+> was refused as a foreign listener **and the child we had just spawned was
+> killed**; and a child that DIED on boot said nothing either, so its death
+> was reported to the user as "the listener on 127.0.0.1:8765 is not a
+> Brain kernel; it was not stopped" — false on both counts, because it was
+> our child and we did stop it. Silence is now `Unanswered`: it refuses at
+> preflight (a held port is never spawned over — same shape, same
+> fail-closed rule) and is WAITED FOR inside the bounded start, which turns
+> a crash into the plan's own `StartTimeout { waited_ms, sidecar, data_root,
+> last }` with the exit status in `last`.
+>
+> **2. The shell re-derived the seal, and got it wrong.** `load_provenance`
+> refused a record whose `kernel_version` and `x_api_version` disagreed.
+> But `sidecar.mjs` seals those from TWO sources — the kernel's Cargo
+> version and the wire's openapi version — and `stage` already refuses to
+> produce a record with the two out of step ("version lockstep broken").
+> So the shell's rule could only ever fire on a record the sealer would
+> never write, and what it said was false: "the bundled kernel's provenance
+> record is missing or unreadable" for a file that was present, readable
+> and well formed. Worse, it swallowed the better answer: a skew between
+> the two versions is a VERSION MISMATCH, and the contract names both
+> versions on screen. The shell now reads the sealed record and does not
+> re-derive it (§4.9), and the skew is a named mismatch again.
+>
+> **3. Two of the round's own laws had no pin.** D8's "attach, never
+> double-start" — the behaviour the whole gate exists for — was unpinned:
+> `Preflight::Attach` had no test at all, so nothing stopped a future edit
+> from turning an attach into a second spawn. And "a refusal creates no
+> data root" was true for `consent_gate` (P5) but only by inspection for
+> the start path: the ordering that reads the manifest before anything is
+> written lived inside a function that needed an `AppHandle` no pin could
+> build. `start()` is now split into the Tauri edge and
+> `start_with_paths()`, and the start path is drivable with temp
+> directories.
+>
+> **Four pins land, and each one was red-proved:**
+> `a_kernel_that_answers_after_the_probe_timeout_is_waited_for` (the late
+> answer is waited for; a wrong answer still ends the wait at once),
+> `a_silent_listener_is_refused_before_any_start` (a held port is never
+> spawned over), `a_matching_kernel_is_attached_and_never_respawned` (a
+> matching kernel is adopted even with the bundled binary ABSENT; a
+> differing one is refused), `a_refused_start_creates_no_data_root_and_
+> spawns_nothing`. S1's malformed-shape list also lost the skewed pair,
+> because that shape is not malformed — and it gained the arm that says so:
+> a skewed record parses, the expectation is the `x_api_version`, and the
+> decision is a `Mismatch` naming both.
+>
+> **All twenty drills re-run against the final refactor, every one red,
+> every one reverted** (the plan's §8: a green pin after a refactor is not a
+> passed drill). The failing texts: P1 `left: Ready right: Mismatch {
+> expected: "1.29.23", observed: "9.9.9" }`; P2 `left: Probe(Probe {
+> api_version: "1.0.0", body_version: "2.0.0" })`; P3 `left: Probe(Probe
+> { api_version: "1.0.0", body_version: "1.0.0" }) right: Foreign`; P4 the
+> pin **HUNG** and was killed after 25 s (no text — the hang is the red);
+> P5 `a refusal created the data root`; P6 `left: 493 right: 448` (0755
+> against 0700); P7 `a 0644 auth file must refuse, got Ok(...)`; P8 `left:
+> Some("0.0.0.0") right: Some("127.0.0.1")`; P9 `left:
+> ".../Contents/MacOS/Resources/brain-server" right:
+> ".../Contents/MacOS/brain-server"`; P10 `shutdown waited 5.005302083s;
+> the child was not killed`; P11 `expected <p data-testid="host-content">
+> </p> to be null`; P12a `TestingLibraryElementError: Unable to find
+> role="dialog"`; P12b `expected { consent: false } to deeply equal {
+> consent: true }`; S1 `sidecar.rs must not read package.json`; S2 `the
+> shell plugin must not be a dependency`; S3 `an HTTP client edge was added:
+> reqwest`; S4 `FAIL provenance kernel_version: record 9.9.9 != Cargo.toml
+> 1.29.23` (the bundle's own copy of the record — and the seal caught the
+> tampered resource too: "a sealed resource is missing or invalid"); P13 `a
+> late answer must be waited for, got Refused(ForeignListener { port: 8765
+> })`; P14 `a held port must refuse, got Start`; P15 `a matching kernel must
+> be attached, got Start`; P16 `a refusal created the data root`.
+>
+> **The fourth finding is about the bundle, and it is the one that would
+> have shipped a stale seal.** The sealer checks the record's
+> `kernel_commit` against the TREE's HEAD, so R127's own three commits made
+> its staged record stale: `verify` at the tip reported a commit skew, and
+> the shell binary inside the bundle was R127's, not R128's. The bundle was
+> re-staged, rebuilt and re-verified at this round's commit (`ok — bundle
+> seal, 2 Mach-O files, hardened runtime, arch parity [x86_64 arm64],
+> provenance 1.29.23 @ f52d4405e7e0`). A record names the commit it was
+> built from, so the tip's own hash is the one the final rebuild carries.
+>
+> **OWED, not green, and unchanged by this round:** the seven-step GUI
+> drill (consent/Cancel/Continue, curl, quit leaves no child, 9.9.9 stub,
+> SIGKILL restart, foreign listener) needs a GUI session and was not run
+> unattended; the Settings rotation still writes the keychain without
+> updating a RUNNING sidecar's `<data-root>/auth-token` (the kernel's mtime
+> watcher is fed only at restart); III-2's app-level keychain drill remains
+> owed. One thing this round DID close: the round's claim that the bundle
+> was staged and verified is now true AT THE TIP, not at a commit the round
+> has since moved past.
+>
+> **ponytail:** one new enum variant, one function split, four pins, one
+> arm rewritten; no new dependency, no new crate, no second transport, no
+> new knob, no new file, no UI change (the new refusal keeps the kinds the
+> gate already renders); the i18n catalogs are untouched, because the
+> contract's new fact is a distinction BETWEEN two refusals the gate
+> already had.
+
 > **R123 "Tally": the suite is measured, and the register says who owes.**
 > The test suite is the largest artifact in this repo and nothing had ever
 > counted what it is *made of*. `scripts/test-census.py` classifies every

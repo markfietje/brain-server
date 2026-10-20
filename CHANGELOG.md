@@ -37,6 +37,29 @@ are consistent at that tag.
 - 31 gate strings added to all five catalogs (en/de/fr/es/nl); the parity pin
   holds at 310 keys.
 
+**Fixed (III-3 second pass — the adversarial lane over the round's own diff)**
+
+- **Silence is no longer reported as "that is not a Brain kernel."** The
+  probe answered `Foreign` for a listener that answered wrong, for one that
+  answered nothing, and for a peer that reset the connection. A kernel that
+  binds the port before it can answer a cold start says nothing, so it was
+  refused and the child we had just spawned was killed; a child that died on
+  boot said nothing too, and its death was reported as a foreign listener.
+  Silence is now `Unanswered`: it still refuses at preflight (a held port is
+  never spawned over) and is waited for inside the bounded start, which turns
+  a crash into the named `StartTimeout` with the exit status.
+- **The shell stops re-deriving the seal.** It refused a provenance record
+  whose `kernel_version` and `x_api_version` disagreed — a shape the sealer
+  refuses to produce — and called it "missing or unreadable", which is false
+  for a present, readable, well-formed record. The skew is a version
+  mismatch, and both versions are named.
+- **Two of the round's own laws get their pins:** a matching kernel is
+  attached rather than respawned (even with the bundled binary absent), and a
+  refused start writes nothing — no data root, no consent marker, no child.
+- The bundle is re-staged, rebuilt and re-verified at this round's tip: the
+  sealer checks the record's commit against the tree's HEAD, so a bundle
+  staged before the round's own commits is stale at the tip.
+
 **Owed, not claimed**
 
 - The manual GUI drill on a real bundle (consent/Cancel/Continue, curl header,
