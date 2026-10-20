@@ -156,6 +156,12 @@
 		if (settingsOpen && inTauri) {
 			tokenState = 'idle';
 			void refreshTokenStatus();
+			// The panel states the CURRENT version and the current kernel
+			// version, and only the core knows either of them (the kernel's
+			// comes from the sealed provenance). So opening the panel asks
+			// the core once — the check is bounded, and an endpoint that
+			// cannot be reached is its OWN state, not an empty line.
+			void checkForUpdate();
 		}
 	});
 

@@ -42,6 +42,14 @@ use crate::sidecar;
 /// environment variable, flag or command that changes it.
 pub const ENDPOINT_ENV: &str = "BRAIN_SHELL_UPDATE_ENDPOINT";
 
+/// The ceiling on one check.
+///
+/// The plugin's builder has no timeout by default, so an endpoint that
+/// accepts the connection and then says nothing would leave the panel
+/// spinning forever. A check that cannot finish must END, and end as
+/// `unreachable` — which is its own state, never "you are up to date".
+pub const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// What the gate decided about an offered release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -270,6 +278,7 @@ fn updater_for(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, 
         .and_then(pinned_pubkey)
         .ok_or_else(|| "the app's configuration carries no updater public key".to_string())?;
     let builder = builder.pubkey(pubkey);
+    let builder = builder.timeout(CHECK_TIMEOUT);
     let builder = match endpoint_override() {
         Some(endpoint) => {
             let url = tauri::Url::parse(&endpoint)
