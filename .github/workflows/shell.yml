@@ -172,10 +172,19 @@ jobs:
       - name: Tauri core pins (cargo test)
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked --offline
 
-      - name: Install pinned cargo-audit and audit Tauri lockfile
+      # The ONE audit config lives at the REPO ROOT (`.cargo/audit.toml`), and
+      # cargo-audit does NOT walk up from a subdirectory to find it — it reads
+      # the config discoverable from the CWD. This step used to run from
+      # `shell/` (the job default) and audit `src-tauri/Cargo.lock`, so the
+      # root's ignore list was invisible to it and the lane reported the
+      # Windows-only `zip` advisories a second time, under a different config
+      # than the kernel lane used. Running from the workspace root makes the
+      # ONE config and the ONE lockfile set the whole repo is audited under.
+      - name: Install pinned cargo-audit and audit the Tauri lockfile
+        working-directory: ${{ github.workspace }}
         run: |
           cargo install cargo-audit --version 0.22.2 --locked
-          cargo audit --file src-tauri/Cargo.lock
+          cargo audit --file shell/src-tauri/Cargo.lock
 
       - name: Tauri build (no bundle — no signing, no secrets)
         run: pnpm tauri build --no-bundle
