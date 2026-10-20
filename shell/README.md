@@ -278,6 +278,133 @@ root is removed afterwards, and the operator's launchd kernel is restored
 `bundle-macos` lane's first runner execution, and the `cargo metadata --no-deps`
 conversion of the S2/S3 Cargo arms (they are text scans today).
 
+## The updater — where the bytes come from, and whose they are (III-4)
+
+**The endpoint is WHERE; the signature is WHO.** The manifest, the URL and the
+announced version are untrusted input: they steer where the bytes come from
+and nothing else. The minisign signature against the **one public key pinned
+in the app's own configuration** is the only thing that decides whose bytes
+they are. There is no path, anywhere, to change that key at runtime.
+
+**The trust anchor** (`shell/src-tauri/tauri.conf.json`, `plugins.updater`):
+
+- `pubkey` — the **literal base64 public key**, never a path. The CLI reads a
+  `pubkey` that happens to be an existing file as that file's contents, while
+  the plugin base64-decodes the same string at runtime, so a path would verify
+  against a different key on the machine that built it than on the machine
+  that runs it. The measured shape: `untrusted comment: minisign public key:
+  C27C1E11196062D5` and a 42-byte packet beginning `Ed`.
+- `endpoints` — **https only**. The plugin refuses a non-HTTPS endpoint in a
+  release build, and no `dangerous*` flag is set: an updater that accepts
+  invalid certificates is not an updater.
+- `requireSignedVersion: true` — the endpoint's response is fetched over TLS
+  but is **not itself signed**, so anyone who can serve it could pair an
+  inflated version with an older release's artifact and signature. The signed
+  version is what stops that, and it is free here: no release has ever been
+  published.
+- `allowDowngrades: false` — the key is the continuity, the version is the
+  monotonic axis. A rollback is a **rebuild** of the previous code under a new
+  version, signed by the same long-lived key — never a re-sign.
+
+**Two version axes, kept apart.** The shell's own semver (`0.1.0` → `0.1.1`)
+and the kernel's version, which travels in the manifest and never in the app
+version. The update replaces the whole `.app` — **including the bundled kernel
+sidecar** — so the manifest carries two extra fields: `kernel_version` (the
+kernel the artifact carries) and `kernel_versions` (the kernels the release
+vouches for). The gate refuses unless the manifest has both, the shell's own
+**embedded** kernel version (read from the sealed provenance, never from
+`package.json`) is among the vouched ones, and the offered kernel is too.
+
+**The webview holds no updater authority.** The capability grants
+`core:default` and nothing else; the Rust core owns the check and the
+install, and the renderer only ever sees a DTO. There is no npm package, no
+`tauri-plugin-process`, and no second transport (the plugin owns the HTTP).
+
+**`createUpdaterArtifacts` is not in the tree's configuration.** It lives in
+`shell/src-tauri/tauri.release.conf.json`, which only the operator's signing
+step passes. The measured reason: the CLI's `sign_updaters` requires
+`TAURI_SIGNING_PRIVATE_KEY` whenever the bundler's updater settings exist, so
+a flag in the shared macOS overlay would make the **public** `bundle-macos`
+job fail with "A public key has been found, but no private key" — and public
+CI must not sign.
+
+**The manifest writer** (`shell/scripts/updater.mjs`) writes the
+`latest.json` a release publishes, and **refuses rather than guesses**: a
+dirty tree, a staged record from another commit, a manifest that does not
+answer for **both** Apple arches (the bundle is a universal build, so the
+plugin looks the manifest up by the compile-time arch of the slice that is
+running — a one-arch manifest serves half the machines and fails silently on
+the other half), a release that vouches for no kernel version, a missing or
+mismatched signature, and an announced version the artifact does not carry.
+The last one is the anti-relabel law: the writer **reads** the artifact's own
+`CFBundleShortVersionString`, because a re-signed old artifact would install,
+report the old version, and offer itself the same update forever.
+
+### The claims ledger (measured, 2026-10-20)
+
+| Claim | How it is measured | Measured value |
+|---|---|---|
+| The lock delta of the one new edge | `git diff --stat f1ea6f63 -- shell/src-tauri/Cargo.lock` | **+540 / -18 lines, 49 new packages** (`tauri-plugin-updater` 2.14 + `tauri` with the `test` feature, a dev-dependency) |
+| The new i18n keys, in five catalogs | the key count per catalog | **326 in each of `en/de/fr/es/nl`** (317 → 326: nine strings) |
+| The manifest's arch key set | the writer's own output, read | **`darwin-aarch64` and `darwin-x86_64`**, both pointing at the one universal artifact |
+| The pinned public key parses | P7's own output | **`untrusted comment: minisign public key: C27C1E11196062D5`**, a 42-byte packet beginning `Ed`, and it is not a path |
+| The drill's steps, each with its evidence | the drill record | **six of the seven steps ran on the real bundle**; the seventh is recorded below |
+| The bundle verified at this round's tip | `sidecar.mjs verify`'s own line | see the round note (the seal is re-staged at the tip) |
+| The shell suite / `src-tauri` counts | the two test runs | **220 passed / 2 skipped** (was 212 / 2) and **58 passed** (was 54) |
+| The red-proof texts | each mutant's observed failure | all twelve are in `docs/gate-law-register.md` |
+
+### The drill (the real bundle, read off the screen through the accessibility API)
+
+The drill's transport is **real HTTPS**: the updater's TLS uses the platform
+trust store (reqwest 0.13 with `rustls-no-provider`), so the drill's CA was
+generated in a temp dir and trusted in the **login keychain**. The app ran
+from a temp directory (the plugin replaces the bundle in place), and every
+line below is the text the accessibility API read off the screen.
+
+1. **The app launches and the kernel gate still works.** The consent screen
+   appeared — "Start the local kernel?", the local-only sentence, the
+   0700/0600 law, the data folder named — and **Continue** started the
+   bundled kernel (`x-api-version: 1.29.23`; the data root 0700, the
+   database and the bearer 0600). The updater did not break III-3.
+2. **A dead endpoint is its own state.** "Check for updates" against a
+   refused port rendered **"The update endpoint could not be reached."** —
+   never "you are up to date". The panel also stated the current facts:
+   **"Running version 0.1.0 — bundled kernel 1.29.23."**
+3. **The live endpoint, a manifest signed with the pinned key.** The panel
+   rendered **"Update 0.1.1 is available (kernel 1.29.23)."** and offered
+   the install.
+4. **Install → the app replaces itself.** The bundle's
+   `CFBundleShortVersionString` went **0.1.0 → 0.1.1**, the app relaunched
+   under the new bundle (a new process), and the next check rendered
+   **"You are up to date."** — the version axis, live: the app at 0.1.1 is
+   not offered 0.1.1 again.
+5. **A second key is refused.** The same release, signed with a **second
+   keypair**, was offered and then refused on install: **"Refused: the
+   artifact's signature is not the pinned key's"** — and the bundle's version
+   was **unchanged**, because the refusal happens before the install.
+6. **A release that does not know this app's kernel is refused, naming
+   both.** **"Refused: unknown_local_kernel: expected 1.29.22, found
+   1.29.23"** — the vouched kernel and this app's own, in one sentence.
+7. **The rollback, partly witnessed.** The pinned key signed a **second,
+   later** artifact and the app **installed it**: the tip's code rebuilt as
+   **0.1.2** went over the running 0.1.1 in **5 s** (`t=5s version=0.1.2`).
+   The **older-code** half is **NOT witnessed**, and the reason is measured:
+   the pre-round tree has no `plugins.updater`, and the CLI **refuses**
+   `createUpdaterArtifacts` without one ("failed to get updater configuration:
+   plugins > updater doesn't exist"), so its artifact had to be tarred by hand
+   — and **a hand-made tarball stalls the install**: the artifact downloads,
+   the bundle is never replaced, and the app reports no outcome. The same
+   stall was reproduced with the **tip's own code** re-tarred by hand, so the
+   fault is in the hand-made archive, not in the older code. The bundler's own
+   artifact installs in seconds. This is recorded as OWED, not as a claim.
+
+**The drill's machine was restored**: the drill's CA is out of the login
+keychain (verified by the **output** — the count of `BEGIN CERTIFICATE` blocks
+and the trust-settings references, because `security find-certificate` exits 0
+even when it matches nothing), the drill's data root and consent marker are
+gone, the operator's launchd kernel is back and healthy, and the
+`BRAIN_SHELL_UPDATE_ENDPOINT` override is unset.
+
 ## CI and supply-chain boundary
 
 Shell CI runs from a clean checkout on `shell/**`, `openapi.yaml`, the canonical
