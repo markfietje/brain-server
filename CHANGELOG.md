@@ -4,6 +4,71 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — the updater: where the bytes come from, and whose they are (III-4)
+
+**Added**
+
+- **The shell can update itself, against a pinned key.** The minisign
+  signature against the ONE public key in the app's own configuration is what
+  decides whose bytes an update carries; the manifest, the URL and the
+  announced version are untrusted input that only steer where the bytes come
+  from. The endpoint may be overridden at runtime (`BRAIN_SHELL_UPDATE_ENDPOINT`,
+  the module's only environment read) and that override moves **where**, never
+  **who** — there is no path, anywhere, to change the key.
+- **The kernel gate on an update.** An update replaces the whole `.app`,
+  *including the bundled kernel sidecar*, so the manifest carries the kernel
+  the artifact carries and the kernels the release vouches for, and the shell
+  refuses a release that does not vouch for the kernel this app carries. A
+  manifest missing either field is refused, never "assume current". The local
+  kernel version is read from the sealed provenance, never from
+  `package.json`.
+- **`shell/scripts/updater.mjs`** writes the release's `latest.json` and
+  refuses rather than guesses: a dirty tree, a staged record from another
+  commit, a manifest that does not answer for **both** Apple arches, a
+  release that vouches for no kernel version, a missing or mismatched
+  signature, and an announced version the artifact does not carry (the
+  anti-relabel law — a re-signed old artifact would install, report the old
+  version and offer itself the same update forever).
+- **A software-update section in Settings**: the current version, the current
+  kernel version, a check, an install, and the refusal's reason. An
+  unreachable endpoint is its **own** state and is never rendered as "you are
+  up to date".
+
+**Fixed**
+
+- **The install dropped its outcome.** The check's answer reached the panel;
+  the install's did not, so a refusal during an install rendered as nothing
+  at all. One `applyOutcome()` now serves both.
+- **A signature that does not verify was reported as "unreachable".** It is a
+  **refusal** — the artifact is not the pinned key's — and rendering it as an
+  endpoint problem sends the operator looking at the network instead of at the
+  thing that is wrong.
+
+**Security**
+
+- `requireSignedVersion: true` and `allowDowngrades: false`. The endpoint's
+  response is fetched over TLS but is **not itself signed**, so a served
+  response could pair an inflated version with an older release's artifact
+  and signature; the signed version is what stops that. A rollback is a
+  **rebuild** of the previous code under a new version, signed by the same
+  long-lived key — never a re-sign.
+- The updater's endpoints are `https://` only and no `dangerous*` flag is
+  set, and the webview is granted **no** updater permission: the Rust core
+  owns the check and the install, and the renderer only ever sees a DTO.
+- `createUpdaterArtifacts` is not in the tree's configuration. It lives in
+  `shell/src-tauri/tauri.release.conf.json`, which only the operator's
+  signing step passes, because the public CI must not hold the signing key.
+
+**The drill, on the real bundle, over real HTTPS** (a locally-trusted CA):
+the consent gate still works; a dead endpoint says so; a manifest signed with
+the pinned key is offered; the install **replaced the app** and the next
+check said "You are up to date."; a manifest signed with a second key was
+**refused by name** and nothing was installed; a release that did not know
+this app's kernel was refused naming **both** kernel versions; and the
+**rollback** — the previous code rebuilt under a new version, signed with the
+same key — was installed and ran, witnessed by the installed binary's size
+and by the update section's absence.
+
 ## [Unreleased] — the webview's wire can reach the kernel (III-4a)
 
 **Fixed**

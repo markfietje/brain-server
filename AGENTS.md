@@ -1,5 +1,110 @@
 # Agent Execution Log — brain-server
 
+> **R131 "Updater" (Phase III-4, 2026-10-20): the endpoint is WHERE;
+> the signature is WHO.** The shell can now update itself — and the whole
+> round is the distance between those two facts. The manifest, the URL and
+> the announced version are UNTRUSTED input: they steer where the bytes come
+> from and nothing else. The minisign signature against the ONE public key
+> pinned in the app's own configuration is the only thing that decides whose
+> bytes they are, and there is **no path, anywhere**, to change that key at
+> runtime. `shell/src-tauri/src/updater.rs` owns the gate (a pure `decide()`
+> over the manifest's kernel facts, the local kernel read from the SEALED
+> provenance and never from `package.json`), `shell/scripts/updater.mjs`
+> writes the release's `latest.json` and **refuses rather than guesses**, and
+> the webview is granted **no** updater permission at all.
+>
+> **Two decisions the measurement moved, and both are recorded rather than
+> argued.** (1) `createUpdaterArtifacts` is **not** in the tree's
+> configuration: it lives in `shell/src-tauri/tauri.release.conf.json`, which
+> only the operator's signing step passes, because the CLI's `sign_updaters`
+> requires `TAURI_SIGNING_PRIVATE_KEY` whenever the bundler's updater
+> settings exist — so a flag in the shared macOS overlay would make the
+> **public** `bundle-macos` job fail with "A public key has been found, but
+> no private key", and public CI must not sign. (2) The updater's config
+> lives in the **base** `tauri.conf.json`, not the macOS overlay, because
+> registering the plugin **without** a `plugins.updater` entry makes the app
+> FAIL TO START on that platform (the plugin's `Config` has a non-defaulted
+> `pubkey`, and an absent entry deserializes as `null`) — and the base
+> config is the one the Linux lane reads. The updater's facts are
+> platform-neutral; the sidecar's are not, and they stay in the overlay.
+>
+> **Twelve pins, twelve red-proofs, every one RUN and REVERTED, and the
+> failing text:** P1 the pinned key swapped for a second key's `an update
+> signed by a key that is not the pinned key must be refused, got Ok(())`;
+> P2 the gate stops refusing `a build whose kernel version the release does
+> not know must be refused, got Allowed { offered_kernel: "1.29.23" }`; P3
+> `a manifest without a kernel version must be refused, got Allowed {…}`;
+> P4 one Apple arch `expected [ 'darwin-aarch64' ] to deeply equal [
+> 'darwin-aarch64', 'darwin-x86_64' ]`; P5 a stale record `expected +0 to be
+> 2`; P6 the real private key planted in a tracked file `carries the private
+> key marker`; P7 a truncated pubkey `expected 'untrusted comment: minisign
+> pu' to match …`; P8 `allowDowngrades: true` `expected true to be false`;
+> P9 an `http://` endpoint `is not https`; P10 a second environment read
+> `it reads ["env::var(\"BRAIN_SHELL_UPDATE_PUBKEY\")", "env::var(
+> ENDPOINT_ENV)"]`; P11 `updater:default` `the webview must not hold the
+> updater permission`; P13 the anti-relabel law `expected +0 to be 2`.
+>
+> **Two of the pins found their own weakness, and the drill found two
+> defects the pins could not.** P13 asserted only that the writer REFUSED
+> and that both versions appeared — and the writer refuses for TWO laws in
+> that fixture, so the pin passed on the wrong refusal and the red-proof
+> that turns the version law off left it GREEN. The drill, on the real
+> bundle, found that the install **dropped its DTO** (a refusal during an
+> install rendered as nothing at all) and that a signature which does not
+> verify was reported as UNREACHABLE rather than as a refusal. All three are
+> fixed, and the register records the fix, not the intention.
+>
+> **The drill ran on the real bundle, read off the screen through the
+> accessibility API, over REAL HTTPS** (a CA generated in a temp dir and
+> trusted in the login keychain — the updater's TLS uses the platform trust
+> store, so the transport is real and no `dangerous*` flag is needed). All
+> seven steps: the consent gate still works and the app starts its bundled
+> kernel; a dead endpoint renders "The update endpoint could not be reached."
+> and NEVER "you are up to date"; a manifest signed with the pinned key
+> renders "Update 0.1.1 is available (kernel 1.29.23)."; the install
+> REPLACED THE APP (0.1.0 → 0.1.1, a new process) and the next check
+> rendered "You are up to date."; a manifest signed with a SECOND key was
+> refused with "Refused: the artifact's signature is not the pinned key's"
+> and the bundle's version was unchanged; a release that does not know this
+> app's kernel was refused with "Refused: unknown_local_kernel: expected
+> 1.29.22, found 1.29.23" — BOTH versions named; and the ROLLBACK: the
+> pre-round tree rebuilt as 0.1.5, signed with the same pinned key, was
+> installed in 5 s, and the installed binary is 7,183,184 bytes (the
+> pre-round build's, against the tip's 10,044,160) with NO update section
+> on screen — older code under a newer version, witnessed twice over.
+>
+> **The machine was restored, and the restore is part of the evidence:** the
+> drill's CA is out of the login keychain (verified by the OUTPUT — the count
+> of `BEGIN CERTIFICATE` blocks and the trust-settings references — because
+> `security find-certificate` exits 0 even when it matches NOTHING, a
+> measured trap from the prompt), the drill's data root and consent marker
+> are gone, the operator's launchd kernel is back and healthy, and the
+> endpoint override is unset.
+>
+> **OWED, named not hidden:** the lane that SIGNS (a self-hosted macOS
+> runner, a private workflow, or a manual local release step — the public
+> Actions must not hold the key, and III-4 does not invent a trusted lane);
+> the real public endpoint (publishing is the operator's call); Developer ID,
+> notarization, stapling and the clean-machine tail (III-5 — the updater
+> does not change that: an unsigned update artifact installs, but the
+> installed app is still the ad-hoc one); the behavioural conversion of the
+> config arms (a pin that reads the BUILT bundle's `CFBundleShortVersionString`
+> and holds it to the manifest's announced version); the first Ubuntu lane
+> run with this lock and the `bundle-macos` lane's first runner execution
+> (carried from III-3); the `cargo metadata --no-deps` conversion of the
+> S2/S3 Cargo arms; and the **hand-made archive** the drill measured: a
+> tarball made outside the bundler STALLS the install (the artifact
+> downloads, the bundle is never replaced, the app reports no outcome) —
+> reproduced with the tip's own code re-tarred by hand, so it is the
+> archive, not the code, and it is upstream's to answer.
+>
+> **ponytail:** one crate edge (`tauri-plugin-updater` 2.14) and one dev-edge
+> (`tauri` with the `test` feature, which is empty); one module, one test
+> module, one script, one test file; two commands, one DTO; nine strings ×
+> five catalogs; no npm package, no second plugin, no `unsafe`, no new
+> capability, no `dangerous*` flag, no key in the tree, and no lane that does
+> not exist.
+
 > **R127 "Kernel Contract" (Phase III-3, 2026-10-20): the shell's
 > detect · start · refuse, pinned before it starts.** The macOS bundle now
 > owns its kernel's lifecycle: `shell/src-tauri/src/sidecar.rs` reads the

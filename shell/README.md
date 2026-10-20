@@ -385,18 +385,28 @@ line below is the text the accessibility API read off the screen.
 6. **A release that does not know this app's kernel is refused, naming
    both.** **"Refused: unknown_local_kernel: expected 1.29.22, found
    1.29.23"** — the vouched kernel and this app's own, in one sentence.
-7. **The rollback, partly witnessed.** The pinned key signed a **second,
-   later** artifact and the app **installed it**: the tip's code rebuilt as
-   **0.1.2** went over the running 0.1.1 in **5 s** (`t=5s version=0.1.2`).
-   The **older-code** half is **NOT witnessed**, and the reason is measured:
-   the pre-round tree has no `plugins.updater`, and the CLI **refuses**
+7. **The rollback.** The pinned key signed a **second, later** artifact, and
+   the app accepted **older code under a new version**: the pre-round tree
+   (the commit before this round) was rebuilt as **0.1.5** and the running
+   0.1.2 app installed it in **5 s** (`t=5s version=0.1.5`). The installed
+   bundle's binary is **7,183,184 bytes** — the pre-round build's, against
+   the tip's 10,044,160 — and the screen shows **no "Software update"
+   section at all**, because the older code has no updater. Two independent
+   observables, not a claim. The key is the continuity, the version is the
+   monotonic axis, and the signature binds the two.
+
+   **The road to it was measured, and it is worth keeping.** The pre-round
+   tree has no `plugins.updater`, and the CLI **refuses**
    `createUpdaterArtifacts` without one ("failed to get updater configuration:
-   plugins > updater doesn't exist"), so its artifact had to be tarred by hand
-   — and **a hand-made tarball stalls the install**: the artifact downloads,
-   the bundle is never replaced, and the app reports no outcome. The same
-   stall was reproduced with the **tip's own code** re-tarred by hand, so the
-   fault is in the hand-made archive, not in the older code. The bundler's own
-   artifact installs in seconds. This is recorded as OWED, not as a claim.
+   plugins > updater doesn't exist"), so its artifact had to be tarred by
+   hand — and **a hand-made tarball stalls the install**: the artifact
+   downloads, the bundle is never replaced, and the app reports no outcome.
+   The same stall was reproduced with the **tip's own code** re-tarred by
+   hand, so the fault is in the hand-made archive and not in the older code;
+   the bundler's own artifact installs in seconds. The pre-round tree was
+   therefore given the same trust anchor (in the drill's copy only) so the
+   **bundler** could make the artifact — which is also the shape a real
+   release takes.
 
 **The drill's machine was restored**: the drill's CA is out of the login
 keychain (verified by the **output** — the count of `BEGIN CERTIFICATE` blocks
