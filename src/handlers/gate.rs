@@ -469,16 +469,6 @@ pub async fn list_proposals(
     let since = q.since;
     let pool = super::resolve_domain_pool(&state.registry, Some(authz_domain))?;
 
-    // The queue is a REVIEWER surface, so reading it takes the reviewer's
-    // capability — the same one `/proposals/{id}/approve` and
-    // `/proposals/{id}/reject` already spend. A principal that cannot ACT on
-    // the queue must not READ it: a pending proposal is unapproved memory text
-    // with an owner, and the plugin's own default (`proposalTools: false`)
-    // says the agent does not watch the review queue. The HTTP route honours
-    // that posture server-side; the capability gate is where it is stated, so
-    // no future client can widen it by choosing a different verb.
-    super::authorize_role(&principal.0, &pool, "approve")?;
-
     // The queue is a reviewer surface: a pending proposal is unapproved memory
     // text with an owner and a reviewer note. The record gate's resolved owner
     // set rides into the query, so an owner-bound caller reads its own queue
@@ -486,6 +476,28 @@ pub async fn list_proposals(
     // `(owner, access_scope)` fence every read surface applies, reached here
     // through the same resolver rather than a second opinion about ownership.
     let owner_in = record_read_gate(&principal.0, &pool).owner_in;
+
+    // The SHARED queue is a reviewer surface, and the OWNER-BOUND queue is not.
+    //
+    // `owner_in` is the fence: `Some(..)` narrows the read to the caller's own
+    // rows, `None` is NO owner predicate — every owner's pending proposals.
+    // So a principal whose gate does not narrow is reading the shared queue,
+    // and that read takes the reviewer's capability: the same one
+    // `/proposals/{id}/approve` and `/proposals/{id}/reject` already spend.
+    // The machine principal (role `agent`, `owner_filter: "all"` +
+    // `shared_pool`) is exactly such a principal — it does not narrow, so it
+    // would read everyone's queue — and it holds no `approve`, so it is
+    // refused. The plugin's own default (`proposalTools: false`) says the
+    // agent does not watch the review queue; this is where the server says so.
+    //
+    // An OWNER-BOUND read is NOT a reviewer act and stays open: a read
+    // principal sees the proposals it could approve nothing of, but may still
+    // read (the repo's own `proposals_listing_is_owner_bound` pins that, and
+    // it is why the capability gate is on the UNNARROWED read and not on the
+    // listing).
+    if owner_in.is_none() {
+        super::authorize_role(&principal.0, &pool, "approve")?;
+    }
     let rows = tokio::task::spawn_blocking(move || -> Result<Vec<ProposalView>, HandlerError> {
         let conn = pool.get().map_err(HandlerError::db_down)?;
         crate::service::review::pending_page(

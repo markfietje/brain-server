@@ -588,19 +588,7 @@ const LAYOUT_CONDITIONAL: &[&str] = &["/consolidate/propose"];
 /// write-scoped role-less principal is refused, and so is the agent class.
 /// `/proposals` is NOT here: it is owner-bound rather than closed, so a
 /// read-scoped caller still gets its own queue.
-const REVIEWER_POSTURE_ROWS: &[&str] = &[
-    "/quarantine",
-    "/decayed",
-    // The review queue is a REVIEWER surface: reading it takes the reviewer's
-    // `approve` capability — the same one `/proposals/{id}/approve` and
-    // `/proposals/{id}/reject` spend. A principal that cannot act on the queue
-    // must not read it: a pending proposal is unapproved memory text with an
-    // owner, and the plugin's own default (`proposalTools: false`) says the
-    // agent does not watch the review queue. A role-less principal is refused
-    // here by `APPROVAL_CAPABILITIES`, so this is a reviewer-posture row and
-    // not a read row.
-    "/proposals",
-];
+const REVIEWER_POSTURE_ROWS: &[&str] = &["/quarantine", "/decayed"];
 const APPROVAL_ROLE_ROWS: &[&str] = &[
     "/proposals/{id}/approve",
     "/proposals/{id}/reject",
