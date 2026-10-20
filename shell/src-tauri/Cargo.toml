@@ -23,6 +23,7 @@ tauri-build = { version = "2.7.3", features = [] }
 
 [dependencies]
 tauri = { version = "2.12.4", features = [] }
+tauri-plugin-updater = { version = "2.14", features = [] }
 # Phase I: `recall.rs` reads the kernel's `/recall` response body rather than
 # trusting a caller-shaped object, so `serde` derives the wire types and
 # `serde_json` parses them. Both are already in this workspace's graph through
@@ -37,6 +38,9 @@ serde_json = "1"
 # store in a process-global default, so a test cannot inject a mock without
 # replacing global state (and its default feature names zbus on Linux).
 keyring-core = "1.0.1"
+
+[dev-dependencies]
+tauri = { version = "2.12.4", features = ["test"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The login-keychain implementation: `keychain` (legacy login keychain), NOT

@@ -23,6 +23,7 @@
 pub mod forget;
 pub mod recall;
 pub mod sidecar;
+pub mod updater;
 pub mod verify;
 
 mod token;
@@ -35,6 +36,8 @@ mod recall_tests;
 mod sidecar_tests;
 #[cfg(test)]
 mod token_tests;
+#[cfg(test)]
+mod updater_tests;
 #[cfg(test)]
 mod verify_tests;
 
