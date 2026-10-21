@@ -639,9 +639,19 @@ function freshKeypair(): { secretKey: string; publicKey: string; keynum: string 
 	return { secretKey, publicKey, keynum };
 }
 
-/** The signing lane, driven as a subprocess. */
-function runSign(args: string[]): Run {
-	const result = spawnSync('bash', [signScriptPath, ...args], { encoding: 'utf8' });
+/**
+ * The signing lane, driven as a subprocess.
+ *
+ * `BRAIN_UPDATER_PASSPHRASE` is CLEARED for every call: a test must never be
+ * able to reach the operator's key, even by accident, and an inherited
+ * passphrase in the developer's shell would otherwise let a fixture
+ * artefact be signed with it.
+ */
+function runSign(args: string[], env: Record<string, string> = {}): Run {
+	const result = spawnSync('bash', [signScriptPath, ...args], {
+		encoding: 'utf8',
+		env: { ...process.env, BRAIN_UPDATER_PASSPHRASE: '', ...env }
+	});
 	return {
 		status: result.status,
 		stdout: result.stdout ?? '',
@@ -869,8 +879,59 @@ test('the_app_tarball_the_signature_and_the_manifest_are_required_assets', () =>
 	expect(noManifest.stderr).toContain('manifest');
 });
 
-// ── III-7 P5 · the private key is nowhere the public can reach it ────────
+// ── III-7 P7 · the public Actions may VERIFY but never SIGN ──────────────
 
+/**
+ * III-7 P7 — the public Actions may VERIFY, and may never SIGN.
+ *
+ * **This pin exists because the first version of the D6 guard was in the
+ * wrong place, and the public CI said so.** The guard sat at the top of the
+ * signing lane and refused the SCRIPT whenever it ran in the public
+ * repository's Actions — which reads as "the public Actions must never run
+ * this". But the public Actions must run the parts that CANNOT sign: the
+ * chain gate is a VERIFICATION of what a private lane produced, and the
+ * pairing check compares two PUBLIC halves. Refusing the whole script made
+ * both unreachable from CI, and the shell lane went RED on the very pins
+ * that enforce the law.
+ *
+ * So the law is exactly what it says: **the public Actions must never
+ * SIGN.** The key is what makes a job dangerous, and the signing step is the
+ * only thing that touches it.
+ *
+ * The arms: the pairing check still RUNS (its line is on stdout), and the
+ * lane REFUSES before it ever asks for a passphrase — a CI job that asked
+ * for one and then refused would be a job that HANGS on a prompt nobody can
+ * answer.
+ */
+test('the_signing_lane_refuses_to_sign_in_the_public_actions', () => {
+	const fresh = freshKeypair();
+	const pinnedFile = join(tempDir('brain-updater-pinned-'), 'pinned.pub');
+	writeFileSync(pinnedFile, `${shippedPublicKey()}\n`);
+
+	const result = runSign(
+		[
+			'--tag',
+			RELEASED_TAG,
+			'--public-key',
+			pinnedFile,
+			'--secret-key',
+			fresh.secretKey,
+			'--dry-run'
+		],
+		{ GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'markfietje/brain-server' }
+	);
+
+	expect(result.status).not.toBe(0);
+	expect(result.stderr).toContain('the public Actions must never SIGN');
+	// The refusal is about the SIGNING, not about the pairing — the pairing
+	// check ran, and said so, before the refusal.
+	expect(result.stdout).toContain('the signing key IS the key the app ships');
+	expect(result.stderr).not.toContain('the signing key is NOT the key the app ships');
+	// And it refused BEFORE asking for a passphrase: no prompt, no hang.
+	expect(result.stderr).not.toContain('passphrase for the updater signing key');
+});
+
+// ── III-7 P5 · the private key is nowhere the public can reach it ────────
 /**
  * III-7 P5 — the private key is in no tracked file, AND the public lane
  * never signs.
@@ -920,5 +981,5 @@ test('the_private_updater_key_is_in_no_tracked_file_and_the_public_lane_never_si
 	// the signing happens without reading the whole tree.
 	expect(existsSync(signScriptPath), 'the signing lane is missing').toBe(true);
 	const lane = readFileSync(signScriptPath, 'utf8');
-	expect(lane).toContain('the public Actions must never hold the signing key');
+	expect(lane).toContain('the public Actions must never SIGN the release (D6)');
 });

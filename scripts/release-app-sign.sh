@@ -144,18 +144,35 @@ done
 [[ -n "$TAG" || -n "$CHECK_CHAIN" ]] || usage
 [[ -z "$TAG" || "$TAG" == v* ]] || die "the release tag must look like vX.Y.Z: $TAG"
 
+# ── THE TOOLS, SCOPED TO THE STEP THAT NEEDS THEM ──────────────────────────
+#
+# The chain gate is pure shell and needs NOTHING; the pairing check and the
+# manifest writer need node; the ROUND TRIP's verification needs minisign.
+# Asking for minisign up front made the script refuse in a CI image that has
+# no minisign — and the CI image never reaches the verification step anyway,
+# because the public Actions refuse to SIGN (below).
+
 # ── D6 · THE PUBLIC ACTIONS NEVER SIGN ─────────────────────────────────────
 #
-# Not a comment: a refusal. The public repository's Actions are free and
-# public, and a key in a public CI job is a key in a job anyone with a
-# push-trigger can run. The private lane is a private repository's runner or
-# the operator's own machine — never this one.
-if [[ "${GITHUB_ACTIONS:-}" == "true" && "${GITHUB_REPOSITORY:-}" == "$PUBLIC_REPO" ]]; then
-	die "the public Actions must never hold the signing key (D6). Run this on a machine that holds the key, or on a private runner."
-fi
-
-command -v node >/dev/null 2>&1 || die "node is not on PATH"
-command -v minisign >/dev/null 2>&1 || die "minisign is not installed (brew install minisign) — the round trip cannot be verified without it"
+# NOT a comment: a refusal — and it is a refusal of the SIGNING STEP, not of
+# the whole script. **That distinction is the law, and the public CI is what
+# taught it.** The first version of this guard sat at the top and refused the
+# SCRIPT, which read as "the public Actions must never run this" — and the
+# public Actions must run the parts that CANNOT sign: the chain gate is a
+# VERIFICATION of what a private lane produced, and the pairing check reads
+# two PUBLIC halves. Refusing the whole script made both of them unreachable
+# from CI, and the shell lane went RED on the very pins that enforce the
+# law.
+#
+# So the law is exactly what it says: **the public Actions must never SIGN.**
+# The key is what makes a job dangerous, and the signing step is the only
+# thing that touches it. Everything before it — the chain gate, the pairing
+# check — is verification, and verification is what the public lane is FOR.
+#
+# THE REFUSAL LIVES WITH THE SIGNING STEP, where the key is used.
+signing_refused_in_public_actions() {
+	[[ "${GITHUB_ACTIONS:-}" == "true" && "${GITHUB_REPOSITORY:-}" == "markfietje/brain-server" ]]
+}
 
 TMPDIR_SIGN="$(mktemp -d)"
 cleanup() { rm -rf "$TMPDIR_SIGN"; }
@@ -208,6 +225,11 @@ fi
 # This check runs FIRST, before anything is built and before the tree is
 # even looked at: a mismatch must cost nothing to discover, and the refusal
 # must be about the KEY, not about whatever else the machine was doing.
+#
+# It needs node (to decode and compare the two public halves) and nothing
+# else — no key, no passphrase, no minisign. **Verification is what the public
+# lane is FOR.**
+command -v node >/dev/null 2>&1 || die "node is not on PATH"
 PINNED_PUBKEY="$(node -e '
 const fs = require("node:fs");
 const config = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -274,6 +296,34 @@ const fs = require("node:fs");
 fs.writeFileSync(process.argv[2], Buffer.from(process.argv[1].trim(), "base64").toString("utf8"));
 ' "$PINNED_PUBKEY" "$TMPDIR_SIGN/pinned.pub"
 
+# ── D6 · THE PUBLIC ACTIONS NEVER SIGN ─────────────────────────────────────
+#
+# NOT a comment: a refusal — and it is a refusal of the SIGNING PATH, not of
+# the whole script. **That distinction is the law, and the public CI is what
+# taught it.** The first version of this guard sat at the top and refused the
+# SCRIPT, which reads as "the public Actions must never run this" — and the
+# public Actions must run the parts that CANNOT sign: the chain gate is a
+# VERIFICATION of what a private lane produced, and the pairing check reads
+# two PUBLIC halves. Refusing the whole script made both of them unreachable
+# from CI, and the shell lane went RED on the very pins that enforce the
+# law.
+#
+# So the law is exactly what it says: **the public Actions must never SIGN.**
+# The key is what makes a job dangerous, and the signing step is the only
+# thing that touches it. Everything before it — the chain gate, the pairing
+# check — is verification, and verification is what the public lane is FOR.
+#
+# It sits HERE, after the pairing check and before anything that could
+# refuse for an unrelated reason, so the refusal a caller sees in the public
+# Actions is about the SIGNING and not about the tree it happened to be in.
+signing_refused_in_public_actions() {
+	[[ "${GITHUB_ACTIONS:-}" == "true" && "${GITHUB_REPOSITORY:-}" == "markfietje/brain-server" ]]
+}
+
+if signing_refused_in_public_actions; then
+	die "the public Actions must never SIGN the release (D6). Run this on a machine that holds the key, or on a private runner."
+fi
+
 # The tree the release names must be the tree that was built: the manifest
 # writer refuses a dirty tree, and this refuses it earlier with the same
 # reason. A release built from an uncommitted tree is not reproducible.
@@ -289,6 +339,12 @@ if ! git -C "$REPO_ROOT" rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null;
 fi
 
 # ── THE PASSPHRASE ─────────────────────────────────────────────────────────
+#
+# The D6 REFUSAL is above, right after the pairing check, and it refuses the
+# SIGNING PATH — the only part of this script that touches the key. It sits
+# there, before the passphrase is asked for, because a CI job that asked for
+# one and then refused would be a job that HANGS on a prompt nobody can
+# answer.
 read_passphrase() {
 	if [[ -n "$PASSPHRASE_FILE" ]]; then
 		[[ -f "$PASSPHRASE_FILE" ]] || die "the passphrase file is absent: $PASSPHRASE_FILE"
@@ -393,6 +449,12 @@ fi
 # Verify what was just signed against the PINNED public key. `minisign` reads
 # the signature file as the four-line text, and the `.sig` file the Tauri
 # CLI writes is the BASE64 of that text — so both are decoded first.
+#
+# `minisign` is required HERE and not at the top of the script: it is the
+# VERIFIER, the public Actions never reach it (they refuse to sign), and a
+# CI image with no minisign must still be able to run the chain gate and the
+# pairing check.
+command -v minisign >/dev/null 2>&1 || die "minisign is not installed (brew install minisign) — the round trip cannot be verified without it"
 node -e '
 const fs = require("node:fs");
 fs.writeFileSync(process.argv[2], Buffer.from(fs.readFileSync(process.argv[1], "utf8").trim(), "base64").toString("utf8"));
