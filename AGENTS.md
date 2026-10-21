@@ -1,5 +1,56 @@
 # Agent Execution Log — brain-server
 
+> **R133 "Witness" (2026-10-21): the release helper said GREEN while both
+> public runs were still running.** The v1.29.26 cut shipped, and the helper
+> that watches the matrix told the operator *"all public runs for v1.29.26 are
+> green"* **about twenty minutes before the matrix finished**. Nothing was
+> mis-published — the ENFORCEMENT is `release.yml`'s own fail-closed check on
+> the ci.yml verdict, not the helper's — but the helper is the operator's
+> WITNESS, and a witness that cries wolf on success teaches you to ignore the
+> one signal the release line has.
+>
+> **The hole was a loop that could only clear its flag for a run it SAW.**
+> `DONE=1` before the poll, `[[ "$ST" != "completed" ]] && DONE=0` inside it,
+> `[[ "$DONE" == 1 ]] && break` after. When `gh run list` returned NOTHING —
+> a transient API failure, a rate limit, a query matching no rows — the loop
+> body never ran, `DONE` stayed 1, and the script printed green. The same
+> script's own header already records the lesson for the loop BESIDE it (it
+> queried the tag OBJECT rather than the COMMIT and waited its full ten
+> minutes on releases that had published): the same class of defect, in the
+> other loop.
+>
+> **The fix is ONE implementation with two callers.** The verdict moved into
+> `scripts/release-watch.sh`: `scripts/release.sh` (watching a real release)
+> and `tests/release_witness_gate.rs` (driving it against fixtures). The law
+> is one sentence — **no runs observed is UNKNOWN, and UNKNOWN is never
+> GREEN** — and the only GREEN is every observed run completed with a
+> `success` conclusion. A completed run with NO conclusion is not a success:
+> fail closed. The helper no longer queries the runs' verdicts itself; that
+> query moved into the witness, so the pin that drives it with fixtures and
+> the helper that watches a real release cannot drift apart.
+>
+> **Two drills, both RUN and REVERTED, and the observed text:** (1) the
+> vacuous pass planted back into the witness (an empty list answering
+> `GREEN`) → `assertion left == right failed: an EMPTY run list is UNKNOWN,
+> never GREEN. The witness returned Some(0) with stdout "GREEN" — the old
+> witness read "no runs observed" as "all green", and it did so on the
+> v1.29.26 release while both public runs were still in progress. left:
+> Some(0) right: Some(2)`; (2) the OLD inline loop planted back into
+> `scripts/release.sh` → `scripts/release.sh must no longer query the runs'
+> verdicts itself (the .[] | select(...) | [.status, (.conclusion // "")] |
+> @tsv query) — that query is where the empty list read as green, and it
+> belongs to the witness now`.
+>
+> **And the fix was verified against the REAL `gh`, not only against
+> fixtures:** the witness driven on the published v1.29.26 tag answers `GREEN`
+> (exit 0), and the same witness driven on a tag with no runs answers
+> `UNKNOWN` (exit 2) — the old witness would have said green.
+>
+> **ponytail:** one script, one test file, six arms; no new dependency, no
+> new crate, no new knob (the poll interval and the attempt count are
+> ARGUMENTS, not seams), no change to what a release publishes, and no change
+> to the release's fail-closed enforcement.
+
 > **R132 "Queue" (Phase III-6, 2026-10-21): the review queue is DISPLAYED,
 > and that is the whole of it.** The shell could not see the kernel's human
 > review queue at all — the one surface the Dioxus app had and the shell did

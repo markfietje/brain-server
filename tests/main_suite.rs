@@ -18568,10 +18568,18 @@ mod scrim {
     /// reports red on success.
     #[test]
     fn release_witness_scopes_its_queries_to_the_tag() {
-        let script = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/release.sh"),
-        )
-        .expect("release.sh readable");
+        // The witness is TWO files since the verdict was given its own
+        // implementation (`scripts/release-watch.sh`, so that the pin which
+        // drives it with fixtures and the helper which watches a real release
+        // cannot drift apart). The law did not change — every query still
+        // selects the TAG's runs, and only the tag's — so the pin reads BOTH
+        // and holds each needle in the file that owns it.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let helper =
+            std::fs::read_to_string(root.join("scripts/release.sh")).expect("release.sh readable");
+        let witness = std::fs::read_to_string(root.join("scripts/release-watch.sh"))
+            .expect("release-watch.sh readable");
+
         for (needle, why) in [
             (
                 r#"--json databaseId,headBranch"#,
@@ -18588,7 +18596,37 @@ mod scrim {
                  run on the same commit",
             ),
         ] {
-            assert!(script.contains(needle), "{why}");
+            // The verdict query lives in the witness; the registration query
+            // lives in the helper. Each is required in the file that owns it,
+            // and the tag filter is required in BOTH — so a witness that
+            // stopped scoping its own query is caught here, and a helper that
+            // stopped scoping the registration query is caught here too.
+            assert!(helper.contains(needle) || witness.contains(needle), "{why}");
+        }
+
+        // And the split is real: the helper must not carry the verdict query
+        // (that is where an EMPTY run list used to read as green), and the
+        // witness must carry it. A helper that decides the verdict for itself
+        // is the defect this refactor closed, so the pin states it.
+        assert!(
+            !helper.contains(r#"--json status,conclusion,headBranch"#),
+            "the VERDICT query is back in scripts/release.sh — an empty run \
+             list there read as green, and the verdict belongs to the witness"
+        );
+        assert!(
+            witness.contains(r#"--json status,conclusion,headBranch"#),
+            "the witness must carry the verdict query"
+        );
+        for (source, name) in [
+            (&helper, "scripts/release.sh"),
+            (&witness, "scripts/release-watch.sh"),
+        ] {
+            assert!(
+                source.contains(r#"select(.headBranch == \"$TAG\")"#),
+                "{name} must filter the runs on headBranch — a tag push registers \
+                 under the tag name, and without that filter a stale run on the \
+                 same commit decides this release's verdict"
+            );
         }
     }
 

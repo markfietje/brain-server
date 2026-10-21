@@ -241,32 +241,48 @@ if command -v gh >/dev/null 2>&1; then
     echo "       Inspect: https://github.com/markfietje/brain-server/actions" >&2
     exit 1
   fi
-  DONE=0; VERDICT=""
-  for _ in $(seq 1 150); do  # ≤ 75 min for the matrix + release assembly
-    DONE=1; VERDICT=""
-    while IFS=$'\t' read -r ST CO; do
-      [[ "$ST" != "completed" ]] && DONE=0
-      [[ -n "$CO" && "$CO" != "success" ]] && VERDICT="$VERDICT $CO"
-    done < <(gh run list --repo markfietje/brain-server --commit "$SHA" \
-               --json status,conclusion,headBranch \
-               --jq ".[] | select(.headBranch == \"$TAG\") | [.status, (.conclusion // \"\")] | @tsv" \
-               2>/dev/null)
-    [[ "$DONE" == 1 ]] && break
-    sleep 30
-  done
-  if [[ -n "$VERDICT" ]]; then
-    echo "error: public runs concluded not-green ($VERDICT). Nothing published:" >&2
-    echo "       release.yml refuses to ship over a red matrix. Inspect:" >&2
-    echo "       https://github.com/markfietje/brain-server/actions" >&2
-    exit 1
-  fi
-  if [[ "$DONE" != 1 ]]; then
-    echo "warning: public runs still in progress after 75 min — keep watching:" >&2
-    echo "         https://github.com/markfietje/brain-server/actions" >&2
-    echo "         Publication stays fail-closed until they land green." >&2
-    exit 0
-  fi
-  echo ">> all public runs for $TAG are green."
+  # THE WITNESS. `scripts/release-watch.sh` owns the verdict, so ONE
+  # implementation answers for the operator AND for the pin that drives it
+  # with fixtures (`tests/release_witness_gate.rs`).
+  #
+  # The loop this replaces decided the verdict with an inner `while` that
+  # could only clear its "done" flag for a run it SAW: when `gh run list`
+  # returned nothing — a transient API failure, a rate limit, a query that
+  # matched no rows — the loop body never ran, the flag stayed set, and the
+  # script printed "all public runs are green". It did exactly that on the
+  # v1.29.26 release, while BOTH public runs were still in progress. Nothing
+  # was mis-published (the enforcement is release.yml's own fail-closed check,
+  # not this helper's), but this helper is the operator's WITNESS, and a
+  # witness that cries wolf on success teaches you to ignore the one signal
+  # the release line has.
+  #
+  # So: no runs observed is UNKNOWN, and UNKNOWN keeps the watch alive.
+  REPO_SLUG="markfietje/brain-server"
+  WATCH_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-watch.sh"
+  VERDICT=""
+  VERDICT_RC=0
+  VERDICT="$(bash "$WATCH_SCRIPT" "$REPO_SLUG" "$SHA" "$TAG")" || VERDICT_RC=$?
+  case "$VERDICT_RC" in
+    0)
+      echo ">> all public runs for $TAG are green."
+      ;;
+    1)
+      echo "error: public runs concluded not-green (${VERDICT#RED}). Nothing published:" >&2
+      echo "       release.yml refuses to ship over a red matrix. Inspect:" >&2
+      echo "       https://github.com/markfietje/brain-server/actions" >&2
+      exit 1
+      ;;
+    3)
+      echo "error: the release witness could not run — ${VERDICT:-unknown reason}" >&2
+      exit 1
+      ;;
+    *)
+      echo "warning: no green verdict for $TAG within 75 min — keep watching:" >&2
+      echo "         https://github.com/markfietje/brain-server/actions" >&2
+      echo "         Publication stays fail-closed until they land green." >&2
+      exit 0
+      ;;
+  esac
 fi
 echo "Watch it: https://github.com/markfietje/brain-server/actions"
 echo "Result:   https://github.com/markfietje/brain-server/releases"

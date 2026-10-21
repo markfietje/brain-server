@@ -4,6 +4,37 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — the release witness says UNKNOWN when it knows nothing
+
+The helper that watches a release's public test runs told the operator a
+release was green while both of its runs were still running. Nothing was
+published that should not have been — the publisher has its own check and
+refuses to ship over a red matrix, and that check did not move — but the
+helper is the signal the operator reads, and a signal that says "green" when
+it knows nothing is a signal that teaches you to ignore it.
+
+The cause was a poll that could only clear its "done" flag for a run it
+actually saw. When the query returned nothing at all — a transient failure, a
+rate limit, a query that matched no rows — the loop had nothing to look at,
+so the flag stayed set and the answer was "green". The answer is now
+"unknown", and unknown keeps the watch alive instead of ending it. The only
+"green" is every run that was observed having finished successfully.
+
+**Improvements**
+
+- **The release helper no longer reports a matrix it did not read.** When the
+  watch found no runs at all, it reported the release as green. It now
+  reports that it does not know and keeps watching, and it says so in a word
+  that cannot be mistaken for a verdict. A run that finished without a
+  result is not a success either, and the watcher treats it as a failure
+  rather than passing it.
+- **The verdict has one home, and it is tested.** The decision moved into a
+  script of its own, shared by the release helper and a check that drives it
+  against fixed inputs — so the signal the operator reads and the check that
+  guards it cannot drift apart. The check was run against a planted copy of
+  the old behaviour, and against the old poll put back into the helper, and
+  both were caught with the failure text recorded.
+
 ## [1.29.26] — 2026-10-21 — the review queue is displayed, and nothing more
 
 The shell can now show the human review queue: what is waiting for a person to
