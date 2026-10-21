@@ -66,20 +66,38 @@
 > path's tail on the commercial clock (operator, 2026-10-21).** There is no
 > Apple Developer ID certificate, and there will not be one until after the
 > **first paying customer** — the Developer Program membership is a
-> first-customer decision. So III-5 (the Developer ID signature, notarization,
-> stapling, `spctl`, the clean machine) is **revenue-gated**, not "waiting to be
-> bought", and everything it gates moves with it: Plan 20's P4 gate 8, P5's
-> gate 9, and the **Dioxus decommission itself** — so `client/` STAYS, because
-> it is what ships today and the shell is not installable without a signed
-> bundle. **THE TWO KEYS ARE NOT THE SAME KEY, and that is the trap.** The
-> **Apple Developer ID** is Apple's, and it is deferred. The **minisign
-> updater key** is OURS — free, self-generated, needing neither a purchase nor
-> a customer — and it is the key the updater's manifest is signed with, and the
-> one whose public half is pinned in `shell/src-tauri/tauri.conf.json` while
-> its private half is **nowhere on this machine**. **The next round's
-> cert-free half costs no money and needs no customer**, and a session that
-> read "no signing key" as "no signing key of any kind" would park work that
-> is free today.
+> first-customer decision, and the operator's posture for now is **self-signed
+> only, no Apple signing, no App Store**. So III-5 (the Developer ID signature,
+> notarization, stapling, `spctl`, the clean machine) is **revenue-gated**, not
+> "waiting to be bought", and everything it gates moves with it: Plan 20's P4
+> gate 8, P5's gate 9, and the **Dioxus decommission itself** — so `client/`
+> STAYS, because it is what ships today and the shell is not installable
+> without a signed bundle.
+>
+> **THE TWO KEYS ARE NOT THE SAME KEY, and that is the trap.** The **Apple
+> Developer ID** is Apple's, and it is deferred. The **minisign updater key** is
+> **OURS** — free, self-generated, needing neither a purchase nor a customer —
+> and it is the key the updater's manifest is signed with.
+>
+> **AND A CORRECTION, because this round's own first measurement was WRONG and
+> the correction is the finding.** An earlier reading compared the wrong
+> halves — a minisign **secret** key does not embed the public key, so
+> comparing the secret's encrypted payload against the pinned public payload
+> compares two unrelated byte strings — and concluded that **the pinned key had
+> no private half on this machine**. It does. Measured properly:
+> `~/.config/brain-server/updater.key.pub` is **byte-identical** to the public
+> key pinned in `shell/src-tauri/tauri.conf.json` (same keynum
+> `C27C1E11196062D5`, same payload), and `~/.config/brain-server/updater.key`
+> is its **passphrase-protected** minisign secret key (`minisign -R` reaches the
+> passphrase prompt, which proves the file is well-formed). **So the keypair is
+> CORRECT and no re-key is needed** — what is missing is everything AROUND it:
+> `minisign` was not installed (installed 2026-10-21), the stored key is
+> double-base64'd so a tool cannot read that path (a correctly-formed 0600 copy
+> now sits beside it), and **no release publishes an artefact, a signature or a
+> manifest**. The tree's gates still cannot see the pairing — P6 scans the
+> tracked tree, P7 checks the key's SHAPE, and every III-4 drill minted a fresh
+> keypair — so **the shipped pair was never proved**, and a future re-key would
+> have been done for no reason.
 >
 > **ponytail:** one script, one test file, six arms; no new dependency, no
 > new crate, no new knob (the poll interval and the attempt count are
