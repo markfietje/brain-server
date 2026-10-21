@@ -43,10 +43,24 @@ jobs:
         # bench,migrate`, `brain-connector-gh` needs `--features
         # connector-github` (both empty features that gate compilation).
         # brain-connector-crm likewise via `connector-crm`.
+        #
+        # `--locked` ON EVERY BUILD, and it is the reason the shipped binary
+        # can be audited at all. Without it cargo may RE-RESOLVE the lockfile
+        # mid-build, and the release would ship bytes from a dependency set
+        # that no audit ever saw — the dependency audit runs over the
+        # COMMITTED lockfile, so a silent re-resolution would put a different
+        # artifact behind that audit. With `--locked` cargo REFUSES to
+        # re-resolve, so the tree that passed the audit is provably the tree
+        # that was compiled. The shell lane already builds this way
+        # (`--locked --offline`); the release did not, and that gap is what
+        # this closes. The lockfile satisfies every feature set below
+        # (checked with `cargo metadata --locked` for `bench,migrate`,
+        # `connector-github` and `connector-crm`), so this refuses a release
+        # whose lockfile has drifted — which is the fail-closed direction.
         run: |
-          cargo build --release --features bench,migrate
-          cargo build --release --features connector-github --bin brain-connector-gh
-          cargo build --release --features connector-crm --bin brain-connector-crm
+          cargo build --release --locked --features bench,migrate
+          cargo build --release --locked --features connector-github --bin brain-connector-gh
+          cargo build --release --locked --features connector-crm --bin brain-connector-crm
         continue-on-error: true
 
       - name: Generate CycloneDX SBOM
@@ -109,9 +123,9 @@ jobs:
       - name: Build (linux aarch64 via cross)
         run: |
           command -v cross >/dev/null 2>&1 || cargo install cross --version 0.2.5 --locked
-          cross build --release --features bench,migrate --target aarch64-unknown-linux-gnu
-          cross build --release --features connector-github --bin brain-connector-gh --target aarch64-unknown-linux-gnu
-          cross build --release --features connector-crm --bin brain-connector-crm --target aarch64-unknown-linux-gnu
+          cross build --release --locked --features bench,migrate --target aarch64-unknown-linux-gnu
+          cross build --release --locked --features connector-github --bin brain-connector-gh --target aarch64-unknown-linux-gnu
+          cross build --release --locked --features connector-crm --bin brain-connector-crm --target aarch64-unknown-linux-gnu
         continue-on-error: true
 
       - name: Stage artifacts
@@ -141,9 +155,9 @@ jobs:
 
       - name: Build (macOS arm64, native)
         run: |
-          cargo build --release --features bench,migrate
-          cargo build --release --features connector-github --bin brain-connector-gh
-          cargo build --release --features connector-crm --bin brain-connector-crm
+          cargo build --release --locked --features bench,migrate
+          cargo build --release --locked --features connector-github --bin brain-connector-gh
+          cargo build --release --locked --features connector-crm --bin brain-connector-crm
         continue-on-error: true
 
       - name: Stage artifacts
@@ -190,9 +204,9 @@ jobs:
 
       - name: Build (macOS x86_64)
         run: |
-          cargo build --release --features bench,migrate --target x86_64-apple-darwin
-          cargo build --release --features connector-github --bin brain-connector-gh --target x86_64-apple-darwin
-          cargo build --release --features connector-crm --bin brain-connector-crm --target x86_64-apple-darwin
+          cargo build --release --locked --features bench,migrate --target x86_64-apple-darwin
+          cargo build --release --locked --features connector-github --bin brain-connector-gh --target x86_64-apple-darwin
+          cargo build --release --locked --features connector-crm --bin brain-connector-crm --target x86_64-apple-darwin
         continue-on-error: true
 
       - name: Stage artifacts
@@ -661,7 +675,7 @@ jobs:
           # historical SBOM refuses to publish (fail-closed). Implemented in
           # a script file, not inline: run-block quoting layers do not
           # survive the transport intact.
-          ./scripts/check-dist-sbom.sh "$version" dist
+          ./scripts/check-dist-sbom.sh "$version" dist --against-lockfile
 
       # BEST-EFFORT, AND THE JOB SAYS SO (2026-10-13). Observed on v1.29.15:
       # all 34 assets uploaded, then the job died with `##[error]other side

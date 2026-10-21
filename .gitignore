@@ -155,3 +155,10 @@ docs/SECURITY_AUDIT_20260912_FIFTH_PASS.md
 docs/SECURITY_AUDIT_20260912_FOURTH_PASS.md
 docs/SECURITY_AUDIT_20260913_SEVENTH_PASS.md
 docs/SECURITY_AUDIT_20261006_TENTH_PASS_REGULATORY.md
+.audit/
+
+# The operator's local tmux runner — a personal helper that reaches a private
+# host over SSH. It is a TOOL, not part of the tree: it names that host, and
+# this repository is mirrored to a PUBLIC repo, so committing it would publish
+# the name. Nothing in the tree references it and nothing needs it to.
+.exec-in-tmux.sh

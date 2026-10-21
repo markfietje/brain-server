@@ -91,6 +91,141 @@ fn check_dist(version: &str, dist: &Path) -> std::process::Output {
         .expect("check-dist-sbom.sh executes")
 }
 
+/// The same check with the lockfile comparison ON — the shape the release
+/// path runs.
+fn check_dist_against_lockfile(version: &str, dist: &Path) -> std::process::Output {
+    Command::new("bash")
+        .arg(repo().join("scripts/check-dist-sbom.sh"))
+        .arg(version)
+        .arg(dist)
+        .arg("--against-lockfile")
+        .output()
+        .expect("check-dist-sbom.sh executes")
+}
+
+/// A dist SBOM with a chosen component list, for the lockfile comparison.
+fn write_dist_sbom_with_components(dist: &Path, version: &str, components: serde_json::Value) {
+    let body = serde_json::json!({
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "version": 1,
+        "metadata": {
+            "component": {
+                "type": "application",
+                "name": "brain-server",
+                "version": version,
+            }
+        },
+        "components": components,
+    });
+    std::fs::write(
+        dist.join(format!("brain-server-{version}.cdx.json")),
+        serde_json::to_string(&body).expect("fixture serializes"),
+    )
+    .expect("fixture written");
+}
+
+/// **The release path runs the lockfile comparison.** The check is opt-in
+/// because the version-and-uniqueness contract is what a fixture with no
+/// components can exercise — but the RELEASE must run the stronger form, or
+/// the shipped manifest is never compared with the audited lockfile.
+#[test]
+fn release_verify_compares_the_sbom_with_the_committed_lockfile() {
+    let yml = workflow();
+    assert!(
+        yml.contains("check-dist-sbom.sh \"$version\" dist --against-lockfile"),
+        "the release verify step must run the dist SBOM check WITH \
+         --against-lockfile — the version-and-uniqueness contract alone lets a \
+         re-resolved dependency set ride a release"
+    );
+}
+
+/// A component at a version the committed lockfile does NOT pin is refused:
+/// that is what a build that re-resolved the lockfile looks like.
+#[test]
+fn dist_check_refuses_a_component_the_committed_lockfile_does_not_pin() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).expect("dist dir");
+    // A version the lockfile does not carry: the vulnerable one this
+    // repository closed.
+    write_dist_sbom_with_components(
+        &dist,
+        "1.29.25",
+        serde_json::json!([
+            {"type": "library", "name": "rustls-webpki", "version": "0.103.15"},
+        ]),
+    );
+    let out = check_dist_against_lockfile("1.29.25", &dist);
+    assert!(
+        !out.status.success(),
+        "a component at a version the committed lockfile does not pin must fail — \
+         that is a re-resolved dependency set, which no audit ever saw"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("rustls-webpki") && err.contains("0.103.15"),
+        "the refusal must NAME the crate and the version: {err}"
+    );
+}
+
+/// A manifest that lists NO components is refused under the comparison: it
+/// would satisfy every version check while proving nothing about the
+/// dependency set.
+#[test]
+fn dist_check_refuses_a_manifest_with_no_components() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).expect("dist dir");
+    write_dist_sbom_with_components(&dist, "1.29.25", serde_json::json!([]));
+    let out = check_dist_against_lockfile("1.29.25", &dist);
+    assert!(
+        !out.status.success(),
+        "a manifest that names no components must fail the comparison — it \
+         satisfies every version check while proving nothing"
+    );
+}
+
+/// The COMMITTED manifest, against the COMMITTED lockfile, passes: the
+/// comparison is not a refusal machine, and the real pair satisfies it.
+#[test]
+fn the_committed_manifest_satisfies_the_committed_lockfile() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).expect("dist dir");
+    let version = current_version();
+    let committed = repo()
+        .join("sbom")
+        .join(format!("brain-server-{version}.cdx.json"));
+    assert!(
+        committed.exists(),
+        "the committed manifest for {version} must exist: {}",
+        committed.display()
+    );
+    std::fs::copy(
+        &committed,
+        dist.join(format!("brain-server-{version}.cdx.json")),
+    )
+    .expect("copy the committed manifest");
+    let out = check_dist_against_lockfile(&version, &dist);
+    assert!(
+        out.status.success(),
+        "the committed manifest satisfies the committed lockfile: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The crate version the tree is at.
+fn current_version() -> String {
+    let cargo = std::fs::read_to_string(repo().join("Cargo.toml")).expect("Cargo.toml readable");
+    cargo
+        .lines()
+        .find_map(|l| l.strip_prefix("version = \""))
+        .and_then(|l| l.split('"').next())
+        .expect("Cargo.toml carries a version")
+        .to_string()
+}
+
 /// Fixture with several historical SBOMs stages exactly the tag-matched
 /// manifest — and the merged multi-platform dist then holds one SBOM asset
 /// for the target version.
