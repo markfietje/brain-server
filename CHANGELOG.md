@@ -4,6 +4,67 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.25] — 2026-10-21 — the audit gate reads one config, and the tree carries no known advisories
+
+The shell's dependency audit ran the Tauri lockfile from a directory where the
+repository's own audit configuration was invisible, so the exemptions this
+project documents — and the measurements behind them — did not apply to the
+lane that needed them. The lane now runs from the workspace root, under the one
+configuration every other lockfile in the project is audited under. The
+mechanism is measured rather than assumed: the old spelling, run from the
+shell's own directory, still fails; the new one passes.
+
+With every lane reading the same configuration, the tree was refreshed to the
+newest versions each manifest allows, and the two advisories published on the
+19th and 20th of October were closed — the certificate-verification one by a
+dependency bump in every lockfile that carried the affected crate, the other
+by recording, with its own measurement, that the crate it names carries no
+certificates of its own and compiles in the fixed release of the one that
+does.
+
+The Dioxus control surface moved to the newest release of the alpha line it
+pins. That release restructures the one type the client compares its key
+presses against, and moving to it surfaced a check that had been dead since it
+was written: the modifier the client looks for is a legacy bit no browser
+sets, so the keyboard shortcuts it guarded did nothing on macOS.
+
+### Release notes
+
+**Security fixes**
+
+- The certificate-verification fix in the WebPKI crate is now in every
+  lockfile in the project. The affected releases could accept a certificate
+  path through an intermediate whose private key is now public. The patched
+  release is in all seven tracked lockfiles, and the dependency audit over
+  them reports no known advisories.
+
+**Improvements**
+
+- The shell's dependency audit runs from the workspace root now, so the Tauri
+  lockfile is audited under the same configuration — and the same documented
+  exemptions, each with its recorded measurement — as every other lockfile in
+  the project. The old spelling, run from the shell's own directory, still
+  fails; that difference is what the lane was missing.
+- Every tracked lockfile was refreshed to the newest version its manifest
+  allows.
+- The Dioxus control surface moved to the newest release of the alpha line it
+  pins, and the one comparison that release restructures was ported.
+
+**Bug fixes**
+
+- The command palette and the collapsible nav rail did nothing on macOS. The
+  modifier they look for is a legacy bit that no browser reports, so the check
+  never fired; it now reads the modifier the browser actually reports, and a
+  pin holds it.
+
+**Owed, not claimed**
+
+The neural-embedding tier's runtime stays where it is. The newer release of
+that crate is not reachable here: it exact-pins a newer inference runtime
+whose macOS build does not link, and the failure that pins it is recorded
+with the measurement behind it. The way forward there is a packaging change
+rather than a version bump, so it is named rather than taken.
+
 ## [1.29.24] — 2026-10-20 — the updater ships with a pinned key, and the review queue stops being the agent's to read
 
 The macOS shell can now update itself, and the update path refuses in three
