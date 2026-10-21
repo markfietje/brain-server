@@ -1806,7 +1806,23 @@ mod tests {
     /// the FIRST in the crate's push order.
     #[test]
     fn promote_is_total_and_reports_the_push_order_first_reason() {
-        let (mut conn, _run_id) = seed();
+        // The operator key is AMBIENT state — `BRAIN_UMP_KEY_DIR` is
+        // process-global — and a phase pass with no usable key REFUSES (the
+        // law `delivery_phase_advance_writes_step_row_cas_and_audit_atomically`
+        // states in its own words). So this test OWNS the key: the guard is
+        // held for the whole body, and the seed runs through `seed_locked` —
+        // the shape this module's own census names ("Call seed_locked(&guard)
+        // instead"), because `seed()` takes the same crate-wide guard and
+        // would deadlock the test against itself.
+        //
+        // WITHOUT it this test passed only where the operator's key happens to
+        // be installed (a developer machine) or where a sibling happened to
+        // hold the guard at that instant. On a clean CI runner it went RED
+        // with `AttestationRefused { reason: "operator_key_absent" }` — a
+        // laptop-green, CI-red test that is a defect in the TEST, not in the
+        // code under it.
+        let operator = crate::test_support::operator_key_guard();
+        let (mut conn, _run_id) = seed_locked(&operator);
         // NO artifact-carrying release can exist without a chain in this
         // world, so the structural-empty case is built directly: a release
         // whose run carries NO attestation rows (admission only) is
@@ -1960,7 +1976,21 @@ mod tests {
     /// it wholesale.
     #[test]
     fn promote_refuses_when_the_run_moved_since_the_approval() {
-        let (mut conn, run_id) = seed();
+        // The operator key is AMBIENT state — `BRAIN_UMP_KEY_DIR` is
+        // process-global — and a phase pass with no usable key REFUSES. This
+        // test advances the phase and expects SUCCESS, so it must OWN the key:
+        // the guard is held for the whole body and the seed runs through
+        // `seed_locked` (this module's census names the shape: "Call
+        // seed_locked(&guard) instead" — `seed()` takes the same crate-wide
+        // guard and would deadlock the test against itself).
+        //
+        // WITHOUT it this test was green on a laptop (the operator's key is
+        // installed at `~/.config/brain-server/ump/`) and RED on a clean CI
+        // runner, which has none: `the run moved: AttestationRefused { reason:
+        // "operator_key_absent" }` — the release's `multivec` lane, the
+        // fail-closed publication gate, and the whole v1.29.25 publication.
+        let operator = crate::test_support::operator_key_guard();
+        let (mut conn, run_id) = seed_locked(&operator);
         let created = file_release(&mut conn, run_id, 3);
         approve(&mut conn, created.release_id, 4);
         let artifact = DeliveryArtifact {
