@@ -376,12 +376,15 @@ SIGNATURE="$ARTIFACT.sig"
 # the same key.
 if [[ ! -f "$SIGNATURE" ]]; then
 	echo ">> signing the artifact with the updater key…"
-	(
+	if ! (
 		cd "$SHELL_DIR"
 		TAURI_SIGNING_PRIVATE_KEY_PATH="$SIGN_KEY" \
 		TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$PASSPHRASE" \
 			pnpm tauri signer sign --app-version "$APP_VERSION" "$ARTIFACT"
-	)
+	) > "$TMPDIR_SIGN/sign.log" 2>&1; then
+		cat "$TMPDIR_SIGN/sign.log" >&2
+		die "the signing key did not sign the artifact: the passphrase is wrong, or the file is not a usable minisign secret key"
+	fi
 fi
 [[ -f "$SIGNATURE" ]] || die "the artifact carries no signature beside it: $SIGNATURE"
 

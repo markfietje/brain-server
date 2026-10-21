@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, test } from 'vitest';
+import { afterAll, afterEach, expect, test } from 'vitest';
 import { kernelRoot, shellRoot } from './fixtures';
 
 /**
@@ -49,6 +49,12 @@ afterEach(() => {
 	}
 });
 
+// The fixture keypair outlives the per-test scratch — it is one key for the
+// whole file — and it is removed when the file is done.
+afterAll(() => {
+	if (fixtureKeyDir !== null) rmSync(fixtureKeyDir, { recursive: true, force: true });
+});
+
 function tempDir(prefix = 'brain-updater-'): string {
 	const directory = mkdtempSync(join(tmpdir(), prefix));
 	scratch.push(directory);
@@ -56,25 +62,81 @@ function tempDir(prefix = 'brain-updater-'): string {
 }
 
 /**
- * A `.sig` file with the given trusted comment, in the shape minisign writes.
+ * A REAL minisign signature over the artefact, made by the Tauri CLI.
  *
- * The FILE's content is the BASE64 of the four-line text — that is what the
- * bundler writes beside the artifact, and what the manifest's `signature`
- * field carries. (The writer reads the trusted comment out of the DECODED
- * text; a fixture written as plain text would model a different file.)
+ * The fixture used to SYNTHESIZE the `.sig` file — the right shape: an
+ * untrusted comment, a 74-byte packet, the trusted comment, a 64-byte global
+ * signature. That is a fixture of the SHAPE, not of the THING, and it left a
+ * real gap: **nobody had ever run the writer against a signature the Tauri
+ * CLI actually produces.** The writer parses the trusted comment to learn
+ * which artefact the signature names and which version it was made for, and
+ * a hand-written imitation of that comment proves the parser against the
+ * imitation.
+ *
+ * So the fixture now MINTS a keypair with the CLI and signs the artefact with
+ * it, and the writer reads the real trusted comment
+ * (`timestamp:…\tfile:…\tversion:…`). The version arm stays reachable
+ * because the CLI's `--app-version` sets that field.
+ *
+ * The signature is base64 of the four-line minisign text — the CLI writes it
+ * that way, and so does the bundler beside the artefact it built.
  */
-function signatureFile(trustedComment: string): string {
-	const packet = Buffer.alloc(74);
-	packet.write('Ed', 0, 'ascii');
-	const global = Buffer.alloc(64);
-	const text = [
-		'untrusted comment: signature from minisign secret key',
-		packet.toString('base64'),
-		`trusted comment: ${trustedComment}`,
-		global.toString('base64'),
-		''
-	].join('\n');
-	return `${Buffer.from(text, 'utf8').toString('base64')}\n`;
+const FIXTURE_KEY_PASSWORD = 'brain-shell-fixture-password';
+
+let fixtureKey: { secretKey: string; publicKey: string } | null = null;
+let fixtureKeyDir: string | null = null;
+
+/**
+ * ONE fixture keypair for the whole file: minting costs a CLI invocation.
+ *
+ * The key's directory is NOT one of the per-test scratch directories — the
+ * scratch is emptied after EVERY test, and a key that vanished between two
+ * tests would be a key the second test could not sign with.
+ */
+function fixtureSigningKey(): { secretKey: string; publicKey: string } {
+	if (fixtureKey !== null && existsSync(fixtureKey.secretKey)) return fixtureKey;
+	fixtureKeyDir = mkdtempSync(join(tmpdir(), 'brain-updater-fixturekey-'));
+	const secretKey = join(fixtureKeyDir, 'fixture.key');
+	const minted = spawnSync(
+		'pnpm',
+		['tauri', 'signer', 'generate', '--ci', '-w', secretKey, '-p', FIXTURE_KEY_PASSWORD],
+		{ cwd: shellRoot, encoding: 'utf8' }
+	);
+	if (minted.status !== 0) {
+		throw new Error(
+			`the Tauri CLI could not mint the fixture keypair: ${minted.stderr}\n` +
+				'Without a real key the writer would only ever see a hand-written signature.'
+		);
+	}
+	fixtureKey = { secretKey, publicKey: `${secretKey}.pub` };
+	return fixtureKey;
+}
+
+/** Sign the artefact with the fixture key, for the given version. */
+function signFixtureArtifact(artifact: string, version: string): void {
+	const key = fixtureSigningKey();
+	const signed = spawnSync(
+		'pnpm',
+		[
+			'tauri',
+			'signer',
+			'sign',
+			'--app-version',
+			version,
+			'-f',
+			key.secretKey,
+			'-p',
+			FIXTURE_KEY_PASSWORD,
+			artifact
+		],
+		{ cwd: shellRoot, encoding: 'utf8' }
+	);
+	if (signed.status !== 0) {
+		throw new Error(
+			`the Tauri CLI could not sign the fixture artefact: ${signed.stderr}\n` +
+				'Without a REAL signature the writer would only ever see a hand-written one.'
+		);
+	}
 }
 
 /** A minimal but real `Info.plist` for a built `.app`. */
@@ -177,20 +239,19 @@ function fixture(options: FixtureOptions = {}): Fixture {
 	);
 
 	// The built app and the updater artifact, with the artifact's signature
-	// beside it — exactly where the bundler writes it.
+	// beside it — exactly where the bundler writes it, and made by the same
+	// CLI that makes the real one.
 	const work = tempDir('brain-updater-build-');
 	const bundle = join(work, 'Brain Shell.app');
 	mkdirSync(join(bundle, 'Contents'), { recursive: true });
 	writeFileSync(join(bundle, 'Contents', 'Info.plist'), infoPlist(artifactVersion));
 	const artifact = join(work, 'Brain Shell.app.tar.gz');
 	writeFileSync(artifact, 'the updater artifact bytes\n');
+	signFixtureArtifact(artifact, options.signedVersion ?? artifactVersion);
 	const signature = `${artifact}.sig`;
-	writeFileSync(
-		signature,
-		signatureFile(
-			`timestamp:1792477513\tfile:Brain Shell.app.tar.gz\tversion:${options.signedVersion ?? artifactVersion}`
-		)
-	);
+	if (!existsSync(signature)) {
+		throw new Error(`the Tauri CLI wrote no signature beside ${artifact}`);
+	}
 
 	return { root, staged, artifact, bundle, signature, manifest: join(work, 'latest.json'), tag };
 }
