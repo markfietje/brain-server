@@ -1383,7 +1383,7 @@ mod tests {
         );
         // Unrelated keys are unhandled.
         assert_eq!(key_action(&Key::Character("z".into()), true), None);
-        assert_eq!(key_action(&Key::Enter, true), None);
+        assert_eq!(key_action(&Key::Named(NamedKey::Enter), true), None);
     }
 
     /// M1.4: `?` toggles the help table; the help table lists every mapped key

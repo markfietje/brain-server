@@ -638,7 +638,9 @@ pub fn panel_run(run_id: i64) -> Element {
                         disabled: !writes,
                         oninput: move |e| steer.set(e.value()),
                         onkeydown: move |e: Event<KeyboardData>| {
-                            if e.data().key() == Key::Enter && steer_sendable(&steer()) {
+                            if e.data().key() == Key::Named(NamedKey::Enter)
+                                && steer_sendable(&steer())
+                            {
                                 submit_composer(steer());
                             }
                         },
@@ -709,7 +711,9 @@ pub fn panel_run(run_id: i64) -> Element {
                     "aria-label": t("runs_help_title"),
                     tabindex: -1,
                     onkeydown: move |e: Event<KeyboardData>| {
-                        if e.data().key() == Key::Escape || key_label(e.data().key()) == "?" {
+                        if e.data().key() == Key::Named(NamedKey::Escape)
+                            || key_label(e.data().key()) == "?"
+                        {
                             help_open.set(false);
                         }
                     },

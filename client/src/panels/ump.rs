@@ -184,7 +184,9 @@ pub fn panel() -> Element {
                         class: "input flex-1",
                         value: "{recall_q}",
                         oninput: move |e| recall_q.set(e.value()),
-                        onkeydown: move |e| if e.key() == Key::Enter { run_recall(()) },
+                        onkeydown: move |e| if e.key() == Key::Named(NamedKey::Enter) {
+                            run_recall(())
+                        },
                         placeholder: "{ump_query_ph}",
                     }
                     input {

@@ -130,11 +130,24 @@ brain-evolve-core = { path = "crates/brain-evolve-core" }
 model2vec-rs = "0.3"
 # v1.28 "Caliber": the neural-tier runtime (BGE-M3 dense+sparse+colbert +
 # bge-reranker-v2-m3). Optional — only pulled by `neural-embed`/`rerank-tier`.
-# 2026-10-04 bump 6.0.2 → 7.1.0 (latest stable). The `ort` coupling that drove
+# 2026-10-04 bump 6.0.2 → 7.1.0. The `ort` coupling that drove
 # the original pin is UNCHANGED across the major: fastembed 7.1.0 still
 # exact-pins `ort = =2.0.0-rc.13` (verified against the crates.io dependency
 # record), so brain-server's `ort` below stays where it is. Its `tokenizers`
 # floor rose to `^0.23.2`, which is why the `tokenizers` dep below moved too.
+#
+# 2026-10-21: fastembed 7.1.4 is the newest stable, and this pin is NOT
+# "latest" any more — 7.1.2+ exact-pins `ort = =2.0.0-rc.15`, and rc.15's
+# macOS ONNX Runtime artifact does not LINK (it pulls the CoreML provider's
+# `host_utils.mm.o`, which needs `___isPlatformVersionAtLeast`, a symbol no
+# macOS 27 SDK ships). The 2026-10-20 lockfile refresh took 7.1.0 → 7.1.2 and
+# broke `scripts/install-service.sh` at the link step; the pins were restored
+# to 7.1.0 / rc.13 and the build linked again. The forward path is a
+# DEPLOYMENT change (ort's load-dynamic strategy, or an ONNX Runtime built
+# without the CoreML provider), so it is the operator's call — see
+# CHANGELOG.md's "the ort link failure" entry. Re-check trigger: an
+# ort-sys release whose macOS artifact links again, or a fastembed release
+# that stops exact-pinning `ort`.
 fastembed = { version = "=7.1.0", optional = true, default-features = false }
 
 # Database Stack. 2026-08-04 audit bump (v1.12.x "Harden"): rusqlite 0.38.0 →

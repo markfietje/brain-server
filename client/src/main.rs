@@ -1394,6 +1394,26 @@ fn Connect() -> Element {
     }
 }
 
+/// The command modifier: CONTROL (Ctrl) or META (Cmd / the browser's
+/// `metaKey`).
+///
+/// META, and NOT the legacy `SUPER` bit — a bit that is never set, so a check
+/// against it is a check that never fires. dioxus-web maps the browser's
+/// `meta_key()` to `Modifiers::META` and inserts nothing else (measured in
+/// dioxus-web 0.8's `events/keyboard.rs`), and `keyboard-types` deprecated
+/// `SUPER` as "marked as legacy in the spec, use META instead". The client's
+/// `contains(Modifiers::SUPER)` therefore never fired, so Cmd+K (command
+/// palette) and Cmd+B (collapse the nav rail) did nothing on macOS while
+/// Ctrl+K / Ctrl+B worked everywhere else.
+///
+/// Pinned by `the_command_modifier_is_control_or_meta` in the tests below: the
+/// predicate is the one place the shortcut's reachability is decided, so a
+/// future edit back to the dead bit is a red test rather than a silent
+/// regression on one platform.
+fn is_command_modifier(mods: Modifiers) -> bool {
+    mods.contains(Modifiers::CONTROL) || mods.contains(Modifiers::META)
+}
+
 /// AppShell — the nav rail (desktop/web) that persists across route transitions.
 /// M2: F-pattern top bar with `Pending: N`, left-rail count badges, principal
 /// identity, and the read-only degrade banner (M1) + context drawer (M2.2).
@@ -1521,8 +1541,7 @@ fn AppShell() -> Element {
     let shell_keys = move |e: Event<KeyboardData>| {
         let mut ui = ui;
         let mut sidebar_collapsed = sidebar_collapsed;
-        let mod_pressed =
-            e.modifiers().contains(Modifiers::CONTROL) || e.modifiers().contains(Modifiers::SUPER);
+        let mod_pressed = is_command_modifier(e.modifiers());
         if mod_pressed && let Key::Character(c) = e.key() {
             if c.eq_ignore_ascii_case("k") {
                 ui.palette_open.set(!(ui.palette_open)());
@@ -1531,7 +1550,7 @@ fn AppShell() -> Element {
                 sidebar_collapsed.set(next);
                 i18n::pref_save("sidebar_collapsed", if next { "1" } else { "0" });
             }
-        } else if e.key() == Key::Escape && !(ui.palette_open)() {
+        } else if e.key() == Key::Named(NamedKey::Escape) && !(ui.palette_open)() {
             sidebar_collapsed.set(false);
         }
     };
@@ -2194,11 +2213,11 @@ fn CommandPalette() -> Element {
                     match e.key() {
                         // Esc + Tab are owned by the Modal shell (two-step Esc
                         // lives in `on_close`; the focus trap is v1.16.7's).
-                        Key::ArrowDown => {
+                        Key::Named(NamedKey::ArrowDown) => {
                             cursor.set((cursor() + 1).min(flat.len().saturating_sub(1)))
                         }
-                        Key::ArrowUp => cursor.set(cursor().saturating_sub(1)),
-                        Key::Enter => {
+                        Key::Named(NamedKey::ArrowUp) => cursor.set(cursor().saturating_sub(1)),
+                        Key::Named(NamedKey::Enter) => {
                             if let Some(c) = confirm_ui().clone() {
                                 confirm_ui.set(None);
                                 run_ui(c);
@@ -2400,9 +2419,9 @@ pub(crate) fn Modal(
                 }
             },
             onkeydown: move |e: Event<KeyboardData>| {
-                if e.key() == Key::Escape {
+                if e.key() == Key::Named(NamedKey::Escape) {
                     on_close.call(());
-                } else if e.key() == Key::Tab {
+                } else if e.key() == Key::Named(NamedKey::Tab) {
                     let shift = e.modifiers().contains(Modifiers::SHIFT);
                     let t = trap.clone();
                     spawn(async move { focus_trap(&t, shift).await; });
@@ -2432,9 +2451,9 @@ fn Drawer() -> Element {
             tabindex: "0",
             onkeydown: move |e: Event<KeyboardData>| {
                 // Esc closes; Tab / Shift+Tab cycle focus within the dialog.
-                if e.key() == Key::Escape {
+                if e.key() == Key::Named(NamedKey::Escape) {
                     ui.drawer.set(None);
-                } else if e.key() == Key::Tab {
+                } else if e.key() == Key::Named(NamedKey::Tab) {
                     let shift = e.modifiers().contains(Modifiers::SHIFT);
                     spawn(async move { focus_trap(".drawer", shift).await; });
                 }
@@ -2620,6 +2639,36 @@ fn NotFound(segments: Vec<String>) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The command modifier is CONTROL (Ctrl) or META (Cmd) — and NOT the
+    /// legacy `SUPER` bit, which no browser ever sets, so a check against it
+    /// is a check that never fires.
+    ///
+    /// This is a PIN, not a restatement: the predicate was inline in the
+    /// shell's key handler until the 2026-10-21 dioxus bump made the
+    /// difference measurable (dioxus-web maps `meta_key()` to
+    /// `Modifiers::META`), and the old `contains(Modifiers::SUPER)` is why
+    /// Cmd+K / Cmd+B were dead on macOS while Ctrl+K / Ctrl+B worked. The
+    /// legacy bit is built by VALUE (0x2000) rather than by its deprecated
+    /// constant, so the pin does not reintroduce the deprecation it exists to
+    /// keep out of the tree.
+    #[test]
+    fn the_command_modifier_is_control_or_meta() {
+        // Ctrl on every platform; Cmd on macOS (the browser's `metaKey`).
+        assert!(is_command_modifier(Modifiers::CONTROL));
+        assert!(is_command_modifier(Modifiers::META));
+        assert!(is_command_modifier(Modifiers::CONTROL | Modifiers::META));
+        // Alt and Shift are not the command modifier, and no modifier is not
+        // either.
+        assert!(!is_command_modifier(Modifiers::ALT));
+        assert!(!is_command_modifier(Modifiers::SHIFT));
+        assert!(!is_command_modifier(Modifiers::empty()));
+        // The legacy "Super" bit (0x2000) is NOT the command modifier — it is
+        // the bit the old check read, and dioxus-web never inserts it.
+        let legacy_super = Modifiers::from_bits_truncate(0x2000);
+        assert!(!is_command_modifier(legacy_super));
+        assert!(!is_command_modifier(legacy_super | Modifiers::ALT));
+    }
 
     /// A single failure must NOT flip green→amber (the false-offline guard).
     #[test]

@@ -59,6 +59,31 @@
 # requirement cannot reach it — 9.0.0 does not satisfy it — so the bump
 # needs a tauri-plugin-updater release first. That is the re-check trigger.
 #
+# RUSTSEC-2026-0381 (webpki-roots 0.26.11): the bundled root certificates
+# allowed a certificate path through the DISTRUSTED `emSign ECC Root CA - G3`
+# intermediate, whose private key is now public (CVE-2026-111943). The fix
+# (webpki-roots 1.0.10) DROPS that root.
+#
+# A FALSE POSITIVE, and the measurement is the only thing that makes it one.
+# The 0.26.11 release is a SEMVER SHIM, not a root bundle: its source is
+# `pub use parent::TLS_SERVER_ROOTS;` over a dependency on `webpki-roots` v1,
+# so it compiles in NO roots of its own — every root it serves comes from the
+# v1 crate the lockfile resolves. Measured 2026-10-21: `emSign ECC Root CA -
+# G3` appears 4x in webpki-roots 1.0.8/1.0.9's bundle and 0x in 1.0.10's, and
+# every tracked lockfile that carries the shim resolves its parent to
+# webpki-roots 1.0.10 — the FIXED release. cargo-audit compares the shim's
+# VERSION NUMBER (0.26.11) against the advisory's `patched = [">= 1.0.10"]`,
+# finds 0.26.11 < 1.0.10, and reports a vulnerability the artifact does not
+# carry.
+#
+# NOT FIXABLE BY A RE-LOCK, which is the load-bearing fact behind the ignore.
+# The 0.26.x line ENDS at 0.26.11 (upstream moved to 1.x), and the shim has
+# exactly two consumers in this repo: `ureq` 2.12.1 (root workspace: via
+# model2vec-rs 0.3.0 -> hf-hub 0.4.3; channel-bridge: via tokio-tungstenite
+# 0.30.0). ureq's LAST 2.x release still requires `webpki-roots ^0.26`, and
+# model2vec-rs 0.3.0 — the newest published — requires BOTH `hf-hub ^0.4` and
+# `ureq ^2` directly, so the shim cannot leave any tracked lockfile today.
+#
 # Re-check triggers (any one → revisit these ignores):
 #   - model2vec-rs releases with hf-hub >= 0.5  (clears number_prefix)
 #   - tokenizers release without paste          (clears paste)
@@ -66,6 +91,8 @@
 #   - tauri 2.x bumps gtk ≥ 0.19 / glib ≥ 0.20  (clears RUSTSEC-2024-0429)
 #   - tauri-plugin-updater releases whose `zip` requirement reaches >= 9.0.0
 #     (clears RUSTSEC-2026-0367/0368/0369)
+#   - ureq 3.x, or a model2vec-rs release dropping `ureq ^2`, drops the
+#     webpki-roots 0.26 shim (clears RUSTSEC-2026-0381)
 #
 # Re-check with: cargo audit (exit 0 required for green CI).
 [advisories]
@@ -81,4 +108,5 @@ ignore = [
     "RUSTSEC-2026-0367", # zip — windows-only path in tauri-plugin-updater; the zip feature is off and no windows build ships; clears when the plugin's zip requirement reaches >= 9.0.0
     "RUSTSEC-2026-0368", # zip — as above
     "RUSTSEC-2026-0369", # zip — as above
+    "RUSTSEC-2026-0381", # webpki-roots — the 0.26.11 semver shim compiles in the FIXED 1.0.10 roots (4x emSign G3 in 1.0.9, 0x in 1.0.10); clears when ureq 3.x / model2vec-rs drops ureq ^2
 ]

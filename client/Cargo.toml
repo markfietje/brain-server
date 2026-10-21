@@ -7,10 +7,31 @@ description = "brain-server control surface — web + desktop + iOS + Android (D
 publish = false
 
 [dependencies]
-# Dioxus 0.7: one codebase → four targets. The `router` feature gives the
+# Dioxus 0.8: one codebase → four targets. The `router` feature gives the
 # Routable enum + Link/Outlet. Web builds compile to WASM (DOM renderer, which
 # is screen-reader accessible — do NOT enable the experimental wgpu web renderer).
-dioxus = { version = "=0.8.0-alpha.1", features = ["router"] }
+#
+# 2026-10-21: alpha.1 → alpha.3, the newest release of the pinned 0.8 alpha
+# line (the 0.8 stable is not out; 3.0.0-alpha.x is a different major and is
+# NOT what this pin means). The bump carries ONE upstream breaking change into
+# this tree: `keyboard-types` 0.7.0 → 0.8.3, where `Key`'s named variants moved
+# into `NamedKey` — so `Key::Escape` is now `Key::Named(NamedKey::Escape)`, and
+# the port touched every key comparison in the client (the AppShell shortcuts,
+# the CommandPalette's cursor keys, the Modal and Drawer focus traps, the
+# conversation composer, the UMP recall box, and one review-panel test).
+#
+# The port also FIXED a dead modifier check. `Modifiers::SUPER` (0x2000) is
+# deprecated upstream as "marked as legacy in the spec, use META instead", and
+# dioxus-web never sets it: its `events/keyboard.rs` maps the browser's
+# `meta_key()` to `Modifiers::META` (0x40) and inserts nothing else. So the
+# old `contains(Modifiers::SUPER)` was always false and Cmd+K / Cmd+B never
+# fired on macOS; the check is now `META`, which is the spelling the spec and
+# the browser agree on.
+#
+# Verified: `cargo fmt`/`clippy --all-targets -D warnings`/`test` (245 tests)
+# all green, the wasm32 build compiles, the desktop feature compiles, and the
+# release wasm measures 4,312,599 bytes against the 5,734,400-byte budget.
+dioxus = { version = "=0.8.0-alpha.3", features = ["router"] }
 # reqwest works on all targets incl. WASM (Dioxus integrates the browser fetch).
 # JSON feature for typed (de)serialization of brain-server's responses.
 # 0.13 → 0.13.5 (2026-10-04). MSRV 1.85, under this workspace's 1.98 floor.
