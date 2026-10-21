@@ -44,7 +44,7 @@ cd "$(git rev-parse --show-toplevel)"
 # itself is precisely how a scope drifts so that one of the three silently
 # stops covering — the class of failure this repo keeps paying for, and the
 # reason the list is a variable rather than a literal repeated three times.
-SCAN_PATHS="src client plugin crates"
+SCAN_PATHS="src client plugin crates shell/src-tauri"
 
 MODE=normal
 if [ "${1:-}" = "--hook" ]; then

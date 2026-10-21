@@ -794,6 +794,17 @@ jobs:
     # against scripts/lipstyk-gate.sh by
     # `lipstyk_gate_scan_paths_match_the_ci_watchdog`, so the two cannot
     # drift apart and leave one of them unscanned.
+    # `shell/src-tauri` is in scope for the SAME reason (2026-10-22): it is
+    # the Tauri core — the updater's gate, the sidecar's refuse law and the
+    # keychain token — and it is a separate cargo workspace node that
+    # lipstyk does not care about. It was clippy-clean and fmt-clean and
+    # NOT slop-watchdogged, and the pin's own words are the argument: "an
+    # unscanned code tree is a tree where a new diagnostic passes silently".
+    # Measured before the change: a full scan of the shell crate reports 65
+    # diagnostics across 7 of its 15 files, so the rules DO fire there — the
+    # tree was simply never looked at. The noisy rules are already disabled
+    # in .lipstyk.toml, and the gate is diff-scoped, so only CHANGED lines
+    # can fail.
     name: lipstyk (diff watchdog)
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -829,4 +840,4 @@ jobs:
           fi
       - name: Watchdog (changed lines must add no diagnostic)
         run: |
-          lipstyk --diff "${{ steps.base.outputs.ref }}" --exclude-tests src client plugin crates
+          lipstyk --diff "${{ steps.base.outputs.ref }}" --exclude-tests src client plugin crates shell/src-tauri
