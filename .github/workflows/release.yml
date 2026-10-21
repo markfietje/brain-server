@@ -231,6 +231,112 @@ jobs:
           name: dist-darwin-x86_64
           path: dist/
 
+  build-app-macos:
+    # III-7 — the APP the release ships. This job PROVES the application
+    # builds and is a real, verified bundle; it does NOT sign anything and it
+    # does NOT publish anything.
+    #
+    # THE SPLIT, and it is the whole of D6:
+    #
+    #   * the PUBLIC Actions prove the build. They hold NO key, run NO
+    #     signing step, and name no private key — a key in a public CI job
+    #     is a key anyone with a push-trigger can run.
+    #   * the SIGNING LANE signs what this job proved. It runs on a machine
+    #     that holds the private key: `scripts/release-app-sign.sh`, on the
+    #     operator's own machine today, or on a PRIVATE runner's secret if
+    #     the operator ever wants an unattended lane. The two routes run the
+    #     same commands.
+    #
+    # WHY THE ARTEFACT IS NOT BUILT HERE: the updater artefact (`Brain
+    # Shell.app.tar.gz`) is produced by the bundler when the updater
+    # artifacts are switched on, and the Tauri CLI REFUSES that build
+    # without the private key ("A public key has been found, but no private
+    # key"). So the SIGNED artefact can only be built where the key is — in
+    # the signing lane — and the archive is always the bundler's own
+    # (a hand-made tarball stalls the install; measured in III-4).
+    #
+    # WHERE THE APPLE IDENTITY WOULD GO — a decision, not an omission (D4/D5):
+    # the Developer ID signature, notarization, stapling and the `spctl`
+    # verdict belong to the bundle's OWN signing step, which is a SEPARATE
+    # step from the updater's own signature. They are two different keys
+    # with two different owners: the Apple Developer ID is Apple's, and it is
+    # deferred to the first paying customer (III-5, revenue-gated). The
+    # updater's signing key is OURS, is free, and is what the app's updater
+    # verifies. Everything this job builds is ad-hoc-signed, which is
+    # STRUCTURE, not shippability (D5).
+    name: Build the macOS app bundle (proof; never signed here)
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The provenance record names the commit; a shallow checkout cannot
+          # name the tag correctly.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6
+        with:
+          version: 12.3.4
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: shell/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, signed 2026-09-03
+        with:
+          toolchain: 1.99
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: .
+          workspaces-secondary: shell/src-tauri
+
+      - name: Install shell dependencies (frozen lockfile)
+        working-directory: shell
+        run: pnpm install --frozen-lockfile
+
+      # The provenance law: a build record names a commit, so `stage` refuses
+      # a dirty tree. The checkout is clean by construction on the runner.
+      - name: Stage both kernel arches, lipo, write provenance
+        run: node shell/scripts/sidecar.mjs stage
+
+      # NO `--config tauri.release.conf.json` here: that file turns the
+      # updater artifacts on, and the CLI refuses to build them without the
+      # private key. This job builds the APP; the signing lane builds the
+      # SIGNED artefact, where the key is.
+      - name: Build the universal app bundle (ad-hoc, hardened runtime)
+        working-directory: shell
+        run: pnpm tauri build --bundles app --target universal-apple-darwin
+
+      - name: Verify every Mach-O in the real bundle
+        run: |
+          node shell/scripts/sidecar.mjs verify \
+            "shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/Brain Shell.app"
+
+      # The required-asset gate, in the same shape as the release's own
+      # per-binary loop: a missing asset is refused BY NAME, never published
+      # around.
+      - name: Verify the app bundle is present
+        run: |
+          set -e
+          APP="shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/Brain Shell.app"
+          [ -d "$APP" ] || { echo "::error::required asset missing: $APP"; exit 1; }
+          [ -f "$APP/Contents/Info.plist" ] || { echo "::error::required asset missing: $APP/Contents/Info.plist"; exit 1; }
+          echo "OK  the app bundle is present: $APP"
+
+      # The bundle travels as a WORKFLOW ARTIFACT, never as a release asset:
+      # the release carries the app only as a complete chain — the artifact,
+      # its signature and the manifest — and the public lane can produce only
+      # the first of the three (D3).
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app-universal
+          path: shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/Brain Shell.app
+          include-hidden-files: true
+
   docs-deploy:
     # Rebuild + redeploy the mdBook site from the TAGGED revision. docs.yml
     # only triggers on `main` path-pushes (docs/**, book.toml, theme/**), so a
@@ -267,7 +373,7 @@ jobs:
     name: Assemble release + notes
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    needs: [build-linux-x86_64, build-linux-aarch64, build-darwin-arm64, build-darwin-x86_64]
+    needs: [build-linux-x86_64, build-linux-aarch64, build-darwin-arm64, build-darwin-x86_64, build-app-macos]
     permissions:
       contents: write
       actions: read   # the green-CI verification step queries the Actions API
@@ -654,6 +760,15 @@ jobs:
         # the release-integrity gate: the four primary brain-server binaries
         # must be present or publishing is refused — never shipped
         # half-empty with only source archives.
+        #
+        # III-7: the APP is in `needs:` (the job above), so a release whose
+        # app does not build never publishes. The app's CHAIN — the updater
+        # artifact, its signature and `latest.json` — is NOT
+        # published here: the public lane holds no key, and a chain that
+        # carries two of its three pieces is worse than no chain (D3). The
+        # chain is published by the signing lane
+        # (`scripts/release-app-sign.sh`), which publishes all three or none
+        # and refuses to publish a partial one.
         run: |
           set -e
           # EVERY binary the build loops claim to produce, per platform — not

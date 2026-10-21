@@ -34,8 +34,13 @@ const SECOND_KEY_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyB
 const SECOND_KEY_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRcGsvV1dDZE1pZkhFZVlQUytFRjZXTUozT3BpTU1sRjg0OXNpSGhDMDRKY3ZIamVBaWdlQW9pWXZ2SVBqNjJGNkhTRjlTSVVyVEZpUDNhM2lJdTRwcE9RVmpteWxjNXdJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyNDc3NTEzCWZpbGU6cGF5bG9hZC13cm9uZy5iaW4JdmVyc2lvbjowLjEuMgp4c2d3RWxUbUpuMGRBZVE3TG11Z2pJSDBRVHl0eHdINVlkTHRscFNWSi9nNjZza3dqVGR1d1YrUUxCb0Rld1pPcE1kMHgrcEhFc3JmKzF6d0V5N05Ddz09Cg==";
 
 /// The manifest the endpoint would answer with: one release, offered for
-/// every target the plugin might ask for on any CI platform.
-fn manifest(signature: &str) -> serde_json::Value {
+/// every target the plugin might ask for on any CI platform, announcing
+/// `version`.
+///
+/// The announced version and the SIGNED version are two facts, and the
+/// plugin's `require_signed_version` law is the comparison between them — so
+/// a fixture that cannot announce a different version cannot exercise it.
+fn manifest_versioned(signature: &str, version: &str) -> serde_json::Value {
     let platform = serde_json::json!({
         "url": "https://example.invalid/Brain%20Shell.app.tar.gz",
         "signature": signature,
@@ -50,7 +55,7 @@ fn manifest(signature: &str) -> serde_json::Value {
         platforms.insert(target.to_string(), platform.clone());
     }
     serde_json::json!({
-        "version": "0.1.2",
+        "version": version,
         "notes": "a fixture release",
         "pub_date": "2026-10-20T00:00:00Z",
         "platforms": platforms,
@@ -91,6 +96,11 @@ fn shipped_pubkey() -> String {
 /// key, and an `Update` restored from the manifest — WITHOUT a network
 /// request (`Updater::restore_update`).
 fn restore(pubkey: &str, signature: &str) -> tauri_plugin_updater::Update {
+    restore_versioned(pubkey, signature, "0.1.2")
+}
+
+/// The same restore, with a manifest that announces a different version.
+fn restore_versioned(pubkey: &str, signature: &str, version: &str) -> tauri_plugin_updater::Update {
     let mut context = tauri::test::mock_context(tauri::test::noop_assets());
     context.config_mut().plugins.0.insert(
         "updater".to_string(),
@@ -110,7 +120,7 @@ fn restore(pubkey: &str, signature: &str) -> tauri_plugin_updater::Update {
         .build()
         .expect("the updater builds");
     updater
-        .restore_update(manifest(signature))
+        .restore_update(manifest_versioned(signature, version))
         .expect("the manifest restores")
         .expect("the manifest offers an update")
 }
@@ -230,6 +240,71 @@ fn a_manifest_without_a_kernel_version_is_refused() {
         Decision::Refused { kind, .. } => assert_eq!(kind, "no_known_kernel_versions"),
         other => panic!("an empty list of vouched versions must be refused, got {other:?}"),
     }
+}
+
+// ── III-7 P6 · the reader refuses what the writer would never produce ────
+
+/// III-7 P6 — the updater REFUSES a manifest it cannot verify.
+///
+/// The round that built the updater proved that a signature from another key
+/// is refused. This pin closes the loop from the OTHER end: the reader must
+/// refuse the three things the writer would never produce, and each refusal
+/// must be a refusal rather than an "unreachable" — an endpoint that cannot
+/// be reached and an artefact that cannot be verified are different faults,
+/// and the app says which.
+///
+/// The arms:
+///
+/// 1. **NO signature.** The manifest names an artefact and carries no proof
+///    of who produced it. There is nothing to verify against.
+/// 2. **A signature from ANOTHER key.** The bytes are fine; the PROOF is
+///    not ours.
+/// 3. **A version the app does not carry.** The signature is genuinely the
+///    pinned key's, and the manifest announces a version the signature was
+///    not made for — the relabel, caught at the reader. The refusal names
+///    BOTH versions, because a refusal that names one of them leaves the
+///    reader to guess about the other.
+#[test]
+fn the_updater_refuses_a_manifest_it_cannot_verify() {
+    let pinned = shipped_pubkey();
+
+    // Arm 1: no signature at all.
+    let unsigned = restore_versioned(&pinned, "", "0.1.2");
+    let refused = updater::verify_artifact(&unsigned, PAYLOAD);
+    assert!(
+        refused.is_err(),
+        "a manifest with no signature must be refused, got {refused:?}"
+    );
+
+    // Arm 2: a signature from another key.
+    let other_key = restore_versioned(&pinned, SECOND_KEY_SIGNATURE, "0.1.2");
+    let refused = updater::verify_artifact(&other_key, PAYLOAD);
+    assert!(
+        refused.is_err(),
+        "a signature from another key must be refused, got {refused:?}"
+    );
+
+    // Arm 3: a version the app does not carry. The signature is REAL and
+    // verifies under the key that made it, so the ONLY thing left to fail
+    // is the version binding — which is exactly what this arm is about.
+    let relabelled = restore_versioned(SECOND_KEY_PUBKEY, SECOND_KEY_SIGNATURE, "0.1.3");
+    let error = updater::verify_artifact(&relabelled, PAYLOAD)
+        .expect_err("a version the app does not carry must be refused");
+    assert!(
+        error.contains("0.1.2") && error.contains("0.1.3"),
+        "the refusal must name BOTH versions — the signed one and the announced one — got {error:?}"
+    );
+
+    // Anti-vacuity: the fixture really is a good signature under the key
+    // that made it, and the good case really does verify. Without this arm
+    // a broken fixture would satisfy all three refusals above.
+    let honest = restore_versioned(SECOND_KEY_PUBKEY, SECOND_KEY_SIGNATURE, "0.1.2");
+    assert_eq!(
+        updater::verify_artifact(&honest, PAYLOAD),
+        Ok(()),
+        "the second key's own signature must verify under the second key, or the refusals above \
+         prove nothing"
+    );
 }
 
 // ── P10 · the module's environment ────────────────────────────────────────

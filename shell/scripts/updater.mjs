@@ -5,6 +5,7 @@
 // proving anything the behavioral pins do not do.
 /**
  * III-4 — the manifest writer: the `latest.json` a release publishes.
+ * III-7 — the release TAG the manifest's URL names.
  *
  * One module, builtins only, one subcommand:
  *
@@ -49,6 +50,16 @@
  *   reports the OLD version, and offers itself the same update FOREVER. So
  *   the rollback is a REBUILD under a new version, never a re-sign.
  *
+ *  - **A download URL that names a tag this repository does not have.** The
+ *   app's version (`0.1.1`) and the release tag (`v1.29.26`) are two facts on
+ *   two different lines, and they are not interchangeable: the manifest's
+ *   `version` is what the updater COMPARES against the installed bundle, and
+ *   the URL's tag is what the artefact is FETCHED from. A writer that built
+ *   the URL from the app's version produced `releases/download/v0.1.1/…` — a
+ *   tag that does not exist and never will — and the manifest was a promise
+ *   the release could not keep. So the tag is a writer INPUT of its own, and
+ *   a tag `git rev-parse` cannot resolve is refused, naming the URL.
+ *
  * What the writer does NOT do: it does not verify the signature's
  * CRYPTOGRAPHY. Minisign verification belongs to the app, at install time,
  * against the key the app pins — that is the one place the bytes and the key
@@ -69,9 +80,29 @@ export const APPLE_TARGETS = ['darwin-aarch64', 'darwin-x86_64'];
 const STAGED_REL = join('shell', 'src-tauri', 'binaries');
 const PROVENANCE_NAME = 'SIDECAR_PROVENANCE.json';
 
-/** The base the release publishes its artifacts under. `{version}` is filled in. */
+/**
+ * The base the release publishes its artifacts under. `{tag}` is the RELEASE
+ * TAG — the whole tag, `v` included, because the tag is what git names and
+ * the URL must name the same thing. (A template that added its own `v`
+ * produced `releases/download/vv1.29.26/…`, and the pin that checks the
+ * URL found it on the day it was written.)
+ */
 const DEFAULT_URL_TEMPLATE =
-	'https://github.com/markfietje/brain-server/releases/download/v{version}';
+	'https://github.com/markfietje/brain-server/releases/download/{tag}';
+
+/**
+ * The release tag, and whether this repository HAS it.
+ *
+ * The tag is a separate fact from the app's version, and it is checked
+ * against the repository rather than taken on trust: a URL naming a tag that
+ * `git rev-parse` cannot resolve names a download that will 404. A manifest
+ * is a promise the release keeps, so the writer keeps only the ones it can.
+ */
+export function releaseTagResolves(root, tag) {
+	if (typeof tag !== 'string' || tag.length === 0) return false;
+	const result = run('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `refs/tags/${tag}`]);
+	return result.status === 0 && result.stdout.trim().length > 0;
+}
 
 function run(command, args, options = {}) {
 	const result = spawnSync(command, args, {
@@ -196,6 +227,7 @@ export function targetFailures(targets) {
  */
 export function manifestFor({
 	version,
+	releaseTag = '',
 	notes = '',
 	pubDate,
 	kernelVersion,
@@ -209,6 +241,7 @@ export function manifestFor({
 	}
 	return {
 		version,
+		release_tag: releaseTag,
 		notes,
 		pub_date: pubDate,
 		kernel_version: kernelVersion,
@@ -227,6 +260,8 @@ export function manifestFailures({
 	artifact,
 	bundle,
 	version,
+	releaseTag = null,
+	url = '',
 	kernelVersions = [],
 	targets = APPLE_TARGETS
 }) {
@@ -302,6 +337,27 @@ export function manifestFailures({
 		failures.push(`the artifact's own version is ${carried}, not the announced ${version}`);
 	}
 
+	// The URL must name a tag this repository HAS. The app's version and the
+	// release tag are two different facts, and the URL fetches the release —
+	// so the tag is its own input, and a tag that does not resolve is a
+	// download that will 404. The refusal names the URL it refused.
+	if (typeof releaseTag !== 'string' || releaseTag.length === 0) {
+		failures.push(
+			`the manifest names no release tag: the download URL must name the tag the artifact is fetched from (${url})`
+		);
+	} else if (!releaseTagResolves(root, releaseTag)) {
+		failures.push(
+			`the release tag does not resolve in this repository: ${releaseTag} (the download URL would name a tag that does not exist: ${url})`
+		);
+	} else if (!url.includes(releaseTag)) {
+		// The declared tag and the URL must be the same fact. A manifest that
+		// says `release_tag: v1.29.26` and fetches from another tag is two
+		// truths, and the one a reader checks first is the one that lies.
+		failures.push(
+			`the download URL does not name the declared release tag: ${releaseTag} is not in ${url}`
+		);
+	}
+
 	return failures;
 }
 
@@ -319,15 +375,32 @@ export function planManifest(options) {
 		options.kernelVersions ?? (record?.kernel_version ? [record.kernel_version] : []);
 	const targets = options.targets ?? APPLE_TARGETS;
 	const urlTemplate = options.urlTemplate ?? DEFAULT_URL_TEMPLATE;
-	const url = `${urlTemplate.replace('{version}', version)}/${encodeURIComponent(basename(options.artifact))}`;
+	// The RELEASE TAG is a writer input of its own: the URL fetches the
+	// release, and the release is named by a tag, while `version` stays the
+	// app's own version (the thing the updater compares). When the tag is
+	// missing the URL says so, so the refusal can name the URL it refused.
+	const releaseTag = options.releaseTag ?? null;
+	const urlTag = releaseTag ?? '<no release tag>';
+	const url = `${urlTemplate.replace('{tag}', urlTag)}/${encodeURIComponent(basename(options.artifact))}`;
 
-	const failures = manifestFailures({ ...options, root, staged, version, kernelVersions, targets, urlTemplate });
+	const failures = manifestFailures({
+		...options,
+		root,
+		staged,
+		version,
+		kernelVersions,
+		targets,
+		urlTemplate,
+		releaseTag,
+		url
+	});
 	const signature = existsSync(`${options.artifact}.sig`)
 		? readFileSync(`${options.artifact}.sig`, 'utf8').trim()
 		: '';
 
 	const manifest = manifestFor({
 		version,
+		releaseTag: releaseTag ?? '',
 		notes: options.notes ?? '',
 		pubDate: options.pubDate ?? new Date().toISOString(),
 		kernelVersion: record?.kernel_version ?? '',
@@ -369,6 +442,7 @@ function write(options) {
 		artifact: options.artifact,
 		bundle: options.bundle,
 		version: options.version,
+		releaseTag: options['release-tag'] ?? null,
 		kernelVersions:
 			options['kernel-versions'] === undefined
 				? undefined
@@ -394,6 +468,7 @@ function write(options) {
 function usage() {
 	console.error('usage:');
 	console.error('  node shell/scripts/updater.mjs write --artifact <file.tar.gz> --bundle <App.app>');
+	console.error('       --release-tag <vX.Y.Z>   the RELEASE tag the URL names (not the app version)');
 	console.error('       [--root <repo>] [--staged <dir>] [--version <v>] [--targets <csv>]');
 	console.error('       [--kernel-versions <csv>] [--url-template <url>] [--out <file>]');
 	process.exit(2);
