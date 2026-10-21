@@ -1,5 +1,87 @@
 # Agent Execution Log — brain-server
 
+> **R132 "Queue" (Phase III-6, 2026-10-21): the review queue is DISPLAYED,
+> and that is the whole of it.** The shell could not see the kernel's human
+> review queue at all — the one surface the Dioxus app had and the shell did
+> not, and the app that has it is being decommissioned. The shell now reads
+> `GET /proposals` and shows what is waiting: the proposal's identity, its
+> domain and owner, its four scores, the times, the injection screen's
+> verdict, the text under review, and the `content_digest` (the reviewer's
+> COPY HANDLE — the approve verb is digest-bound, so a display that showed the
+> text without the digest could not support a decision made elsewhere with
+> any confidence).
+>
+> **The law is DISPLAY-ONLY, and it is pinned as a shape.** No approve, no
+> reject, no edit, and no code path that posts a decision: `P3` scans the
+> route and EVERY module it imports for a decision path, for a write verb and
+> for a decision symbol, and names the file when it finds one. The kernel's
+> write verbs stay where they are, behind the `approve`/`reject` roles.
+>
+> **The offline cache holds METADATA, NEVER THE CONTENT, and the TYPE is the
+> guard.** `QueueRowMetadata` declares `content?: never`, so a `QueueRow`
+> (which carries `content: string`) is not assignable to it — the compiler
+> refuses a row-with-content at the cache's own boundary. The reader is the
+> second layer: it takes only the fields it knows, so a tampered entry cannot
+> put the candidate text on the screen either. sessionStorage only, tab-local.
+>
+> **Four states that never share a rendering.** live, empty (the kernel said
+> so), offline (named, with the age of what it last saw) and refused (with the
+> reason). "Nothing is waiting" and "we could not ask" are different facts,
+> and the surface keeps them apart.
+>
+> **The census's `renamed` verdict was FALSE, and it was TWO rows.** The
+> shell's `/decisions` has always read `/workflow/decision-runs` — the
+> decision-RUN listing, Admin-gated — while the parity table claimed it was
+> the Dioxus `/review` (the proposal queue). `/decisions/[id]` claimed the
+> Dioxus `/review/:proposal_id` (the single-PROPOSAL view) while the page
+> reads the decision-RUN trace. The table's own doc used `/decisions` as its
+> `renamed` EXEMPLAR. A false `renamed` reads as COVERAGE, and coverage that
+> is false is worse than a gap — so both rows were CORRECTED (not extended
+> around), the exemplar with them, and `P6` holds the correction. The new
+> `/review` row is `exact`: the Dioxus path is the same.
+>
+> **The census now derives TWO module trees.** The queue's typed read lives in
+> `shell/src/lib/queue/`, not under `#lib/api/`, so the derivation hops there
+> too. The alternative — naming the module in `NON_ROUTE_CALL_SITES` — would
+> have been a LIE: that slot's reason field is "why it is not
+> route-reachable", and the module IS.
+>
+> **Seven drills, every one RUN and REVERTED, and the observed text:**
+> P1 `expected '42' to contain 'aaaa…'` (the rendered digest replaced by the
+> row id); P2(a) `expected '{"cachedAt":…' not to contain 'lead-safe'` AND the
+> `content?: never` shape arm — TWO reds, the bytes and the type; P2(b)
+> `Unable to find an element by: [data-testid="review-list-row"]` (the offline
+> arm emptied); P3 `src/lib/queue/client.ts names a decision path` and, on the
+> SAME plant, the census's closure arm `exports drillApproveProposal (→
+> /proposals/{id}/approve), which NO route imports`; P4 `the render proof
+> "review-refused" never appeared` — and the pin's wait bound was FIXED after
+> the first drill reported only `Test timed out in 5000ms`, because a proof arm
+> whose failure message is a stopwatch has not spoken; P5 THREE reds (the
+> census's exact set, the sweep's coverage, P5 itself) when the route was
+> added and the census row skipped; P6 `/decisions's row still claims the
+> proposal queue`.
+>
+> **The kernel, the plugin, the wire contract and the dependency set are
+> UNCHANGED** — the typed client is byte-identical to `openapi.yaml` after a
+> regeneration, and the kernel's suite is untouched. The queue's own gates were
+> already in place: Read scope, the `approve` role, owner-bound rows, and
+> `MAX_PROPOSALS = 200`; the shell reads with the OPERATOR's bearer and the
+> kernel decides what comes back.
+>
+> **OWED, named, not hidden:** the approve action — the Dioxus panel can
+> approve and this surface cannot, so decommissioning the app costs the
+> operator the in-app approve affordance unless a LATER round adds one, and
+> that round needs its own authz proof (a webview posting a decision under a
+> shared bearer is a different question from a display); III-5's cert tail
+> (blocked on a purchase, not on code); the signing lane; and the two owed
+> register conversions (the updater's config arms' behavioural conversion and
+> the `cargo metadata --no-deps` conversion of the S2/S3 Cargo arms).
+>
+> **ponytail:** one route, two modules, one test file, one nav entry, one
+> i18n key set × five catalogs; no new dependency, no new crate, no new
+> capability, no `dangerous*` flag, no kernel change, no plugin change, no
+> contract change, no approve path.
+
 > **R131 "Updater" (Phase III-4, 2026-10-20): the endpoint is WHERE;
 > the signature is WHO.** The shell can now update itself — and the whole
 > round is the distance between those two facts. The manifest, the URL and

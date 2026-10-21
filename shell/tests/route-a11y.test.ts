@@ -285,6 +285,43 @@ const RECIPES: Partial<Record<CensusRoute, RouteRecipe>> = {
 		load: () => import('../src/routes/models/+page.svelte'),
 		proof: { kind: 'testid', value: 'models-list-row' }
 	},
+	'/review': {
+		prepare: () => {
+			responder = async (url) => {
+				const path = new URL(url).pathname;
+				if (path === '/proposals') {
+					return jsonResponse([
+						{
+							id: 42,
+							kind: 'capture',
+							content: 'the bench wiring is lead-safe and labelled',
+							content_digest: 'a'.repeat(64),
+							source: 'vector',
+							authority: 0.8,
+							novelty: 0.9137,
+							conflict_with: null,
+							salience: 0.512,
+							created_at: 1750000000,
+							screen_verdict: 'clean',
+							edited_at: null,
+							decided_at: null,
+							expires_at: 1750003600,
+							warn_secs: 600,
+							critical_secs: 300,
+							owner: 'operator',
+							qa_note: null,
+							qa_score: 90,
+							domain: 'global',
+							title: 'Lead-safe wiring note'
+						}
+					]);
+				}
+				return new Response('not found', { status: 404 });
+			};
+		},
+		load: () => import('../src/routes/review/+page.svelte'),
+		proof: { kind: 'testid', value: 'review-list-row' }
+	},
 	'/chat': {
 		prepare: () => {
 			responder = async () => jsonResponse({ hits: [], decision: 'ok' });

@@ -18,9 +18,13 @@
  * exact-set assertion and the sweep's coverage assertion until both artifacts
  * are given the route — growth is fail-closed on both.
  */
-export const ROUTE_FLOOR = 9;
+export const ROUTE_FLOOR = 10;
 
-/** The measured census as of II-7d (2026-10-18), unchanged by III-0c. */
+/**
+ * The measured census, re-measured by III-6 (2026-10-21): the shell gained
+ * `/review` — the human review queue, the operator's decision surface, which
+ * the Dioxus app had and the shell did not.
+ */
 export const CENSUS_ROUTES = [
 	'/',
 	'/chat',
@@ -30,6 +34,7 @@ export const CENSUS_ROUTES = [
 	'/overview',
 	'/recall',
 	'/recall/[trace_id]/trace',
+	'/review',
 	'/search'
 ] as const;
 

@@ -4,6 +4,71 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — the review queue, displayed and nothing more (III-6)
+
+The shell can now show the human review queue: what is waiting for a person to
+look at it, with the evidence the kernel already put on the row — the
+proposal's identity, its domain and owner, when it was captured, its novelty,
+salience, conflict and authority scores, whether the injection screen flagged
+it, the text under review, and the content digest.
+
+It shows, and it shows only that. There is no approve, no reject and no edit
+anywhere in the surface, and a pin holds that: the surface and every module it
+imports are scanned for a decision-posting path, and the scan names the file
+when it finds one. The decisions themselves stay in the kernel, behind the
+reviewer's role.
+
+The offline state is a named state, not an empty queue. When the kernel cannot
+be reached, the surface says so, says when it last saw the queue and how old
+that is, and shows the last-known metadata — never the proposal text, which is
+never written to this session's storage. The cache's own row type cannot hold
+the text, and the reader discards it even if a cache entry was tampered with.
+A refusal is a refusal with its reason, and it never reads as an empty queue:
+"nothing is waiting" and "we could not ask" are different facts and the
+surface keeps them apart.
+
+The route census also stopped carrying a claim that was not true. The shell's
+decisions page has always read the decision-run listing, never the proposal
+queue, and the parity table said the two were the same surface under two
+names — a rename that read as coverage while the surface it claimed to cover
+was the one the shell was missing. The rows are corrected rather than extended
+around, the table's own example is corrected with them, and a pin holds the
+correction.
+
+**New**
+
+- **The shell can show the human review queue.** The operator's decision
+  surface was the one surface the old desktop app had and the shell did not.
+  The new page lists what is waiting: the proposal's identity, its domain and
+  owner, when it was captured, its novelty, salience, conflict and authority
+  scores, whether the injection screen flagged it, the text under review, and
+  the content digest — the handle that binds a decision made anywhere to the
+  exact bytes the reviewer was shown. A proposal the screen flagged is marked
+  as such, so it cannot be read past.
+- **Four states that never share a rendering.** What the kernel answered, what
+  the kernel said was waiting for nobody, the offline state with the age of
+  what it last saw, and a refusal with its reason. A refused queue and an
+  empty queue are different facts, and the surface keeps them apart.
+- **An offline state that keeps the text out of storage.** When the kernel
+  cannot be reached, the page says so and shows the last-known metadata with
+  its age. The proposal text is never written to the session's storage: the
+  cache's row type cannot hold it, and the reader discards it even if a cache
+  entry was tampered with. The cache is session-local and dies with the tab.
+- **The review queue is in the navigation**, so the surface is reachable
+  rather than typed.
+
+**Improvements**
+
+- **The route census no longer claims a parity that did not hold.** The
+  shell's decisions page has always read the decision-run listing, never the
+  proposal queue, and the parity table said the two were the same surface
+  under two names. The rows are corrected rather than extended around, the
+  table's own example is corrected with them, and a pin holds the correction.
+- **The census now derives the shell's module tree, not just one of them.**
+  A surface whose typed read lives outside the tree the census hops into would
+  have been credited with no kernel path at all — and a row that agrees with
+  an empty derivation is a row that measures nothing.
+
 ## [1.29.25] — 2026-10-21 — the audit gate reads one config, and the tree carries no known advisories
 
 The shell's dependency audit ran the Tauri lockfile from a directory where the

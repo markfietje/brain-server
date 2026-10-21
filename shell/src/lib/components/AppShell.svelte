@@ -12,6 +12,7 @@
 	import { page } from '$app/state';
 	import HouseIcon from '@lucide/svelte/icons/house';
 	import ClipboardListIcon from '@lucide/svelte/icons/clipboard-list';
+	import ClipboardCheckIcon from '@lucide/svelte/icons/clipboard-check';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import ListTreeIcon from '@lucide/svelte/icons/list-tree';
 	import CpuIcon from '@lucide/svelte/icons/cpu';
@@ -32,7 +33,11 @@
 		{ route: '/search', key: 'nav.search', Icon: SearchIcon },
 		{ route: '/decisions', key: 'nav.decisions', Icon: ListTreeIcon },
 		{ route: '/models', key: 'nav.models', Icon: CpuIcon },
-		{ route: '/recall', key: 'nav.recall', Icon: HistoryIcon }
+		{ route: '/recall', key: 'nav.recall', Icon: HistoryIcon },
+		// III-6: the review queue — the operator's decision surface, and the
+		// one surface the decommissioned desktop app had and the shell did
+		// not. It is in the nav so it is REACHABLE, not typed.
+		{ route: '/review', key: 'nav.review', Icon: ClipboardCheckIcon }
 	] as const;
 
 	let paletteOpen = $state(false);

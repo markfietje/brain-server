@@ -128,9 +128,17 @@ function censusDioxusRoutes(clientMainPath: string): string[] {
  *
  * - `exact` — the same path exists on the Dioxus side.
  * - `renamed` — a counterpart exists at a DIFFERENT path. This is a real
- *   counterpart, not a gap: `/decisions` and Dioxus `/review` are the same
+ *   counterpart, not a gap: `/search` and Dioxus `/recall` are the same
  *   surface under two names, and calling that "missing" would misdescribe the
  *   retirement work.
+ *
+ *   **III-6 CORRECTED THE EXEMPLAR, and the correction is the point.** It used
+ *   to be `/decisions` and Dioxus `/review` — and that rename did NOT hold:
+ *   the shell's `/decisions` serves the decision-RUN listing, not the proposal
+ *   queue. A `renamed` that is false reads as COVERAGE, and coverage that is
+ *   false is worse than a gap: it says the surface exists on both sides when
+ *   the one the shell was MISSING is the one the rename claimed to cover. The
+ *   rows are corrected, not extended around, and P6 holds the correction.
  * - `no_counterpart` — NO route on the Dioxus side serves this surface. There
  *   is no verdict that says "close enough", and there is no matching to invent:
  *   `nearest` records the closest Dioxus path as a FACT about the tree without
@@ -262,8 +270,14 @@ const ROUTE_PARITY: readonly RouteParity[] = [
 	{
 		route: '/decisions',
 		verdict: 'renamed',
-		dioxus: '/review',
-		because: 'the review queue is the decisions surface under its older name',
+		dioxus: '/runs/:run_id',
+		because:
+			'the shell\'s /decisions serves the DECISION-RUN listing (`GET /workflow/decision-runs`), an ' +
+			'Admin surface — NOT the proposal queue. Until III-6 this row claimed the Dioxus /review ' +
+			'(the proposal queue) as its counterpart: a rename that did not hold, because the two are ' +
+			'different surfaces, and the one the shell was MISSING is the one the rename claimed to ' +
+			'cover. The Dioxus side\'s run surface is /runs/:run_id (the workflow-run conversation), and ' +
+			'the proposal queue is now carried by the shell\'s own /review row.',
 		authz: {
 			// The decision-run LIST is an operator surface in the kernel's own
 			// table (Admin), and the shell reads it — /decisions is not a
@@ -275,8 +289,13 @@ const ROUTE_PARITY: readonly RouteParity[] = [
 	{
 		route: '/decisions/[id]',
 		verdict: 'renamed',
-		dioxus: '/review/:proposal_id',
-		because: 'the single-proposal view, renamed and with a different parameter name',
+		dioxus: '/runs/:run_id',
+		because:
+			'the single-run detail view, renamed: the shell\'s /decisions/[id] reads the DECISION-RUN ' +
+			'trace (`GET /workflow/decision-runs/{id}`), not a proposal — until III-6 this row claimed ' +
+			'the Dioxus /review/:proposal_id, which is the single-PROPOSAL view, and it was the same ' +
+			'false rename as /decisions, one row over. The Dioxus side\'s single-run view is ' +
+			'/runs/:run_id.',
 		authz: {
 			// The one Write here is replay-diff, which re-executes a stored run
 			// and persists NOTHING — the handler doc's own words. It is the
@@ -286,6 +305,26 @@ const ROUTE_PARITY: readonly RouteParity[] = [
 				'/workflow/decision-runs/{id}': 'Read',
 				'/workflow/decision-runs/{id}/replay-diff': 'Write'
 			},
+			mutates: null
+		}
+	},
+	{
+		route: '/review',
+		verdict: 'exact',
+		dioxus: '/review',
+		because:
+			'the same path on both sides: the human review queue. The Dioxus app served it at /review ' +
+			'(it read the pending proposals) and could also approve, reject and edit them; the shell\'s ' +
+			'/review reads the SAME queue and DISPLAYS it only — the decision verbs stay behind the ' +
+			'kernel\'s own roles, and this surface has no path that posts a decision. That is the round\'s ' +
+			'law, and the operator loses the in-app approve affordance when the Dioxus app is ' +
+			'decommissioned — named as owed, not hidden.',
+		authz: {
+			// The queue is Read-scoped in the kernel's own table, and the
+			// kernel's `approve` ROLE gate is the kernel's business, not the
+			// shell's: the shell reads with the operator's own bearer and the
+			// kernel decides what comes back.
+			kernel: { '/proposals': 'Read' },
 			mutates: null
 		}
 	},
@@ -476,14 +515,18 @@ test('every_user_reachable_shell_route_carries_a_parity_verdict', () => {
 	// ---- AND THE VERDICT MIX IS ITSELF A FINDING ----
 	//
 	// Gate 1 says "every shell route has parity with its Dioxus counterpart".
-	// Three of nine do not, and two of those contradict Plan 09 §1's own table.
+	// Three of ten do not, and two of those contradict Plan 09 §1's own table.
 	// Asserting the mix means a future route that arrives `exact` by default,
 	// or a table edited to make gate 1 look reachable, fails here.
+	//
+	// III-6: `/review` arrived `exact` (the Dioxus path is the same), and the
+	// two FALSE `renamed` rows were corrected rather than added around — so
+	// `renamed` stayed at four while `exact` went from two to three.
 	const mix = ROUTE_PARITY.reduce<Record<ParityVerdict, number>>(
 		(acc, row) => ({ ...acc, [row.verdict]: (acc[row.verdict] ?? 0) + 1 }),
 		{} as Record<ParityVerdict, number>
 	);
-	expect(mix).toEqual({ exact: 2, renamed: 4, no_counterpart: 3 });
+	expect(mix).toEqual({ exact: 3, renamed: 4, no_counterpart: 3 });
 	expect(
 		mix.no_counterpart,
 		'gate 1 cannot go green while any route has no counterpart — recorded, not reconciled'
@@ -511,7 +554,7 @@ test('this_census_reads_the_SHELL_not_the_kernel_route_tables', () => {
 	// Every shell route the kernel does NOT serve. These are precisely the routes
 	// a kernel-table census would MISS, so if someone swapped the walk for the
 	// kernel table, this set would collapse and the equality below would fail.
-	const shellOnly = ['/overview', '/decisions', '/decisions/[id]', '/models', '/chat'];
+	const shellOnly = ['/overview', '/decisions', '/decisions/[id]', '/models', '/chat', '/review'];
 	for (const route of shellOnly) {
 		expect(shellRoutes, `the census must find ${route}`).toContain(route);
 		expect(
@@ -568,8 +611,14 @@ test('the_dioxus_counterpart_table_is_read_from_the_app_not_from_the_plan', () =
 	}
 
 	// And the routes the plan DID get right, so the finding is a difference and
-	// not a wholesale disagreement: the root and /recall match exactly, and the
-	// decisions surface really is /review.
+	// not a wholesale disagreement: the root and /recall match exactly.
+	//
+	// III-6's CORRECTION, and it is the reason the plan's table was not the
+	// source: the Dioxus side's proposal queue really IS /review — which is
+	// exactly the surface the shell was MISSING, and which the plan's table
+	// claimed was covered by the shell's `/decisions`. The Dioxus route table
+	// still carries both /review paths; what changed is what the shell serves
+	// at each path.
 	expect(dioxus).toContain('/review');
 	expect(dioxus).toContain('/review/:proposal_id');
 	expect(dioxus).toContain('/recall/:trace_id');
@@ -618,6 +667,26 @@ test('the_dioxus_counterpart_table_is_read_from_the_app_not_from_the_plan', () =
 
 /** The api modules: the one module tree the derivation hops into. */
 const API_DIR = join(shellRoot, 'src', 'lib', 'api');
+
+/**
+ * III-6 — the derivation hops into a SECOND module tree.
+ *
+ * The review queue's typed read lives in `src/lib/queue/` (this round's own
+ * layout), not under `#lib/api/`. The derivation MUST hop there: otherwise the
+ * `/review` row would DERIVE no kernel path at all, and a row that agrees
+ * with an empty derivation is a row that measures nothing.
+ *
+ * The alternative was to name `src/lib/queue/client.ts` in
+ * NON_ROUTE_CALL_SITES, and that would have been a LIE: that slot's reason
+ * field is "why it is not route-reachable", and this module IS
+ * route-reachable. A naming slot for a reachable module would make the
+ * closure's own vocabulary false — and a closure that names reachable modules
+ * as unreachable is a closure that cannot catch the next one.
+ */
+const MODULE_DIRS: Readonly<Record<string, string>> = {
+	api: API_DIR,
+	queue: join(shellRoot, 'src', 'lib', 'queue')
+};
 
 /** `client.*` call sites OUTSIDE the derivation's two known places (route
  * pages, api modules) — relative file → why it is not route-reachable. The
@@ -753,7 +822,7 @@ function apiModuleSymbolPaths(source: string): Map<string, string[]> {
 	return bySymbol;
 }
 
-/** The `#lib/api/*` imports of one source file: module file → imported symbol
+/** The `#lib/<tree>/*` imports of one source file: module file → imported symbol
  * names (aliases resolved to the EXPORTED name, `type` prefixes stripped —
  * the names the symbol attribution above keys on).
  *
@@ -763,18 +832,22 @@ function apiModuleSymbolPaths(source: string): Map<string, string[]> {
  * statement's `{` ACROSS intervening imports to a later `#lib/api/…`
  * specifier — `fetchWizardPacks` got glued to the previous statement's tail
  * and the `/` route's derivation came back empty, which is exactly the
- * empty-derivation class this section exists to refuse. */
+ * empty-derivation class this section exists to refuse.
+ *
+ * III-6: the tree is one of `MODULE_DIRS` (see above), so a module OUTSIDE
+ * `#lib/api/` can still be derived rather than named as a non-route call
+ * site. */
 function apiImportsOf(source: string): Map<string, string[]> {
 	const imports = new Map<string, string[]>();
 	for (const m of source.matchAll(
-		/(?:^|\n)[ \t]*import\s*\{([^;]*?)\}\s*from\s*'#lib\/api\/([\w.-]+?)(?:\.js)?'/g
+		/(?:^|\n)[ \t]*import\s*\{([^;]*?)\}\s*from\s*'#lib\/(api|queue)\/([\w.-]+?)(?:\.js)?'/g
 	)) {
-		const file = join(API_DIR, `${m[2]!}.ts`);
-		const symbols = m[1]!
+		const file = join(MODULE_DIRS[m[2]!]!, `${m[3]!}.ts`);
+		const names = m[1]!
 			.split(',')
 			.map((s) => s.replace(/^\s*type\s+/, '').split(/\s+as\s+/)[0]!.trim())
 			.filter((s) => s.length > 0);
-		imports.set(file, [...(imports.get(file) ?? []), ...symbols]);
+		imports.set(file, [...(imports.get(file) ?? []), ...names]);
 	}
 	return imports;
 }
@@ -851,9 +924,11 @@ test('the_authz_table_is_derived_from_the_wire_the_routes_call', () => {
 	const entries = censusShellRouteEntries(routesDir);
 	const pageFiles = new Set(entries.map((e) => e.file));
 	const apiModules = new Set(
-		readdirSync(API_DIR)
-			.filter((f) => f.endsWith('.ts'))
-			.map((f) => join(API_DIR, f))
+		Object.values(MODULE_DIRS).flatMap((dir) =>
+			readdirSync(dir)
+				.filter((f) => f.endsWith('.ts'))
+				.map((f) => join(dir, f))
+		)
 	);
 
 	// ---- the closure: every typed-wire call site, wherever it lives ----
