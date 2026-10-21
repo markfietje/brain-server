@@ -4,7 +4,7 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
-## [Unreleased] — the release witness says UNKNOWN when it knows nothing
+## [Unreleased] — the release ships what the updater can fetch, and the witness says UNKNOWN when it knows nothing
 
 The helper that watches a release's public test runs told the operator a
 release was green while both of its runs were still running. Nothing was
@@ -20,6 +20,37 @@ so the flag stayed set and the answer was "green". The answer is now
 "unknown", and unknown keeps the watch alive instead of ending it. The only
 "green" is every run that was observed having finished successfully.
 
+The updater that shipped in the last release could fetch nothing. No release
+published an application, an update manifest or a signature — and the
+manifest the writer would have produced pointed at a tag that could never
+exist, because the download address was built from the application's own
+version number instead of from the release tag. The two are different facts
+on different lines: the application is `0.1.1`, the release is `1.29.26`.
+
+They are now kept apart. The manifest names the release it belongs to, and
+that tag is checked against the repository before anything is written; a tag
+that does not exist is refused, and the refusal names the address it
+refused. The release builds the application and walks every binary inside
+it. It does not sign anything, because the signing key must never sit in a
+public build.
+
+The signing happens in one place: a script that holds the key, proves that
+the key it holds is the key the application ships — by comparing the two
+public halves, and refusing a mismatch by name — signs the artifact, and
+verifies the signature against the application's own pinned key before it
+writes anything. The application, its signature and the manifest are then
+published together or not at all.
+
+The application's own refusals are unchanged and are now exercised from the
+other end: a manifest with no signature, a manifest signed by a different
+key, and a manifest announcing a version the application does not carry are
+each refused, and each is named.
+
+What this does not include is Apple's identity, and nothing here pretends
+otherwise. Everything built under an ad-hoc signature proves structure, not
+shippability. The developer certificate, notarization and the clean-machine
+check belong to the first paying customer.
+
 **Improvements**
 
 - **The release helper no longer reports a matrix it did not read.** When the
@@ -34,6 +65,43 @@ so the flag stayed set and the answer was "green". The answer is now
   guards it cannot drift apart. The check was run against a planted copy of
   the old behaviour, and against the old poll put back into the helper, and
   both were caught with the failure text recorded.
+
+**New**
+
+- **A release now builds the application the updater installs.** The macOS
+  release build produces the universal application bundle, walks every
+  binary inside it, and refuses to publish if the bundle is missing. The
+  bundle travels as a build artifact rather than as a release asset, because
+  a release that carries half of an update chain is worse than one that
+  carries none of it.
+- **One script signs the release, and it holds the key.** The signing step
+  is a single script that runs where the key is: on the operator's own
+  machine, or on a private runner. The public build never holds the key, and
+  the script refuses to run in the public repository's own automation.
+
+**Improvements**
+
+- **The update manifest names the release it belongs to.** The download
+  address is built from the release tag — the tag the artifact is fetched
+  from — and the tag is checked against the repository before the manifest
+  is written. A tag that does not exist is refused, and the refusal names
+  the address it refused. The application's own version stays the version
+  the updater compares, because that is a different fact.
+- **The key that signs the release is proved to be the key the application
+  ships.** The signing step compares the two public halves — the one the
+  application pins and the one the operator holds — and refuses a mismatch,
+  naming both. A freshly generated key cannot satisfy that check, and the
+  check is run against one. The key is not replaced: the keypair the
+  application ships is the one the operator already holds.
+- **The application, its signature and the update manifest travel together.**
+  The release publishes all three or none of them, and the check that says
+  so names the missing piece by name.
+- **The updater's signed path is not live yet.** The pieces are in place and
+  the signing step reaches the key — the key is provably the one the
+  application ships, and it is able to sign — but no release has been signed,
+  because the passphrase for the signing key has not been entered. The
+  notes say which of the two reasons it is: not signed, rather than not
+  able to sign.
 
 ## [1.29.26] — 2026-10-21 — the review queue is displayed, and nothing more
 

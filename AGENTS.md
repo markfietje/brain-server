@@ -1,5 +1,131 @@
 # Agent Execution Log — brain-server
 
+> **R134 "Artefact" (Phase III-7, 2026-10-21): the release shipped NOTHING the
+> updater could fetch, and the manifest pointed at a tag that could never
+> exist.** The updater landed in `v1.29.26` and it can update from nothing: the
+> published release carries 35 assets, 33 of them kernel binaries plus
+> `SHA256SUMS` and `PLATFORMS.txt` — **no `.app`, no `.sig`, no `latest.json`,
+> in ANY release** (measured: `gh release view v1.29.26 --json assets`). And the
+> manifest the writer would have produced named `releases/download/v0.1.1/…` —
+> the APP's version, not the release tag — a tag that does not exist and never
+> will, because the release tags are the KERNEL's line (`v1.29.26`).
+>
+> **THE THREE DEFECTS, AND NONE OF THEM NEEDS THE APPLE CERTIFICATE.** (1) The
+> URL named a tag that could not exist. (2) The signing path was unreachable —
+> not because the key was missing (it was not) but because the tool was absent,
+> the stored form was not the form a tool reads, the secret is passphrase-locked
+> and no release published anything to sign. (3) The release published no
+> artefact the updater could fetch. **The Apple Developer ID is DEFERRED to the
+> first paying customer** (operator, 2026-10-21), so III-5 and the Dioxus
+> decommission it gates are REVENUE-GATED and `client/` STAYS. The minisign
+> updater key is NOT that key: it is OURS, free, self-generated, and it is the
+> one the app's own updater verifies. **The round is therefore entirely about
+> the self-signed chain, and the Apple half stays named as owed.**
+>
+> **THE KEYPAIR WAS NEVER RE-KEYED, AND THAT IS A MEASUREMENT, NOT A SHRUG.**
+> The operator's `~/.config/brain-server/updater.key.pub` is BYTE-IDENTICAL to
+> the key pinned in `shell/src-tauri/tauri.conf.json` — same keynum
+> `C27C1E11196062D5`, same key id `d5626019111e7cc2`, same decoded payload. (An
+> earlier draft of the plan compared the wrong halves — a minisign SECRET key
+> does not embed the public key — and concluded the opposite. That correction
+> is recorded, and it is the reason this round is a PROOF rather than a
+> re-key: **re-keying would destroy a long-lived keynum to fix nothing.**)
+>
+> **D1 · THE TAG IS ITS OWN INPUT.** `shell/scripts/updater.mjs` now takes
+> `--release-tag`, resolves it with `git rev-parse`, and REFUSES a tag the
+> repository does not have — naming the tag AND the URL it refused. The
+> manifest carries both facts (`version` = the app's `0.1.1`, `release_tag` =
+> `v1.29.26`) and refuses a URL that does not name its own declared tag. The
+> app's version and the release tag are two lines, and the URL fetches the
+> RELEASE.
+>
+> **D2 · THE PAIRING IS PROVED, AND THE PROOF CANNOT BE SATISFIED BY A FIXTURE.**
+> `scripts/release-app-sign.sh` compares the two PUBLIC halves — the pinned one
+> and the operator's — and refuses a mismatch naming both keynums and both key
+> ids. **The anti-vacuity arm is the pin**: a FRESHLY MINTED keypair (minted by
+> the Tauri CLI itself, so it is a real second key) is driven through the
+> signing lane and REFUSED. Every drill in III-4 minted a fresh pair and threw
+> it away, which is why the shipped pair was never proved and why a future
+> re-key would have been done for no reason.
+>
+> **D3 + D6 · THE CHAIN, AND WHERE THE KEY LIVES.** The artefact, its signature
+> and the manifest travel together or not at all — one gate, one
+> implementation, two callers (`--check-chain` and the publish path). The
+> PUBLIC workflow builds the universal app bundle and walks every Mach-O in it,
+> and it holds NO key and runs NO signing step; the SIGNING LANE signs what the
+> public lane proved, on a machine that holds the key. **The artefact is
+> built by the BUNDLER in the signing lane, because the updater artifacts
+> cannot be built without the key — and a hand-made tarball stalls the
+> install (III-4), so the packaging is never done by hand.**
+>
+> **D4 + D5 · SELF-SIGNED ONLY, AND AD-HOC IS STRUCTURE, NOT SHIPPABILITY.**
+> The Apple identity is out of scope and named as owed. The workflow says
+> WHERE the Developer ID signature would go — a separate step on the bundle's
+> own signing, a different key with a different owner and a different clock.
+>
+> **FIVE DRILLS, all RUN and REVERTED, and the observed text is the proof.**
+> P1 (the writer stops refusing a tag that does not resolve): `AssertionError:
+> expected '' to contain 'v0.0.0-nope'` — the writer produced NO refusal at
+> all; the pin's URL assertion is ordered FIRST so the drill names the URL
+> rather than a bare status. P2 (the pairing check stops comparing the two
+> public halves): `AssertionError: the refusal must name BOTH halves — the app
+> pins C27C1E11196062D5, the offered key is 433CBD8FED7E6B94 — got: error: the
+> working tree is dirty…`. P3 + P4 (the chain gate stops refusing a partial
+> chain): TWO reds, `expected +0 not to be +0 // Object.is equality`. P5 (the
+> public workflow gains a `minisign -S` step): TWO reds, `the public release
+> workflow must never sign — it names minisign`. P6 (the updater stops
+> verifying): `a manifest with no signature must be refused, got Ok(())` — and
+> the STANDING III-4 pin red with it, which is the evidence that the tree's
+> older teeth still bite.
+>
+> **TWO FINDINGS THE PINS MADE ON THE DAY THEY WERE WRITTEN, and the second
+> is the kind that survives review.** (a) The URL template added its own `v` to
+> a tag that already carried one, and the manifest pointed at
+> `releases/download/vv0.0.0-nope/…` — caught by the pin's own URL assertion
+> on the first run, before any drill. (b) The anti-vacuity arm was **VACUOUS**:
+> the `.pub` FILE carries the BASE64 of the key text and the fixture read the
+> keynum out of the base64, so it read `""` — and `"" !== shipped` passes for
+> the wrong reason. The fixture now decodes, and the pin refuses an EMPTY
+> keynum outright.
+>
+> **AND THE FIXTURE WAS UPGRADED, because it was a fixture of the SHAPE and
+> not of the THING.** The writer's `.sig` fixture SYNTHESIZED the minisign
+> text — and **nobody had ever run the writer against a signature the Tauri
+> CLI actually produces.** It now MINTS a keypair with the CLI and signs the
+> artefact with it, so the writer's binding parser reads the real trusted
+> comment (`timestamp:…\tfile:…\tversion:…`). The III-4 drills were RE-RUN
+> against the new fixture (a green pin after a refactor is not a passed drill)
+> and all three red with the same texts the register already records. **And
+> one drill was aimed at the WRONG LAW and stayed green** — the writer refuses
+> a re-labelled version for TWO reasons, and III-4's own red-proof had already
+> recorded that a pin asserting only "it refused" passes on the wrong one. The
+> drill has to name WHICH law it turns off.
+>
+> **THE MEASUREMENT, ON THE CLEAN TREE, WITH THE SHIPPED KEY.** The signing
+> lane was driven with the operator's real key and a deliberately wrong
+> passphrase. It printed **`the signing key IS the key the app ships: keynum
+> C27C1E11196062D5`**, loaded the key, and stopped at
+> `incorrect updater private key password: Wrong password for that key` — the
+> DECRYPTION failing, not the key being malformed. **So the key is SIGNABLE
+> and the chain is reachable up to the passphrase: the reason the signed path
+> is not live is "not signed", NOT "not signable", and the release notes say
+> which.** The round trip itself (sign → verify against the PINNED public key)
+> is the ONE thing the operator's passphrase gates, and it is OWED by name.
+>
+> **OWED, named, not hidden:** the operator's passphrase and the round trip
+> with the SHIPPED key (one command, in the round's commit message); a staged
+> kernel build for the manifest half of the chain to run end to end on a
+> release; the Developer ID, notarization, stapling, `spctl` and the clean
+> machine (III-5, REVENUE-GATED); the public endpoint's real URL; the two owed
+> register conversions (the updater's config arms' behavioural conversion and
+> the `cargo metadata --no-deps` conversion of the S2/S3 Cargo arms); and the
+> hand-made archive (upstream's to answer).
+>
+> **ponytail:** one script, one writer input, one workflow job, one test file,
+> one Rust pin; no new dependency, no new crate, no kernel change, no plugin
+> change, no contract change, no key in the tree, no public CI job that signs,
+> and no re-key.
+
 > **R133 "Witness" (2026-10-21): the release helper said GREEN while both
 > public runs were still running.** The v1.29.26 cut shipped, and the helper
 > that watches the matrix told the operator *"all public runs for v1.29.26 are
