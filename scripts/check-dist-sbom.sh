@@ -68,10 +68,20 @@ fi
 [[ -n "$LOCK" ]] || LOCK="$(cat "$REPO/Cargo.lock" 2>/dev/null || true)"
 [[ -n "$LOCK" ]] || { echo "ERR: no committed Cargo.lock to compare the SBOM against" >&2; exit 1; }
 
-python3 - "$SBOM" "$REPO" "$LOCK" <<'PY'
+# BY PATH, never as an ARGUMENT. The root lockfile is 131,123 bytes — ONE
+# byte over Linux's 128 KiB per-argument ceiling (MAX_ARG_STRLEN), so passing
+# it as `python3 - "$SBOM" "$LOCK"` dies with "Argument list too long" on a
+# Linux runner and passes on a macOS one, whose ceiling is 1 MiB. That is a
+# platform difference a local run cannot see, and the runner found it.
+LOCK_FILE="$(mktemp)"
+trap 'rm -f "$LOCK_FILE"' EXIT
+printf '%s\n' "$LOCK" > "$LOCK_FILE"
+
+python3 - "$SBOM" "$LOCK_FILE" <<'PY'
 import json, re, sys
 
-sbom_path, repo, lock_text = sys.argv[1], sys.argv[2], sys.argv[3]
+sbom_path, lock_path = sys.argv[1], sys.argv[2]
+lock_text = open(lock_path, encoding="utf-8", errors="replace").read()
 
 # The lockfile's (name, version) pairs. A crate can appear at TWO versions
 # (webpki-roots 0.26.11 and 1.0.10, rsa 0.9.10 and 0.10.0-rc.19), so the set
