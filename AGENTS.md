@@ -403,7 +403,8 @@
 > config arms (a pin that reads the BUILT bundle's `CFBundleShortVersionString`
 > and holds it to the manifest's announced version); the first Ubuntu lane
 > run with this lock and the `bundle-macos` lane's first runner execution
-> (carried from III-3); the `cargo metadata --no-deps` conversion of the
+> (carried from III-3) — **both of the lane items in this list are CLOSED (2026-10-21) — the `bundle-macos` lane ran all thirteen steps green on the PUBLIC runner at the v1.29.26 release commit (`3b6bb8f0`), and the release's `Assemble release + notes` job ran all fourteen green on `ubuntu-latest`; the billing failures were the PRIVATE MIRROR only**;
+> the `cargo metadata --no-deps` conversion of the
 > S2/S3 Cargo arms; and the **hand-made archive** the drill measured: a
 > tarball made outside the bundler STALLS the install (the artifact
 > downloads, the bundle is never replaced, the app reports no outcome) —
@@ -673,8 +674,7 @@
 > operator's machine must restore it, and the restore is part of the
 > drill's evidence.**
 >
-> **Still OWED, named not hidden:** the first Ubuntu lane run with this
-> lock; the `bundle-macos` lane's first runner execution; III-4 (updater),
+> **Still OWED, named not hidden:** III-4 (updater),
 > III-5 (Developer ID, notarization, the clean-machine tail), III-6 (the
 > offline approval queue); and the `cargo metadata --no-deps` conversion
 > of the S2/S3 Cargo arms, which are text scans today — a comment naming
@@ -754,8 +754,7 @@
 >
 > **Still OWED, named not hidden:** the keychain re-prompt is a **stable
 > signing identity** (III-5's Developer ID) — until then every rebuild asks
-> the operator again; the first Ubuntu lane run with this lock; the
-> `bundle-macos` lane's first runner execution; III-4's updater (its
+> the operator again; III-4's updater (its
 > execution prompt is written and measured — see the plans repo), III-5 and
 > III-6; and the `cargo metadata --no-deps` conversion of the S2/S3 Cargo
 > arms.

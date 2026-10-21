@@ -96,12 +96,46 @@ check belong to the first paying customer.
 - **The application, its signature and the update manifest travel together.**
   The release publishes all three or none of them, and the check that says
   so names the missing piece by name.
-- **The updater's signed path is not live yet.** The pieces are in place and
-  the signing step reaches the key — the key is provably the one the
-  application ships, and it is able to sign — but no release has been signed,
-  because the passphrase for the signing key has not been entered. The
-  notes say which of the two reasons it is: not signed, rather than not
-  able to sign.
+- **The updater's signed path is published by a separate step, and that step
+  publishes the whole chain or none of it.** The release builds the
+  application the updater installs; the artifact, its signature and the
+  manifest are published together by the script that holds the key, which
+  refuses to publish any two of the three. The key that script uses is
+  provably the one the application ships — the pairing is checked on the two
+  public halves, and a key that is not that key is refused by name — and it
+  is able to sign.
+
+### Engineering record
+
+The one act that is outstanding is the operator's: typing the passphrase for
+the signing key, once. **The reason the signed path is not live is that the
+chain is not published — NOT that the key cannot sign**, and the two are
+different facts, so the distinction is measured rather than asserted: the
+signing lane was driven on the clean tree with the shipped key and a
+deliberately wrong passphrase, and it printed `the signing key IS the key
+the app ships: keynum C27C1E11196062D5`, LOADED the key, and stopped at
+`incorrect updater private key password: Wrong password for that key` — the
+decryption failing, not the key being malformed.
+
+The round trip itself — sign a real artifact with the operator's key, verify
+it against the pinned public key — is the one thing that passphrase gates,
+and it is owed by name. The operator's command, on a clean tree:
+
+    scripts/release-app-sign.sh --tag vX.Y.Z \
+      --artifact "…/Brain Shell.app.tar.gz" --bundle "…/Brain Shell.app"
+
+It prompts silently for the passphrase, prints the round-trip verdict, and
+publishes nothing unless `--dry-run` is absent. The manifest half needs a
+staged kernel first (`node shell/scripts/sidecar.mjs stage`), because the
+writer refuses a staged record that names another commit.
+
+The two long-owed lane items are CLOSED, and the runner evidence is measured:
+the `bundle-macos` lane ran all thirteen steps green on the public runner at
+the v1.29.26 release commit (`3b6bb8f0`), and the release's `Assemble
+release + notes` job ran all fourteen green on `ubuntu-latest` — including
+the step that carries the distribution's bill of materials comparison against
+the committed lockfile, which is the comparison the 131,123-byte lockfile
+broke on Linux. The billing failures were the private mirror only.
 
 ## [1.29.26] — 2026-10-21 — the review queue is displayed, and nothing more
 
