@@ -4,7 +4,7 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
-## [Unreleased] — the review queue, displayed and nothing more (III-6)
+## [1.29.26] — 2026-10-21 — the review queue is displayed, and nothing more
 
 The shell can now show the human review queue: what is waiting for a person to
 look at it, with the evidence the kernel already put on the row — the
@@ -34,6 +34,15 @@ names — a rename that read as coverage while the surface it claimed to cover
 was the one the shell was missing. The rows are corrected rather than extended
 around, the table's own example is corrected with them, and a pin holds the
 correction.
+
+The release itself is also more careful about what it ships. The release build
+is now locked, so the tree the dependency audit covered is provably the tree
+that was compiled, and the distribution's software bill of materials is
+compared against the committed lockfile before anything is published — by
+path, so the comparison actually runs on the Linux builders instead of dying
+on the argument list.
+
+### Release notes
 
 **New**
 
@@ -68,6 +77,17 @@ correction.
   A surface whose typed read lives outside the tree the census hops into would
   have been credited with no kernel path at all — and a row that agrees with
   an empty derivation is a row that measures nothing.
+- **A release now proves which dependency set it shipped.** The release build
+  is locked, so the tree the dependency audit covered is provably the tree
+  that was compiled, and the distribution's bill of materials is compared
+  against the committed lockfile before anything is published — per component
+  version, and by path, so the comparison runs on the Linux builders instead
+  of failing on the argument list. A release can no longer publish a
+  dependency set no audit saw.
+- **The release's own promote path owns its operator key.** The tests that
+  advance a release take the operator key themselves rather than resolving one
+  from the machine, so a keyless builder cannot pass a test that should have
+  refused — and the discipline is policed across the tree instead of by hand.
 
 ## [1.29.25] — 2026-10-21 — the audit gate reads one config, and the tree carries no known advisories
 
