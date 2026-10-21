@@ -62,6 +62,25 @@
 > with its 8 bullets and its compare link. **Nothing to decide and nothing to
 > fix — the premise was stale, and the tree was already in the safe state.**
 >
+> **AND THE APPLE CERTIFICATE IS DEFERRED TO REVENUE, which puts the critical
+> path's tail on the commercial clock (operator, 2026-10-21).** There is no
+> Apple Developer ID certificate, and there will not be one until after the
+> **first paying customer** — the Developer Program membership is a
+> first-customer decision. So III-5 (the Developer ID signature, notarization,
+> stapling, `spctl`, the clean machine) is **revenue-gated**, not "waiting to be
+> bought", and everything it gates moves with it: Plan 20's P4 gate 8, P5's
+> gate 9, and the **Dioxus decommission itself** — so `client/` STAYS, because
+> it is what ships today and the shell is not installable without a signed
+> bundle. **THE TWO KEYS ARE NOT THE SAME KEY, and that is the trap.** The
+> **Apple Developer ID** is Apple's, and it is deferred. The **minisign
+> updater key** is OURS — free, self-generated, needing neither a purchase nor
+> a customer — and it is the key the updater's manifest is signed with, and the
+> one whose public half is pinned in `shell/src-tauri/tauri.conf.json` while
+> its private half is **nowhere on this machine**. **The next round's
+> cert-free half costs no money and needs no customer**, and a session that
+> read "no signing key" as "no signing key of any kind" would park work that
+> is free today.
+>
 > **ponytail:** one script, one test file, six arms; no new dependency, no
 > new crate, no new knob (the poll interval and the attempt count are
 > ARGUMENTS, not seams), no change to what a release publishes, and no change
