@@ -16,11 +16,11 @@ shell's own directory, still fails; the new one passes.
 
 With every lane reading the same configuration, the tree was refreshed to the
 newest versions each manifest allows, and the two advisories published on the
-19th and 20th of October were closed — the certificate-verification one by a
-dependency bump in every lockfile that carried the affected crate, the other
-by recording, with its own measurement, that the crate it names carries no
-certificates of its own and compiles in the fixed release of the one that
-does.
+19th and 20th of October were closed — both sides of one certificate flaw,
+CVE-2026-111943: the verification half by a dependency bump in every lockfile
+that carried the affected crate, and the bundled-roots half by recording, with
+its own measurement, that the crate it names carries no certificates of its own
+and compiles in the fixed release of the one that does.
 
 The Dioxus control surface moved to the newest release of the alpha line it
 pins. That release restructures the one type the client compares its key
@@ -32,11 +32,16 @@ sets, so the keyboard shortcuts it guarded did nothing on macOS.
 
 **Security fixes**
 
-- The certificate-verification fix in the WebPKI crate is now in every
-  lockfile in the project. The affected releases could accept a certificate
-  path through an intermediate whose private key is now public. The patched
-  release is in all seven tracked lockfiles, and the dependency audit over
-  them reports no known advisories.
+- **CVE-2026-111943 is closed, on both of its sides.** The verification side
+  is the Rust WebPKI certificate-verification library: the affected releases
+  could accept a certificate path through an intermediate whose private key is
+  now public, and the patched release is now in every lockfile in the project
+  — the kernel's, the client's, the shell's, and the tools'. The roots side is
+  the bundled root-certificate set, whose affected release still shipped a
+  distrusted emSign intermediate root; the version this tree resolves to
+  already dropped that root, which is why the dependency audit reports no
+  known advisories over all seven tracked lockfiles. A scanner that reported
+  either half against an earlier build now reports neither.
 
 **Improvements**
 
@@ -47,6 +52,16 @@ sets, so the keyboard shortcuts it guarded did nothing on macOS.
   fails; that difference is what the lane was missing.
 - Every tracked lockfile was refreshed to the newest version its manifest
   allows.
+- **The dependency posture is now stated per advisory, with the identifiers.**
+  Three archive-extraction advisories on the Windows-only path of the updater
+  plugin (GHSA-vv5m-jxxh-4627, GHSA-4v9h-p7m9-rh26, GHSA-4684-h2q9-2vcp) are
+  exempted because the crate is not compiled on any platform this project
+  ships, and it is absent from the kernel's dependency graph entirely; the
+  upstream fix needs a plugin release that does not exist yet. The RSA
+  private-key timing advisory (CVE-2023-49092) is exempted because no fixed
+  version exists upstream and the signing keys are kept owner-only. The GLib
+  unsoundness advisory (GHSA-wrw7-89jp-8q8g) is Linux-backend-only, and the
+  affected iterator is never called.
 - The Dioxus control surface moved to the newest release of the alpha line it
   pins, and the one comparison that release restructures was ported.
 
