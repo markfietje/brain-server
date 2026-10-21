@@ -46,6 +46,22 @@
 > (exit 0), and the same witness driven on a tag with no runs answers
 > `UNKNOWN` (exit 2) — the old witness would have said green.
 >
+> **THE RELEASE RECORD'S TWO OPEN DECISIONS ARE CLOSED, and the first is a
+> security decision that is worth stating plainly.** (1) **v1.29.24 stays
+> NOTES-ONLY — no binaries — and the reason is MEASURED, not a shrug.** Its
+> tree pinned `rustls-webpki 0.103.15`, the release affected by
+> RUSTSEC-2026-0382 (CVE-2026-111943), where a certificate path through an
+> intermediate whose private key is now public could be accepted; the fix
+> (`0.103.16`) landed in v1.29.25, which is the tag that carries the
+> binaries. So a 1.29.24 build would have shipped that flaw, and nobody can
+> install it from the release. **The release page now SAYS this** — a reader
+> who lands on a release with zero assets reads a decision, not a failed
+> publication. (2) The stale `## [Unreleased] - 1.29.24 (never published: its
+> shell lane was red)` heading never existed in this tree, in any commit, or
+> in the published body: the CHANGELOG carries `## [1.29.24] — 2026-10-20`
+> with its 8 bullets and its compare link. **Nothing to decide and nothing to
+> fix — the premise was stale, and the tree was already in the safe state.**
+>
 > **ponytail:** one script, one test file, six arms; no new dependency, no
 > new crate, no new knob (the poll interval and the attempt count are
 > ARGUMENTS, not seams), no change to what a release publishes, and no change
