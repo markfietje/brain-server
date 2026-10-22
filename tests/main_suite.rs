@@ -8751,6 +8751,18 @@ Final paragraph after the rule.";
             reg.contains("Owed") && reg.contains("text-bound"),
             "the register's text-bound section carries the owed conversions"
         );
+        // **THE HEADING ITSELF, not the word.** The check above is a SUBSTRING
+        // test, and it is satisfiable by prose: the round that added the
+        // "every release carries the chain" row wrote "a text-bound class the
+        // …" into a cell, so the check kept passing **after the row's
+        // insertion had consumed the section's `## ` heading** — and the two
+        // tables silently became one. The heading is what SEPARATES them, so
+        // the heading is what must be required.
+        assert!(
+            reg.contains("## The text-bound rows (owed conversions)"),
+            "the register's text-bound section must carry its HEADING — the two tables are \
+             separated by that heading, and a substring check on the word cannot see it go"
+        );
     }
 
     /// The edge-history lineage is bounded like every sibling list surface,
