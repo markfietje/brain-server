@@ -13,7 +13,7 @@ measured. Those records are kept as they were written (this file is
 append-only), and their heading says `Unreleased` because that is what they
 were when the round landed — not because the work is still unreleased.
 
-## [Unreleased] — every release now has to carry the update chain
+## [1.29.29] — 2026-10-22 — every release now has to carry the update chain
 
 **A release that ships without the update chain BREAKS the updater's path for
 everyone.** The endpoint the application fetches is the latest release's copy
@@ -33,6 +33,33 @@ The release notes below record what that means for the next release, and the
 chain is published to `v1.29.28` as part of this round — the manifest answers,
 the artefact it names downloads, and the downloaded bytes verify against the
 one public key the application ships.
+
+**And the release now publishes its own chain, and checks that it did.** The
+tool that cuts a release stages the sidecar, runs the signing step — reading
+the passphrase from the login keychain, so it is never typed at a prompt and
+never written down — and then asks the only question that matters to a user:
+does the address the application fetches answer? If it does not, the release
+says so and fails, instead of reporting success over a dead update path.
+
+### Release notes
+
+**New**
+
+- **A release now publishes its own update chain, and checks that it did.** The
+  tool that cuts a release stages the sidecar, signs the update artefact with
+  the key the application ships, and publishes the artefact, its signature and
+  the manifest together. It then asks the public internet whether the address
+  the application fetches actually answers — and if it does not, the release
+  fails and says so, instead of reporting success over an update path that
+  cannot work.
+
+**Improvements**
+
+- **The update path's address is the newest release's manifest, so every
+  release has to carry the chain.** A release that ships without one leaves
+  the updater with nothing to fetch: the application says the endpoint is
+  unreachable rather than claiming to be up to date, but the path is dead.
+  Every release now carries it, and the release proves it did.
 
 ## [1.29.28] — 2026-10-22 — the desktop app carries no slop, and the update chain's address resolves
 
