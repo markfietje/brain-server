@@ -205,6 +205,107 @@ echo "Tag $TAG pushed. The tag triggers BOTH the full CI matrix and the release"
 echo "workflow on public; release.yml publishes binaries + notes ONLY if that"
 echo "matrix is green (its own fail-closed check watches the ci.yml run for"
 echo "this SHA)."
+# ── THE RELEASE'S UPDATE CHAIN ─────────────────────────────────────────────
+#
+# The endpoint the desktop application fetches is the LATEST release's copy of
+# the update manifest, so the moment a new release is published, the manifest
+# the previous release carried stops being the one that is served. **A release
+# that ships without its chain leaves the updater's path DEAD for everyone** —
+# and nothing else in the release pipeline can see it, because the chain can
+# only be produced where the key is (the signing lane), and the chain
+# necessarily lands AFTER the release is published.
+#
+# **So the tool that cuts the release is the tool that publishes the chain.**
+# The passphrase comes from the LOGIN KEYCHAIN — never typed, never written
+# down, never in this repository — and the signing lane refuses to run in the
+# public Actions, so the key stays where it is.
+#
+# The chain's own checks are the signing lane's: the pairing (the key that
+# signs IS the key the application ships), the round trip (the artefact's
+# signature verifies against the application's PINNED public key), the
+# manifest's binding, and the three-asset gate. This step adds the LAST one —
+# the only question only the public internet can answer: **DOES THE ENDPOINT
+# ANSWER?**
+#
+# **THE CHAIN WAITS FOR THE RELEASE, NOT FOR THE WITNESS.** The witness has a
+# bounded window (it reports a warning when it expires), and a chain step
+# DOWNSTREAM of it would simply never run on a slow matrix — a guard with a
+# hole exactly when it is needed. The RELEASE existing is the better
+# dependency: the workflow publishes it only when the matrix is green, so
+# "the release exists" already means "the matrix was green", and the bound
+# can be the workflow's own (the release jobs time out at 120 minutes).
+echo
+echo "=== waiting for the release to publish ==="
+RELEASED=0
+for _ in $(seq 1 240); do  # ≤ 120 min at 30s — the release jobs' own timeout
+  if command -v gh >/dev/null 2>&1 && \
+     gh release view "$TAG" --repo "markfietje/brain-server" --json isDraft --jq '.isDraft' 2>/dev/null | grep -qx false; then
+    RELEASED=1
+    break
+  fi
+  sleep 30
+done
+if [[ "$RELEASED" != "1" ]]; then
+  echo "error: the release for ${TAG} did not publish within 120 minutes — the chain" >&2
+  echo "       cannot be published onto a release that does not exist. Inspect:" >&2
+  echo "       https://github.com/markfietje/brain-server/actions" >&2
+  exit 1
+fi
+echo "-- the release is published; publishing its chain."
+echo
+echo "=== the release's update chain ==="
+CHAIN_NOTES="$(awk -v ver="${TAG#v}" '
+  /^## \[/ {
+    if (insec) exit
+    insec = ($0 ~ "^## \\[" ver "\\]")
+    if (insec) {
+      split($0, parts, "—")
+      title = parts[3]
+      gsub(/^[ \t]+|[ \t]+$/, "", title)
+      print title
+      exit
+    }
+  }
+' CHANGELOG.md)"
+[[ -n "$CHAIN_NOTES" ]] || CHAIN_NOTES="Release ${TAG}."
+
+# 1. The sidecar must be staged for THIS release's commit: the manifest
+#    writer refuses a staged record that names another commit, and the record
+#    is what says which kernel the bundle carries.
+echo "-- staging the sidecar for $(git rev-parse --short HEAD)…"
+if ! node shell/scripts/sidecar.mjs stage; then
+  echo "error: the sidecar could not be staged for ${TAG} — the chain needs it." >&2
+  echo "       The release is published; the chain is not. The updater's endpoint" >&2
+  echo "       will answer 'not found' until it is." >&2
+  exit 1
+fi
+
+# 2. The signing lane: build the updater artefact with the bundler, sign it
+#    with the key the application ships, verify the round trip against the
+#    application's PINNED key, write the manifest, and publish all three.
+echo "-- signing and publishing the chain…"
+if ! scripts/release-app-sign.sh --tag "$TAG" --notes "$CHAIN_NOTES"; then
+  echo "error: the chain did not publish for ${TAG}." >&2
+  echo "       The release is published; the chain is not. The updater's endpoint" >&2
+  echo "       will answer 'not found' until it is." >&2
+  exit 1
+fi
+
+# 3. THE LAST CHECK: does the address the application fetches answer? This is
+#    the one only the public internet can answer, and it is the one that
+#    decides whether the update path works at all.
+CHAIN_CHECK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-chain-check.sh"
+if bash "$CHAIN_CHECK" > /dev/null 2>&1; then
+  echo ">> the updater's endpoint answers: the chain is LIVE for ${TAG}."
+else
+  echo "error: the updater's endpoint does NOT answer for ${TAG}." >&2
+  echo "       The release is published, but the address the application fetches" >&2
+  echo "       is dead — so the updater cannot update. Inspect:" >&2
+  echo "       https://github.com/markfietje/brain-server/releases/latest" >&2
+  exit 1
+fi
+echo "Chain:   https://github.com/markfietje/brain-server/releases/latest/download/latest.json"
+
 if command -v gh >/dev/null 2>&1; then
   # The COMMIT the tag points at, never the tag object.
   #
@@ -286,79 +387,3 @@ if command -v gh >/dev/null 2>&1; then
 fi
 echo "Watch it: https://github.com/markfietje/brain-server/actions"
 echo "Result:   https://github.com/markfietje/brain-server/releases"
-
-# ── THE RELEASE'S UPDATE CHAIN ─────────────────────────────────────────────
-#
-# The endpoint the desktop application fetches is the LATEST release's copy of
-# the update manifest, so the moment a new release is published, the manifest
-# the previous release carried stops being the one that is served. **A release
-# that ships without its chain leaves the updater's path DEAD for everyone** —
-# and nothing else in the release pipeline can see it, because the chain can
-# only be produced where the key is (the signing lane), and the chain
-# necessarily lands AFTER the release is published.
-#
-# **So the tool that cuts the release is the tool that publishes the chain.**
-# The passphrase comes from the LOGIN KEYCHAIN — never typed, never written
-# down, never in this repository — and the signing lane refuses to run in the
-# public Actions, so the key stays where it is.
-#
-# The chain's own checks are the signing lane's: the pairing (the key that
-# signs IS the key the application ships), the round trip (the artefact's
-# signature verifies against the application's PINNED public key), the
-# manifest's binding, and the three-asset gate. This step adds the LAST one —
-# the only question only the public internet can answer: **DOES THE ENDPOINT
-# ANSWER?**
-echo
-echo "=== the release's update chain ==="
-CHAIN_NOTES="$(awk -v ver="${TAG#v}" '
-  /^## \[/ {
-    if (insec) exit
-    insec = ($0 ~ "^## \\[" ver "\\]")
-    if (insec) {
-      split($0, parts, "—")
-      title = parts[3]
-      gsub(/^[ \t]+|[ \t]+$/, "", title)
-      print title
-      exit
-    }
-  }
-' CHANGELOG.md)"
-[[ -n "$CHAIN_NOTES" ]] || CHAIN_NOTES="Release ${TAG}."
-
-# 1. The sidecar must be staged for THIS release's commit: the manifest
-#    writer refuses a staged record that names another commit, and the record
-#    is what says which kernel the bundle carries.
-echo "-- staging the sidecar for $(git rev-parse --short HEAD)…"
-if ! node shell/scripts/sidecar.mjs stage; then
-  echo "error: the sidecar could not be staged for ${TAG} — the chain needs it." >&2
-  echo "       The release is published; the chain is not. The updater's endpoint" >&2
-  echo "       will answer 'not found' until it is." >&2
-  exit 1
-fi
-
-# 2. The signing lane: build the updater artefact with the bundler, sign it
-#    with the key the application ships, verify the round trip against the
-#    application's PINNED key, write the manifest, and publish all three.
-echo "-- signing and publishing the chain…"
-if ! scripts/release-app-sign.sh --tag "$TAG" --notes "$CHAIN_NOTES"; then
-  echo "error: the chain did not publish for ${TAG}." >&2
-  echo "       The release is published; the chain is not. The updater's endpoint" >&2
-  echo "       will answer 'not found' until it is." >&2
-  exit 1
-fi
-
-# 3. THE LAST CHECK: does the address the application fetches answer? This is
-#    the one only the public internet can answer, and it is the one that
-#    decides whether the update path works at all.
-CHAIN_CHECK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-chain-check.sh"
-if bash "$CHAIN_CHECK" > /dev/null 2>&1; then
-  echo ">> the updater's endpoint answers: the chain is LIVE for ${TAG}."
-else
-  echo "error: the updater's endpoint does NOT answer for ${TAG}." >&2
-  echo "       The release is published, but the address the application fetches" >&2
-  echo "       is dead — so the updater cannot update. Inspect:" >&2
-  echo "       https://github.com/markfietje/brain-server/releases/latest" >&2
-  exit 1
-fi
-echo "Chain:   https://github.com/markfietje/brain-server/releases/latest/download/latest.json"
-
