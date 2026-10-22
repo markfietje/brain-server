@@ -87,6 +87,11 @@ BUNDLE=""
 OUT_DIR=""
 PASSPHRASE_FILE=""
 PASSPHRASE_ENV="BRAIN_UPDATER_PASSPHRASE"
+# The KEYCHAIN ITEM that holds the passphrase. Its NAME is a constant, not a
+# secret: it says where the passphrase lives. The same name is written by
+# `scripts/updater-key-passphrase.sh`.
+KEYCHAIN_SERVICE="app.brain.shell/updater-signing"
+KEYCHAIN_ACCOUNT="default"
 DRY_RUN=0
 NOTES=""
 CHECK_CHAIN=""
@@ -345,6 +350,23 @@ fi
 # there, before the passphrase is asked for, because a CI job that asked for
 # one and then refused would be a job that HANGS on a prompt nobody can
 # answer.
+#
+# WHERE THE PASSPHRASE COMES FROM, in order:
+#
+#   1. `--passphrase-file` — a 0600 file OUTSIDE this repository.
+#   2. `--passphrase-env` — an environment variable.
+#   3. **THE LOGIN KEYCHAIN** — the default, and the custody this round
+#      settled on. The item is `app.brain.shell/updater-signing` / `default`
+#      and it holds the passphrase for the updater's signing key. **Only the
+#      ITEM'S NAME is in this script — never a passphrase, never a key.** The
+#      read is `security find-generic-password -w`, which returns the value
+#      on stdout and nothing else; it is never echoed, never logged, and
+#      never written to a file this script creates.
+#   4. A silent prompt, for a machine with no keychain item.
+#
+# A passphrase in the REPOSITORY is the same secret as a key in the
+# repository, so the file form refuses a path inside the tree and checks the
+# mode.
 read_passphrase() {
 	if [[ -n "$PASSPHRASE_FILE" ]]; then
 		[[ -f "$PASSPHRASE_FILE" ]] || die "the passphrase file is absent: $PASSPHRASE_FILE"
@@ -361,20 +383,33 @@ read_passphrase() {
 		fi
 		IFS= read -r PASSPHRASE < "$PASSPHRASE_FILE" || true
 		[[ -n "$PASSPHRASE" ]] || die "the passphrase file is empty: $PASSPHRASE_FILE"
+		echo ">> using the passphrase from the file $PASSPHRASE_FILE"
 		return
 	fi
 	if [[ -n "${!PASSPHRASE_ENV:-}" ]]; then
 		PASSPHRASE="${!PASSPHRASE_ENV}"
 		[[ -n "$PASSPHRASE" ]] || die "the passphrase environment variable is empty: $PASSPHRASE_ENV"
+		echo ">> using the passphrase from the environment variable $PASSPHRASE_ENV"
 		return
 	fi
+	# THE KEYCHAIN. Its name is a CONSTANT, not a secret: it says WHERE the
+	# passphrase lives, and it is the same name `scripts/updater-key-
+	# passphrase.sh` writes to.
+	if command -v security >/dev/null 2>&1; then
+		PASSPHRASE="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT" -w 2>/dev/null || true)"
+		if [[ -n "$PASSPHRASE" ]]; then
+			echo ">> using the passphrase from the login keychain ($KEYCHAIN_SERVICE / $KEYCHAIN_ACCOUNT)"
+			return
+		fi
+	fi
 	if [[ ! -t 0 ]]; then
-		die "no passphrase: pass --passphrase-file, set $PASSPHRASE_ENV, or run this on a terminal"
+		die "no passphrase: the login keychain has no '$KEYCHAIN_SERVICE' item for '$KEYCHAIN_ACCOUNT', and this is not a terminal. Pass --passphrase-file, set $PASSPHRASE_ENV, or run this on a terminal."
 	fi
 	echo -n ">> passphrase for the updater signing key: " >&2
 	IFS= read -rs PASSPHRASE || true
 	echo "" >&2
 	[[ -n "$PASSPHRASE" ]] || die "the passphrase is empty"
+	echo ">> using the passphrase from the terminal"
 }
 read_passphrase
 
@@ -388,7 +423,12 @@ SIGN_KEY="$SECRET_KEY"
 KEY_FIRST_LINE="$(head -n 1 "$SECRET_KEY" 2>/dev/null || true)"
 if [[ "$KEY_FIRST_LINE" == "untrusted comment:"* ]]; then
 	# The raw form: re-encode it for the CLI, in a temp file that is removed.
-	base64 -i "$SECRET_KEY" -o "$TMPDIR_SIGN/secret.b64"
+	# **The trailing newline is REMOVED on purpose (measured 2026-10-22):**
+	# BSD `base64` ends its output with a newline, and the Tauri CLI's
+	# decoder rejects it — `failed to decode base64 secret key: Invalid
+	# symbol 10, offset 348`. The operator's stored form has no trailing
+	# newline, which is why it reads.
+	base64 -i "$SECRET_KEY" | tr -d '\n' > "$TMPDIR_SIGN/secret.b64"
 	SIGN_KEY="$TMPDIR_SIGN/secret.b64"
 fi
 
