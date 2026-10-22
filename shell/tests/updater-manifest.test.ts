@@ -1003,15 +1003,27 @@ test('the_passphrase_comes_from_the_keychain_and_no_secret_is_in_the_source', ()
 	// already in the repository.
 	//
 	// **This arm runs only where the keychain item EXISTS** — on the
-	// operator's machine, and NOT on a CI runner, which has no keychain. It
-	// is an EXTRA check on top of the two above, which hold everywhere; the
-	// tracked tree's freedom from the key's secret half is held by the
-	// sibling pin `the_private_updater_key_is_in_no_tracked_file`.
-	const keychainValue = execFileSync(
-		'security',
-		['find-generic-password', '-s', 'app.brain.shell/updater-signing', '-a', 'default', '-w'],
-		{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
-	).trim();
+	// operator's machine, and NOT on a CI runner. It is an EXTRA check on
+	// top of the two above, which hold everywhere; the tracked tree's
+	// freedom from the key's secret half is held by the sibling pin
+	// `the_private_updater_key_is_in_no_tracked_file`.
+	//
+	// **THE READ IS TOLERANT OF A MACHINE THAT HAS NO KEYCHAIN**, and it
+	// must be: a CI runner has no `security` at all, and on some Linux
+	// distributions `security` is a DIFFERENT program (the SELinux tools)
+	// which would exit non-zero on these arguments. Either way the read
+	// fails, and a failure here means "this arm cannot run", not "the lane
+	// is wrong".
+	let keychainValue = '';
+	try {
+		keychainValue = execFileSync(
+			'security',
+			['find-generic-password', '-s', 'app.brain.shell/updater-signing', '-a', 'default', '-w'],
+			{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+		).trim();
+	} catch {
+		keychainValue = '';
+	}
 	if (keychainValue.length > 0) {
 		expect(
 			lane.includes(keychainValue),
