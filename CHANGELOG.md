@@ -4,7 +4,16 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
-## [Unreleased] — the update artefact's NAME is part of its address, and the desktop app is now watched end to end
+**TWO LAYERS, and the headings say which is which.** A RELEASED version's
+section (`## [1.29.28]`) carries the PUBLISHED notes — a `### Release notes`
+block of user-facing bullets, which is what the release page shows. A section
+titled `## [Unreleased]` that sits BELOW a released version is that round's
+ENGINEERING RECORD: what was built, which drills ran, and what the tree
+measured. Those records are kept as they were written (this file is
+append-only), and their heading says `Unreleased` because that is what they
+were when the round landed — not because the work is still unreleased.
+
+## [1.29.28] — 2026-10-22 — the desktop app carries no slop, and the update chain's address resolves
 
 **The last release published an update chain whose download address could not
 be reached.** The chain was built, signed with the application's own key and
@@ -34,29 +43,35 @@ covered now, and a check holds the gate and the build pipeline reading one
 list instead of two, and refuses a test file whose name would slip past it
 again.
 
+### Release notes
+
 **Improvements**
 
 - **The desktop application now carries no slop, and the gate that watches for
-  it covers the whole app.** The quality gate that flags repeated code,
-  swallowed errors and vague names looked at the server, the client and the
-  shared crates, and not the application — neither its renderer nor its own
-  tests. All of it is covered now, and the app's core is at zero findings. The
-  findings that were real have been fixed; the ones that were not — a
-  deliberate fallback that explains itself, a type guard, a named seam beside
-  its twin — are no longer reported as slop, each with the reason recorded.
+  it covers the whole application.** The quality gate that flags repeated
+  code, swallowed errors and vague names looked at the server, the client and
+  the shared crates, and not the application — neither its renderer nor its
+  core, nor the core's own tests. All of it is in scope now, the app is at
+  zero findings, and the findings that were real have been fixed. The ones
+  that were not — a deliberate fallback that explains itself, a type guard, a
+  named seam beside its twin — are no longer reported as slop, each with the
+  reason recorded rather than a blanket silence.
 - **The application no longer carries dead code, and the compiler now holds
-  it.** Nine unused declarations are gone — including a parameter that six call
-  sites were still passing — and unused code is now a compile error rather
-  than something no gate could see.
+  it.** Nine unused declarations are gone — including a parameter that six
+  call sites were still passing — and unused code is now a compile error
+  rather than something no gate could see.
 - **An update manifest is refused when its download address could not
   resolve.** The artefact's name is part of the address, and a release
   rewrites a space in a name into a dot — so a name the release cannot keep
   is a name the address cannot name. The release refuses it, and the signing
-  step gives the artefact a name it can keep before it signs it.
-- **The desktop application is now watched by the same quality gate as the
-  server.** Its renderer, its core and the core's own tests are all in the
-  gate's scope now, and a check holds the two readings of that scope from
-  drifting apart.
+  step gives the artefact a name it can keep BEFORE it signs it, so the
+  signature names the artefact as it will be published.
+- **The update chain's passphrase now lives in the login keychain, and
+  changing it does not change the key.** The signing step reads the
+  passphrase from the keychain, so it is never typed at a prompt and never
+  written down. A new passphrase can be set with one command, and that
+  command proves it is not a new key: the public half does not move, so the
+  key the application already ships stays valid.
 
 ## [1.29.27] — 2026-10-22 — the release ships what the updater can fetch, and the witness says UNKNOWN when it knows nothing
 
