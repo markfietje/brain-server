@@ -4,6 +4,48 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — the update artefact's NAME is part of its address, and the desktop app is now watched end to end
+
+**The last release published an update chain whose download address could not
+be reached.** The chain was built, signed with the application's own key and
+published — and the address in the manifest returned "not found". The cause
+was the artefact's FILENAME: GitHub replaces a space in a release asset's
+name with a dot, so an artefact called `Brain Shell.app.tar.gz` is published
+as `Brain.Shell.app.tar.gz`, while the manifest's address named the space.
+The application would have downloaded nothing, and the manifest would have
+been a promise the release could not keep.
+
+**The name is now part of the contract, and the order is the point.** The
+release refuses to publish an update manifest whose artefact carries a name
+a release asset does not keep, and the signing step renames the artefact
+BEFORE it signs it — so the signature names the artefact as it will be
+published. Renaming afterwards would have produced a manifest the release
+refuses and a chain the application cannot verify. The corrected chain was
+re-signed and re-published, and the whole path was measured from the public
+internet: the manifest answers, the artefact it names downloads, and the
+downloaded bytes verify against the one public key the application ships.
+
+**And the quality gate that watches for slop now covers the whole desktop
+application** — its renderer as well as its core, and the core's own tests.
+The gate scanned the server, the client and the shared crates, and not the
+application: the renderer was never looked at, and the core's test modules
+were skipped by a rule that recognises a test file by its NAME. Both are
+covered now, and a check holds the gate and the build pipeline reading one
+list instead of two, and refuses a test file whose name would slip past it
+again.
+
+**Improvements**
+
+- **An update manifest is refused when its download address could not
+  resolve.** The artefact's name is part of the address, and a release
+  rewrites a space in a name into a dot — so a name the release cannot keep
+  is a name the address cannot name. The release refuses it, and the signing
+  step gives the artefact a name it can keep before it signs it.
+- **The desktop application is now watched by the same quality gate as the
+  server.** Its renderer, its core and the core's own tests are all in the
+  gate's scope now, and a check holds the two readings of that scope from
+  drifting apart.
+
 ## [1.29.27] — 2026-10-22 — the release ships what the updater can fetch, and the witness says UNKNOWN when it knows nothing
 
 The desktop app can now update itself from a published release, and the

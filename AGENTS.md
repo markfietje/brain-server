@@ -110,16 +110,39 @@
 > and the chain is reachable up to the passphrase: the reason the signed path
 > is not live is "not signed", NOT "not signable", and the release notes say
 > which.** The round trip itself (sign → verify against the PINNED public key)
-> is the ONE thing the operator's passphrase gates, and it is OWED by name.
+> is the ONE thing the operator's passphrase gates — and it RAN: see below.
 >
-> **OWED, named, not hidden:** the operator's passphrase and the round trip
-> with the SHIPPED key (one command, in the round's commit message); a staged
-> kernel build for the manifest half of the chain to run end to end on a
-> release; the Developer ID, notarization, stapling, `spctl` and the clean
-> machine (III-5, REVENUE-GATED); the public endpoint's real URL; the two owed
-> register conversions (the updater's config arms' behavioural conversion and
-> the `cargo metadata --no-deps` conversion of the S2/S3 Cargo arms); and the
-> hand-made archive (upstream's to answer).
+> **AND THE ROUND TRIP RAN (2026-10-22), AND THE CHAIN IS LIVE — and its
+> FIRST PUBLICATION WAS BROKEN IN THE EXACT WAY THIS ROUND EXISTS TO CATCH.**
+> The operator's signing lane built the updater artefact with the bundler,
+> signed it with the SHIPPED key, and wrote the manifest; the chain was
+> published to `v1.29.27` and the whole path was measured END TO END from
+> the public internet: `latest.json` → **HTTP 200**; the artefact URL the
+> manifest names → **HTTP 200, 26,370,074 bytes**; and **the bytes the
+> updater would download verify against the application's OWN pinned key**
+> (`Signature and comment signature verified`, trusted comment
+> `file:Brain-Shell.app.tar.gz  version:0.1.1`). **THE PAIRING IS PROVED ON
+> THE TWO PUBLIC HALVES, AND THE ROUND TRIP IS PROVED ON THE BYTES.**
+>
+> **BUT THE FIRST PUBLISHED URL 404'd, and the cause was the FILENAME.**
+> GitHub replaces a SPACE in a release asset's name with a DOT: the artefact
+> was published as `Brain.Shell.app.tar.gz` while the manifest's URL named
+> the space (`Brain%20Shell.app.tar.gz`) → **HTTP 404 (9 bytes)**, so the
+> updater would have downloaded NOTHING. **It is D1's defect one level down
+> — a URL naming something that does not exist — and it was found only by
+> FETCHING the published URL, not by any local check.** The fix is at both
+> ends, and the ORDER matters: the writer REFUSES an artefact whose name a
+> release asset cannot keep, and the signing lane RENAMES the artefact
+> BEFORE it signs it, so the signature's `file:` binding names the artefact
+> as it will be PUBLISHED. Renaming AFTER signing would have produced a
+> manifest the writer refuses and a chain the app cannot verify.
+>
+> **OWED, named, not hidden:** the Developer ID, notarization, stapling,
+> `spctl` and the clean machine (III-5, REVENUE-GATED — the Apple identity
+> is a DIFFERENT key with a different owner and a different clock); the two
+> owed register conversions (the updater's config arms' behavioural conversion
+> and the `cargo metadata --no-deps` conversion of the S2/S3 Cargo arms);
+> and the hand-made archive (upstream's to answer).
 >
 > **AND THE DE-SLOP WATCHDOG NOW COVERS THE WHOLE TAURI APP — and the
 > ceiling this round named turned out to be MIS-DIAGNOSED, which is worth more
