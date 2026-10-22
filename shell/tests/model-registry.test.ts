@@ -56,7 +56,6 @@ function withDetail(mutate: (row: Record<string, unknown>) => void): unknown {
 	return row;
 }
 
-const HEX64 = 'a'.repeat(64);
 
 /**
  * U+200B ZERO WIDTH SPACE, built from its codepoint.

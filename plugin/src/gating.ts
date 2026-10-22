@@ -46,7 +46,6 @@ export function isRecallAllowed(cfg: ResolvedBrainConfig, ctx: GateContext): Gat
     return { allowed: false, reason: `agent ${ctx.agentId} not in allowlist` };
   }
 
-  // Chat-type gating.
   if (ctx.chatType && !cfg.allowedChatTypes.includes(ctx.chatType)) {
     return { allowed: false, reason: `chat type ${ctx.chatType} not allowed (data-leakage guard)` };
   }
@@ -77,7 +76,6 @@ export function deriveChatType(ctx: {
 }): GateContext["chatType"] {
   const trigger = (ctx.trigger ?? "").toLowerCase();
   const channel = (ctx.channel ?? "").toLowerCase();
-  // Explicit/portal/webchat sessions.
   if (trigger.includes("explicit") || trigger.includes("portal") || trigger.includes("webchat")) {
     return "explicit";
   }

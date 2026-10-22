@@ -75,8 +75,11 @@ pub(crate) fn clear_from(store: &CredentialStore) -> Result<(), TokenError> {
     let entry = store
         .build(SERVICE, ACCOUNT, None)
         .map_err(|_| TokenError::ClearFailed)?;
+    // Clearing an ABSENT item is success (nothing to clear); every other
+    // failure is the caller's to see.
     match entry.delete_credential() {
-        Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
+        Ok(()) => Ok(()),
+        Err(KeyringError::NoEntry) => Ok(()),
         Err(_) => Err(TokenError::ClearFailed),
     }
 }

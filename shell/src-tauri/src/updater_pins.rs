@@ -324,12 +324,12 @@ fn the_updater_module_reads_exactly_one_environment_variable_and_it_is_the_endpo
     let mut rest = source;
     while let Some(at) = rest.find("env::var") {
         let after = rest[at + "env::var".len()..].trim_start();
-        let (call, tail) = match after.strip_prefix("_os(") {
-            Some(tail) => ("env::var_os", tail),
-            None => match after.strip_prefix('(') {
-                Some(tail) => ("env::var", tail),
-                None => panic!("the module reads the environment in a form the scan cannot parse"),
-            },
+        let (call, tail) = if let Some(tail) = after.strip_prefix("_os(") {
+            ("env::var_os", tail)
+        } else if let Some(tail) = after.strip_prefix('(') {
+            ("env::var", tail)
+        } else {
+            panic!("the module reads the environment in a form the scan cannot parse")
         };
         let close = tail.find(')').expect("a closed environment read");
         reads.push(format!("{call}({})", tail[..close].trim()));

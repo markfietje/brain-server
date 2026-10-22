@@ -50,7 +50,7 @@ export function assembleAnswers(pack: ResolvedPack, answers: Readonly<Record<str
 			break;
 		}
 		typed.push({ question: q.id, answer: renderedAnswer(q, key) });
-		step = branchOf(pack, q, key);
+		step = branchOf(q, key);
 	}
 	return {
 		origin: 'wizard',

@@ -36,6 +36,18 @@ again.
 
 **Improvements**
 
+- **The desktop application now carries no slop, and the gate that watches for
+  it covers the whole app.** The quality gate that flags repeated code,
+  swallowed errors and vague names looked at the server, the client and the
+  shared crates, and not the application — neither its renderer nor its own
+  tests. All of it is covered now, and the app's core is at zero findings. The
+  findings that were real have been fixed; the ones that were not — a
+  deliberate fallback that explains itself, a type guard, a named seam beside
+  its twin — are no longer reported as slop, each with the reason recorded.
+- **The application no longer carries dead code, and the compiler now holds
+  it.** Nine unused declarations are gone — including a parameter that six call
+  sites were still passing — and unused code is now a compile error rather
+  than something no gate could see.
 - **An update manifest is refused when its download address could not
   resolve.** The artefact's name is part of the address, and a release
   rewrites a space in a name into a dot — so a name the release cannot keep

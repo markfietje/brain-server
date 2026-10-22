@@ -382,10 +382,9 @@ struct WireRecall {
 
 impl From<WireHit> for Passage {
     fn from(hit: WireHit) -> Passage {
-        let (valid_from, valid_to) = match hit.evidence {
-            Some(evidence) => (evidence.valid_from, evidence.valid_to),
-            None => (None, None),
-        };
+        let (valid_from, valid_to) = hit.evidence.map_or((None, None), |evidence| {
+            (evidence.valid_from, evidence.valid_to)
+        });
         Passage {
             id: hit.id,
             title: hit.title,

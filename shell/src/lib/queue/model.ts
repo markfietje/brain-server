@@ -315,8 +315,6 @@ export function toDisplayRow(
 	};
 }
 
-// ── the session cache ───────────────────────────────────────────────────────
-
 /** The sessionStorage key. One entry per tab session; nothing outlives it. */
 export const QUEUE_CACHE_KEY = 'brain-queue-cache:';
 

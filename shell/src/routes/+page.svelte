@@ -112,7 +112,7 @@
 		}
 		recordAnswer(q.id);
 		const nextAnswers = { ...answers, [q.id]: given };
-		const step = branchOf(pack, q, key);
+		const step = branchOf(q, key);
 		if (step.kind === 'end') {
 			clearProgress(pack.pack);
 			mode = { kind: 'done', pack, answers: nextAnswers };

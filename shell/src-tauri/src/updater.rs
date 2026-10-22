@@ -370,10 +370,15 @@ pub async fn install(app: &tauri::AppHandle) -> Result<UpdateDto, String> {
         Ok(bytes) => bytes,
         Err(error) => {
             let message = download_error(&error);
-            return Ok(match refusal_kind(&error) {
-                Some(kind) => dto.refused(kind, None, None, Some(message)),
-                None => dto.unreachable(&message),
-            });
+            // BOTH arms move `dto` — a refusal and an unreachable are
+            // different renderings of the same DTO — so this is an `if let`,
+            // not a `map_or_else` (whose two closures would both move it).
+            let dto = if let Some(kind) = refusal_kind(&error) {
+                dto.refused(kind, None, None, Some(message))
+            } else {
+                dto.unreachable(&message)
+            };
+            return Ok(dto);
         }
     };
     if let Err(error) = verify_artifact(&update, &bytes) {

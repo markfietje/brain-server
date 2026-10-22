@@ -447,10 +447,9 @@ impl StatusDto {
 
 /// `x.y.z` with optional `-prerelease`/`+build`; the kernel's version shape.
 fn is_semver(value: &str) -> bool {
-    let (core, rest) = match value.split_once('-') {
-        Some((core, rest)) => (core, Some(rest)),
-        None => (value, None),
-    };
+    let (core, rest) = value
+        .split_once('-')
+        .map_or((value, None), |(core, rest)| (core, Some(rest)));
     let core = core.split_once('+').map_or(core, |(core, _)| core);
     let parts: Vec<&str> = core.split('.').collect();
     if parts.len() != 3 {

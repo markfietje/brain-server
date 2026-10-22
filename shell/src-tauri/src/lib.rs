@@ -107,14 +107,13 @@ async fn store_kernel_token(
             .await
             .map_err(|_| "rotation_task_failed".to_string())?;
 
-    match rotated {
-        Ok(dto) => Ok(dto),
-        Err(error) => Ok(sidecar::RotationDto {
-            kernel_synced: false,
-            data_root_missing: false,
-            error: Some(error.kind().to_string()),
-        }),
-    }
+    // A failed rotation is REPORTED, not propagated: the DTO carries the
+    // refusal, so the caller renders it rather than losing the state.
+    Ok(rotated.unwrap_or_else(|error| sidecar::RotationDto {
+        kernel_synced: false,
+        data_root_missing: false,
+        error: Some(error.kind().to_string()),
+    }))
 }
 
 /// III-2 — remove the stored bearer. Clearing an absent item is success.

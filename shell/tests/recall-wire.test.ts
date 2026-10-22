@@ -91,7 +91,6 @@ const abstained: RecallOutcome = {
 
 const refused: RecallOutcome = { state: 'refused', status: 403, scope: 'recall' };
 
-const unreachable: RecallOutcome = { state: 'unreachable', status: 503, detail: 'kernel down' };
 
 const contractViolation: RecallOutcome = {
 	state: 'contract_violation',

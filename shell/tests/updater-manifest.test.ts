@@ -29,7 +29,6 @@ const scriptPath = join(shellRoot, 'scripts', 'updater.mjs');
 const signScriptPath = join(kernelRoot, 'scripts', 'release-app-sign.sh');
 const releaseWorkflowPath = join(kernelRoot, '.github', 'workflows', 'release.yml');
 const configPath = join(shellRoot, 'src-tauri', 'tauri.conf.json');
-const macosConfigPath = join(shellRoot, 'src-tauri', 'tauri.macos.conf.json');
 const capabilityPath = join(shellRoot, 'src-tauri', 'capabilities', 'main.json');
 
 /**
@@ -1008,18 +1007,17 @@ test('the_passphrase_comes_from_the_keychain_and_no_secret_is_in_the_source', ()
 	// freedom from the key's secret half is held by the sibling pin
 	// `the_private_updater_key_is_in_no_tracked_file`.
 	//
-	// **THE READ IS TOLERANT OF A MACHINE THAT HAS NO KEYCHAIN**, and it
-	// must be: a CI runner has no `security` at all, and on some Linux
-	// distributions `security` is a DIFFERENT program (the SELinux tools)
-	// which would exit non-zero on these arguments. Either way the read
-	// fails, and a failure here means "this arm cannot run", not "the lane
-	// is wrong".
+	// **THE READ IS BOUNDED, and that is not a detail.** `security` can
+	// BLOCK on a keychain ACL prompt, and a pin that blocks is a pin that
+	// fails the suite on a machine that merely has a locked keychain — the
+	// flake was measured, not guessed. The read gets its own short timeout,
+	// and a timeout means "this arm cannot run here".
 	let keychainValue = '';
 	try {
 		keychainValue = execFileSync(
 			'security',
 			['find-generic-password', '-s', 'app.brain.shell/updater-signing', '-a', 'default', '-w'],
-			{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+			{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, killSignal: 'SIGKILL' }
 		).trim();
 	} catch {
 		keychainValue = '';

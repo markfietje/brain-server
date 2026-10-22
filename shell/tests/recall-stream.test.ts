@@ -52,10 +52,6 @@ const events: RecallEvent[] = [
 	{ kind: 'complete', searched }
 ];
 
-async function* fromArray(items: RecallEvent[]): AsyncGenerator<RecallEvent> {
-	for (const item of items) yield item;
-}
-
 describe('the relay does not buffer', () => {
 	test('a producer gated on the first observation completes', async () => {
 		// The producer refuses to produce event 2 until the consumer has

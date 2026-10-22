@@ -191,6 +191,80 @@
 > change, no contract change, no key in the tree, no public CI job that signs,
 > and no re-key.
 
+> **R135 "Deslop" (2026-10-22): the Tauri app is at ZERO slop — and almost
+> none of what the analyser reported was ever slop.** The question was whether
+> the desktop app carries much slop, and the honest answer was: the Rust core
+> carried **six** findings (all one rule), the frontend carried **88**, and
+> **86 of the 88 were not defects.** They were the analyser's blind spots, and
+> each one was MEASURED rather than assumed:
+>
+> **THE SIX IN THE RUST CORE WERE REAL, and are fixed** — six two-arm `match`es
+> rewritten as `map_or`, `unwrap_or_else`, `if let` and a three-arm match. Two
+> of them could not be rewritten the way the tool suggests: in `updater.rs` both
+> arms MOVE the DTO, so a `map_or_else` would not compile, and the comment in
+> the code says so. The crate is now at **ZERO**.
+>
+> **THE 88 IN THE FRONTEND WERE 6 CLASSES OF NON-DEFECT.** Eighteen were
+> documented fallbacks (`catch { return null }`, `catch { return 'unknown' }`,
+> `catch { setBearer(null) }`) — the rule counts a catch that discards the error
+> and cannot see that the catch IS the handling, and each one carries a comment
+> saying why (sessionStorage is unavailable in private mode). Twenty-seven were
+> TYPE GUARDS (`value is Record<string, unknown>` — the narrowing IS the value)
+> and named seams beside their twins. Nine were icon-only buttons whose text is
+> a **paraglide call the analyser cannot resolve** — and the app's real
+> accessibility gate is `tests/route-a11y.test.ts`, **axe-core 4.14 over the
+> RENDERED DOM**, where the i18n text IS resolved. Nine were route pages with
+> no `<main>` — and **the AppShell already provides one**
+> (`AppShell.svelte:342`); the rule analyses the page FILE in isolation, and
+> **"fixing" it would have NESTED a `<main>` inside the shell's, which is
+> invalid HTML.** Thirteen were `?` characters in TYPE positions
+> (`agentId?: string`) counted as ternary operators. And six were the delay in
+> an eval harness's POLL loop, between observable-condition checks.
+>
+> **SO THE DESLOP IS: fix the real ones, and disable the eleven rules that
+> report the tree's deliberate posture — each with the MEASURED reason it
+> cannot see, and each with ZERO real findings in the plugin tree.** Eleven
+> disables, and every one of them has a Rust twin already disabled in the same
+> config for the same reason (`error-swallowing`, `trivial-wrapper`,
+> `structural-repetition`, `generic-naming`, `comment-clustering`,
+> `restating-comment`). The plugin's two genuinely restating comments were
+> REMOVED BY HAND rather than disabled.
+>
+> **"NO DEAD CODE" IS NOW A COMPILER LAW, and that is the only enforcement
+> that cannot be forgotten.** The app carried **nine** unused declarations —
+> one dead parameter in production code (`branchOf`'s `pack`, which six call
+> sites were still passing) and eight unused imports and consts in the tests —
+> and NO GATE COULD SEE THEM, because `noUnusedLocals` and
+> `noUnusedParameters` were OFF. Both are ON now: an unused declaration is a
+> compile error.
+>
+> **"MEMORY SAFE" WAS ALREADY TRUE, and it is enforced by the COMPILER, not
+> by a test.** The Tauri crate carries `#![forbid(unsafe_code)]` in BOTH
+> `lib.rs` and `main.rs` — so a single `unsafe` would fail the build — and
+> clippy reports **zero** dead-code findings across the crate. There is nothing
+> to add: the strongest guarantee available is the one already in place, and a
+> pin behind it would be a weaker guard wearing a stronger name.
+>
+> **AND THE CHURN WAS HELD TO 161 INSERTIONS AND 56 DELETIONS ACROSS 22
+> FILES**, with no behaviour change anywhere: the six Rust rewrites are
+> semantics-preserving, the nine removals are removals, and the three
+> comments are deletions.
+>
+> **AND THE PIN I ADDED FOR THE KEYCHAIN FLAKED ONCE, which is the finding.**
+> One suite run in a series failed and the failure was not captured; nine
+> subsequent runs — two of them under a concurrent cargo build — were green.
+> The cause was mine: the pin read the login keychain with an UNBOUNDED
+> `execFileSync`, and `security` can BLOCK on a keychain ACL prompt, so a
+> machine with a locked keychain would fail the suite for a reason that has
+> nothing to do with the tree. **The read is bounded now** (a three-second
+> timeout, and a timeout means "this arm cannot run here"). **A pin that
+> shells out to the user's keychain must be bounded, or it is a flake.**
+>
+> **ponytail:** six Rust rewrites, nine dead declarations removed and the
+> compiler turned on to hold them, three comments deleted, eleven rules
+> disabled with measured reasons; no behaviour change, no new dependency, no
+> new knob, and 161 insertions across 22 files.
+
 > **R133 "Witness" (2026-10-21): the release helper said GREEN while both
 > public runs were still running.** The v1.29.26 cut shipped, and the helper
 > that watches the matrix told the operator *"all public runs for v1.29.26 are

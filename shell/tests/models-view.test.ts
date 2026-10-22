@@ -730,7 +730,9 @@ describe('Model Registry view', () => {
 		// An unreachable kernel is a host state, named as such.
 		cleanup();
 		refUrl(DETAIL_REF);
-		responder = async (url, init, method) => {
+		// `_init` is the responder's unused request-init parameter, named so
+		// the compiler's unused-parameter check leaves it alone.
+		responder = async (url, _init, method) => {
 			if (method === 'POST' && pathOf(url) === PROPOSAL_PATH) {
 				throw new TypeError('failed to fetch');
 			}

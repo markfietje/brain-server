@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url';
 import { expect, test, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
-import AxeBuilder from 'axe-core';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const shellRoot = join(here, '..');

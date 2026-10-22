@@ -3,9 +3,8 @@ import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { shellRoot } from './fixtures';
 import type { Passage, RecallOutcome } from '../src/lib/api/recall';
-import { isAnswerLike, renderTurn, renderingToken, type TurnRendering } from '../src/lib/chat/turn';
+import { isAnswerLike, renderTurn, renderingToken } from '../src/lib/chat/turn';
 import {
-	citationFor,
 	confidenceWord,
 	isHistorical,
 	provenanceBlock,

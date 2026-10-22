@@ -87,9 +87,9 @@ describe('the branch engine (support-ticket fixture)', () => {
 		expect(qClass).toBeDefined();
 		expect(qPriority).toBeDefined();
 		if (!qClass || !qPriority) return;
-		expect(branchOf(pack.pack, qClass, 'billing')).toEqual({ kind: 'question', id: 'q_priority' });
-		expect(branchOf(pack.pack, qPriority, '2')).toEqual({ kind: 'end' });
-		expect(branchOf(pack.pack, qPriority, '0')).toEqual({ kind: 'question', id: 'q_known' });
+		expect(branchOf(qClass, 'billing')).toEqual({ kind: 'question', id: 'q_priority' });
+		expect(branchOf(qPriority, '2')).toEqual({ kind: 'end' });
+		expect(branchOf(qPriority, '0')).toEqual({ kind: 'question', id: 'q_known' });
 	});
 
 	test('renders typed answer text (score/noul) — never free text', () => {

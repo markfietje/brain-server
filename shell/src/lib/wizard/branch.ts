@@ -48,7 +48,8 @@ export function renderedAnswer(q: WizardQuestion, key: string): string {
 					? (q.criteria as Record<string, unknown>)
 					: {};
 			const text = criteria[key];
-			return typeof text === 'string' ? text : key === 'true' ? 'yes' : 'no';
+			if (typeof text === 'string') return text;
+			return key === 'true' ? 'yes' : 'no';
 		}
 	}
 }
@@ -59,7 +60,7 @@ export type WalkStep =
 
 /** The next question id (or 'end') after an IN-VOCABULARY answer. Total
  * over validated packs: every vocabulary key has a branch by construction. */
-export function branchOf(pack: ResolvedPack, q: WizardQuestion, key: string): WalkStep {
+export function branchOf(q: WizardQuestion, key: string): WalkStep {
 	const target = q.next[key] ?? 'end';
 	return target === 'end' ? { kind: 'end' } : { kind: 'question', id: target };
 }

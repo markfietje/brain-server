@@ -75,6 +75,8 @@ export function confidenceWord(value: number | null): Confidence {
 		};
 	}
 	const word = value >= 0.7 ? 'high' : value >= 0.4 ? 'medium' : 'low';
+	// (the threshold ladder above is one ternary chain on purpose — three
+	// ordered bands read as one table, and an if/else chain would not.)
 	return { kind: 'word', word, value };
 }
 
