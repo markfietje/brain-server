@@ -91,6 +91,17 @@
 > READING the suite's red rather than trusting the revert. A round that edits
 > tracked files must restore from the round's own content, not from git.
 >
+> **AND A PIN THAT REACHED FOR THE REGISTRY FLAKED ONCE IN FIVE RUNS, and the
+> fix is the same lesson R135 recorded for the keychain.** The install pin
+> drove `npm install --package-lock-only` against the live registry, and one
+> run in five failed for a reason that had nothing to do with the tree. The
+> pin now resolves `--offline` from the cache the lane's own `npm ci` has
+> just warmed — measured: the LAW is intact, because npm refuses a
+> `workspace:` URL before it looks at any cache, so the restored devDependency
+> still reds with npm's own EUNSUPPORTEDPROTOCOL under `--offline` too. Five
+> consecutive green runs after the change. A pin that shells out past the
+> machine must be bounded, or it is a flake.
+>
 > **THE CENSUS AND THE BADGE MOVED, and both were re-derived rather than
 > hand-typed:** `docs/test-census.md` re-derived (+3 structural — the new
 > Rust pin), 3,521 → 3,524; the README badge re-derived 3470 → 3473 and

@@ -34,18 +34,34 @@ describe('the plugin installs standalone', () => {
 		const scratch = mkdtempSync(join(tmpdir(), 'iii8-install-'));
 		try {
 			writeFileSync(join(scratch, 'package.json'), read('package.json'));
-			// Resolution only — the lane's own `npm ci` is the proof the full
-			// install works on a clean checkout; this is the proof npm's own
-			// resolver accepts the manifest when the host's workspace is absent.
+			// Resolution only, from the warm cache — the lane's `npm ci` has just
+			// populated it. **The pin is deliberately OFFLINE**, because a pin
+			// that reaches for the registry is a pin at the network's mercy: it
+			// flaked once in five runs (measured 2026-10-22), and R135's lesson
+			// about the keychain applies verbatim — a pin that shells out past
+			// the machine must be bounded, or it is a flake. Offline keeps the
+			// LAW intact: npm still parses the manifest and still refuses a
+			// `workspace:` URL before it looks at any cache (measured — the
+			// restored devDependency reds with npm's own EUNSUPPORTEDPROTOCOL
+			// under `--offline` too). The lane's own `npm ci` remains the proof
+			// that the full install works on a clean checkout, network and all.
 			const install = spawnSync(
 				'npm',
-				['install', '--package-lock-only', '--no-audit', '--no-fund', '--ignore-scripts'],
+				[
+					'install',
+					'--package-lock-only',
+					'--offline',
+					'--no-audit',
+					'--no-fund',
+					'--ignore-scripts'
+				],
 				{ cwd: scratch, encoding: 'utf8', timeout: 120_000 }
 			);
 			const output = `${install.stdout}\n${install.stderr}`;
 			expect(
 				install.status,
-				`npm install --package-lock-only failed in a clean tree:\n${output}`
+				`npm install --package-lock-only failed in a clean tree ` +
+					`(if this names missing packages, the cache was cold — run npm ci first):\n${output}`
 			).toBe(0);
 			// npm's own failure for the blocking shape is EUNSUPPORTEDPROTOCOL —
 			// the red-proof restores it and expects exactly this string.
