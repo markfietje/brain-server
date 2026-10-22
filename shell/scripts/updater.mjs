@@ -313,6 +313,24 @@ export function manifestFailures({
 		failures.push(`the bundle carries no Contents/Info.plist: ${bundle}`);
 	}
 
+	// The artefact's NAME is part of the URL, and a release asset does not
+	// keep every character a file may carry. **MEASURED (2026-10-22):**
+	// GitHub replaces a SPACE in an asset's name with a DOT, so an artefact
+	// called `Brain Shell.app.tar.gz` is published as
+	// `Brain.Shell.app.tar.gz` — and the manifest's URL, which names the
+	// space (`Brain%20Shell.app.tar.gz`), then 404s. The updater would
+	// download NOTHING, and the manifest would be a promise the release
+	// cannot keep. A name the asset cannot keep is a name the URL cannot
+	// name, so the writer refuses it rather than publish a URL that cannot
+	// resolve.
+	const artifactName = basename(artifact);
+	if (/[ \t]/.test(artifactName)) {
+		failures.push(
+			`the artifact's name carries a character a release asset does not keep: ${artifactName} ` +
+				'(a space is published as a dot, so the download URL would name a file that does not exist)'
+		);
+	}
+
 	// The signature beside the artifact: present, and bound to THIS artifact
 	// and THIS version.
 	const signaturePath = `${artifact}.sig`;
@@ -320,7 +338,6 @@ export function manifestFailures({
 	if (binding === null) {
 		failures.push(`the artifact carries no signature beside it: ${signaturePath}`);
 	} else {
-		const artifactName = basename(artifact);
 		if (binding.file !== null && binding.file !== artifactName) {
 			failures.push(`the signature names another file: ${binding.file} != ${artifactName}`);
 		}

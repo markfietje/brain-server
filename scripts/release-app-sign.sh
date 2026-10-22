@@ -425,6 +425,28 @@ else
 	[[ -d "$BUNDLE" ]] || die "the bundle is absent: $BUNDLE"
 fi
 
+# ── THE PUBLICATION NAME ──────────────────────────────────────────────────
+#
+# The artefact's NAME is part of the URL the updater fetches, and a release
+# asset does not keep every character a file may carry. **MEASURED
+# (2026-10-22):** GitHub replaces a SPACE in an asset's name with a DOT, so
+# `Brain Shell.app.tar.gz` is published as `Brain.Shell.app.tar.gz` — and the
+# manifest's URL, which names the space (`Brain%20Shell.app.tar.gz`), then
+# 404s. The updater would download NOTHING.
+#
+# So the artefact is RENAMED to a name a release asset keeps, and — the part
+# that matters — it is renamed BEFORE it is signed, so the signature's
+# `file:` binding names the artefact as it will be PUBLISHED. The writer
+# refuses a signature that names another file, and that refusal is right.
+if [[ "$(basename "$ARTIFACT")" == *" "* ]]; then
+	SAFE_NAME="$(basename "$ARTIFACT" | tr ' ' '-')"
+	PUBLISHED_ARTIFACT="$(dirname "$ARTIFACT")/$SAFE_NAME"
+	echo ">> renaming the artifact for publication: $(basename "$ARTIFACT") -> $SAFE_NAME"
+	rm -f "$PUBLISHED_ARTIFACT" "$PUBLISHED_ARTIFACT.sig"
+	mv "$ARTIFACT" "$PUBLISHED_ARTIFACT"
+	ARTIFACT="$PUBLISHED_ARTIFACT"
+fi
+
 SIGNATURE="$ARTIFACT.sig"
 
 # The artifact must be signed. If the bundler already signed it, that

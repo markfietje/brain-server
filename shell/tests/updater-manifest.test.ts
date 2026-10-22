@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, expect, test } from 'vitest';
@@ -245,7 +245,7 @@ function fixture(options: FixtureOptions = {}): Fixture {
 	const bundle = join(work, 'Brain Shell.app');
 	mkdirSync(join(bundle, 'Contents'), { recursive: true });
 	writeFileSync(join(bundle, 'Contents', 'Info.plist'), infoPlist(artifactVersion));
-	const artifact = join(work, 'Brain Shell.app.tar.gz');
+	const artifact = join(work, 'Brain-Shell.app.tar.gz');
 	writeFileSync(artifact, 'the updater artifact bytes\n');
 	signFixtureArtifact(artifact, options.signedVersion ?? artifactVersion);
 	const signature = `${artifact}.sig`;
@@ -812,7 +812,7 @@ test('the_release_publishes_the_app_the_signature_and_the_manifest_or_none_of_th
 
 	// The behavioural half: the chain gate refuses a partial chain.
 	const chain = tempDir('brain-updater-chain-');
-	const artifact = join(chain, 'Brain Shell.app.tar.gz');
+	const artifact = join(chain, 'Brain-Shell.app.tar.gz');
 	writeFileSync(artifact, 'the updater artifact bytes\n');
 	writeFileSync(`${artifact}.sig`, 'the signature\n');
 	writeFileSync(join(chain, 'latest.json'), '{}\n');
@@ -841,7 +841,7 @@ test('the_release_publishes_the_app_the_signature_and_the_manifest_or_none_of_th
  */
 test('the_app_tarball_the_signature_and_the_manifest_are_required_assets', () => {
 	const chain = tempDir('brain-updater-required-');
-	const artifact = join(chain, 'Brain Shell.app.tar.gz');
+	const artifact = join(chain, 'Brain-Shell.app.tar.gz');
 	const signature = `${artifact}.sig`;
 	const manifest = join(chain, 'latest.json');
 
@@ -929,6 +929,47 @@ test('the_signing_lane_refuses_to_sign_in_the_public_actions', () => {
 	expect(result.stderr).not.toContain('the signing key is NOT the key the app ships');
 	// And it refused BEFORE asking for a passphrase: no prompt, no hang.
 	expect(result.stderr).not.toContain('passphrase for the updater signing key');
+});
+
+// ── III-7 P8 · the URL must name the asset AS PUBLISHED ───────────────────
+
+/**
+ * III-7 P8 — the writer refuses an artefact whose name a release asset does
+ * not keep, because the URL is part of the name.
+ *
+ * **MEASURED (2026-10-22), and it is the same class of defect this round
+ * exists to close.** GitHub replaces a SPACE in an asset's name with a DOT:
+ * `Brain Shell.app.tar.gz` is published as `Brain.Shell.app.tar.gz`. The
+ * manifest's URL names the space (`Brain%20Shell.app.tar.gz`), so the URL
+ * **404s** — the updater downloads NOTHING, and the manifest is a promise the
+ * release cannot keep. The tag defect (D1) was the same shape: a URL naming
+ * something that does not exist.
+ *
+ * So the writer refuses the name, and the signing lane renames the artefact
+ * BEFORE it signs it — so the signature's `file:` binding names the artefact
+ * as it will be PUBLISHED, which is the writer's other law (a signature that
+ * names another file is refused, and that refusal is right).
+ */
+test('the_manifest_writer_refuses_an_artifact_name_a_release_asset_would_rewrite', () => {
+	const fixtureValue = fixture();
+	// The fixture's own name is one a release asset keeps.
+	expect(fixtureValue.artifact).not.toContain(' ');
+
+	// Now the name a release asset rewrites: the writer must refuse it, and
+	// the refusal must name the artefact and say WHY.
+	const spaced = join(fixtureValue.root, 'Brain Shell.app.tar.gz');
+	renameSync(fixtureValue.artifact, spaced);
+	renameSync(fixtureValue.signature, `${spaced}.sig`);
+	const spacedFixture: Fixture = {
+		...fixtureValue,
+		artifact: spaced,
+		signature: `${spaced}.sig`
+	};
+
+	const result = write(spacedFixture);
+	expect(result.status).toBe(2);
+	expect(result.stderr).toContain('a character a release asset does not keep');
+	expect(result.stderr).toContain('Brain Shell.app.tar.gz');
 });
 
 // ── III-7 P5 · the private key is nowhere the public can reach it ────────
