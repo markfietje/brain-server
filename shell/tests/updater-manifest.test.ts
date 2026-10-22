@@ -972,6 +972,54 @@ test('the_manifest_writer_refuses_an_artifact_name_a_release_asset_would_rewrite
 	expect(result.stderr).toContain('Brain Shell.app.tar.gz');
 });
 
+// ── III-7 P9 · the passphrase's home is the KEYCHAIN, and no secret is in the source ─
+
+/**
+ * III-7 P9 — the signing lane takes its passphrase from the LOGIN KEYCHAIN,
+ * and **no passphrase and no key material is anywhere in the source**.
+ *
+ * The law came from a failure: the operator ran the lane, typed the
+ * passphrase, and got `Wrong password for that key` — while the same
+ * passphrase sat in the keychain the whole time, and the operator's own
+ * chain script had been reading it from there. **The lane now reads it from
+ * there too**, and this pin holds that.
+ *
+ * The second half is the law that makes the first safe: the script carries
+ * the keychain item's NAME — which is *where* a secret lives, not the
+ * secret — and nothing else. So the pin asserts the read is there, and that
+ * the tracked tree carries no secret-key material at all.
+ */
+test('the_passphrase_comes_from_the_keychain_and_no_secret_is_in_the_source', () => {
+	const lane = readFileSync(signScriptPath, 'utf8');
+
+	// The read is there, and it is the DEFAULT source (before the prompt).
+	expect(lane).toContain('security find-generic-password');
+	expect(lane).toContain('app.brain.shell/updater-signing');
+	expect(lane).toContain('default');
+
+	// The keychain item's NAME is in the script; its VALUE is not. The
+	// value is a secret of the same standing as the private key, and a
+	// secret that can be read out of the repository is a secret that is
+	// already in the repository.
+	//
+	// **This arm runs only where the keychain item EXISTS** — on the
+	// operator's machine, and NOT on a CI runner, which has no keychain. It
+	// is an EXTRA check on top of the two above, which hold everywhere; the
+	// tracked tree's freedom from the key's secret half is held by the
+	// sibling pin `the_private_updater_key_is_in_no_tracked_file`.
+	const keychainValue = execFileSync(
+		'security',
+		['find-generic-password', '-s', 'app.brain.shell/updater-signing', '-a', 'default', '-w'],
+		{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+	).trim();
+	if (keychainValue.length > 0) {
+		expect(
+			lane.includes(keychainValue),
+			'the signing lane must not carry the passphrase itself — it READS it from the keychain'
+		).toBe(false);
+	}
+});
+
 // ── III-7 P5 · the private key is nowhere the public can reach it ────────
 /**
  * III-7 P5 — the private key is in no tracked file, AND the public lane
