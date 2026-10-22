@@ -4,7 +4,72 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
-## [Unreleased] — the release ships what the updater can fetch, and the witness says UNKNOWN when it knows nothing
+## [1.29.27] — 2026-10-22 — the release ships what the updater can fetch, and the witness says UNKNOWN when it knows nothing
+
+The desktop app can now update itself from a published release, and the
+release page can be trusted about the state of its own test runs.
+
+A release now publishes a signed updater artefact together with the manifest
+that describes it, and the app checks the signature against the one public
+key it ships with before it will install anything. The manifest is the
+authority: it names the release the artefact came from, and a manifest whose
+URL does not name its own release is refused rather than followed. The
+artefact, its signature and the manifest travel together or not at all.
+
+The helper that watches a release's public test runs used to report a release
+as green when it could not actually see the runs. It now says UNKNOWN when
+it observed nothing, and keeps watching, because a signal that reports
+success when it knows nothing teaches its reader to ignore the one signal
+the release line has.
+
+### Release notes
+
+**New**
+
+- **The app can update itself from a published release.** A release now
+  publishes a signed updater artefact and the manifest that describes it,
+  and the app verifies the signature against the single public key it ships
+  with before installing anything. The manifest — not the app's own version,
+  and not the URL it was handed — is the authority on what is being
+  installed.
+- **An update that cannot be attributed is refused, with its reason.** A
+  signature that is not the shipped key's is refused and the installed app
+  is left alone. A manifest that names a release the repository does not
+  have is refused too, rather than followed to a URL that promises
+  something the release cannot keep.
+- **The artefact, its signature and the manifest travel together.** One
+  gate checks all three, so a release cannot publish a signed artefact
+  without the manifest that describes it, nor the manifest without the
+  signature.
+
+**Improvements**
+
+- **The release watcher says UNKNOWN when it has seen nothing.** The helper
+  that watches a release's public test runs now refuses to call a release
+  green when it observed no runs at all, and keeps watching instead. A
+  green verdict now means every observed run completed successfully.
+- **The signing lane checks the key before it asks for anything.** The
+  private key is compared against the public key the app ships before the
+  signing passphrase is requested, so a job can never sit on a prompt that
+  nobody is there to answer.
+- **The public workflow proves the build and never signs.** Publishing and
+  signing are separate lanes, and the public one never holds the key.
+
+**Bug fixes**
+
+- **The update writer reads a real signature.** The writer that stamps the
+  published updater artefact now reads the signature the real tool produced
+  rather than an imitation of one, so the published artefact carries a
+  signature that verifies.
+- **The de-slop check now covers the desktop application's core.** The
+  check that keeps the build pipeline and the updater's own gate reading one
+  list now scans the code that owns the updater's gate, the refusal that
+  starts the kernel, and the keychain token.
+- **The app build's cache reads both workspaces from one input.** The
+  release job's Rust cache now takes the server and the client from a single
+  input, so a change in either one is seen.
+
+### The round in detail
 
 The helper that watches a release's public test runs told the operator a
 release was green while both of its runs were still running. Nothing was
