@@ -18,6 +18,28 @@ exclude_tests = true
 [rules.cross-file-duplicate]
 enabled = false
 
+# v1.29.27 diff: the Tauri app's FRONTEND joined the watchdog's scope, and
+# its first drill found the TypeScript twin of a rule this file already
+# disables for Rust. Changing ONE UI component's import header made
+# `cross-file-imports` fire on TWELVE files — ELEVEN of them UNCHANGED —
+# because the rule attributes a group finding to every member of the group.
+# That is the same class as `cross-file-duplicate` above, with the same
+# reason: it cannot be scoped to changed lines and it fires on untouched
+# baseline files. The LINE-scoped rules stay armed, which is where a finding
+# about NEW code actually matters.
+[rules.cross-file-imports]
+enabled = false
+
+# v1.29.27 diff: `ts-structural-repetition` is the TypeScript twin of the
+# Rust `structural-repetition` disabled above — the same house-style
+# repetition (`isPlainObject`, `finiteNumber`, `safeInteger`, `cleanString`
+# are deliberately uniform small typed guards), so the repetition IS the
+# contract rather than slop. It was CHECKED for diff-safety before anything
+# was done about it, and it is DIFF-SAFE: it reports ONE finding per group,
+# at the group's FIRST member, so a change to any other member cannot move
+# the finding onto a line nobody touched. It therefore STAYS ARMED, unlike
+# the group rules above.
+
 # The prose-structure rule shows the same unscoped behavior in --diff mode:
 # it attributes a whole-document paragraph-rhythm finding at file:1 and fires
 # on UNTOUCHED baseline files (observed: a hint on plugin/README.md while the

@@ -21320,7 +21320,7 @@ mod r42sh_artifact_integrity {
             .split_whitespace()
             .map(str::to_string)
             .collect();
-        for tree in ["src", "client", "plugin", "crates", "shell/src-tauri"] {
+        for tree in ["src", "client", "plugin", "crates", "shell/src-tauri", "shell/src"] {
             assert!(
                 scan_paths.iter().any(|p| p == tree),
                 "`{tree}` must be in the watchdog's scan list, found {scan_paths:?} — \
