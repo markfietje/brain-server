@@ -503,8 +503,13 @@ const problems = [];
 if (manifest.release_tag !== tag) {
 	problems.push(`the manifest names release tag ${manifest.release_tag}, not ${tag}`);
 }
-if (!manifest.signature) problems.push("the manifest carries no signature");
 for (const [target, entry] of Object.entries(manifest.platforms ?? {})) {
+	// The signature is PER PLATFORM: that is the manifest shape the app
+	// updater reads and verifies (the Tauri format), the shape the app own
+	// fixture uses, and the shape the writer emits. There is no top-level
+	// signature field in that format -- so checking for one refused a
+	// correct manifest and made the signed path unreachable.
+	if (!entry.signature) problems.push(`${target}: the manifest carries no signature`);
 	const url = entry.url ?? "";
 	if (!url.includes(tag)) problems.push(`${target}: the URL does not name ${tag}`);
 	const named = decodeURIComponent(url.split("/").pop() ?? "");
