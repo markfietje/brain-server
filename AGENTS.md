@@ -265,6 +265,53 @@
 > disabled with measured reasons; no behaviour change, no new dependency, no
 > new knob, and 161 insertions across 22 files.
 
+> **R136 "Endpoint" (2026-10-22): every release must now carry the update
+> chain — and the finding was made by PUBLISHING, not by reading.** The
+> `v1.29.28` cut published with its 35 assets and a green matrix, and the
+> update manifest's address returned **"not found"** — while the `v1.29.27`
+> chain was still verified end to end, byte for byte, from the public internet
+> (`latest.json` → HTTP 200; the artefact → HTTP 200, 26,370,074 bytes; and
+> those bytes verifying against the application's own pinned key). **THE CHAIN
+> WAS CORRECT; THE RELEASE WAS INCOMPLETE.**
+>
+> **THE ENDPOINT IS THE LATEST RELEASE'S MANIFEST**
+> (`releases/latest/download/latest.json`), so the moment a new release is
+> published, the manifest the previous release carried stops being the one
+> that is served. **A release that ships without the chain breaks the
+> updater's path for EVERYONE.** The failure mode stays SAFE — the app
+> reports the endpoint as unreachable rather than claiming to be up to date,
+> which is exactly what R130 made the tree do — but the path is dead.
+>
+> **SO FROM HERE ON, EVERY RELEASE CARRIES THE CHAIN**: the updater artefact,
+> its signature and the manifest, published together, with the artefact's name
+> able to survive a release asset's name rewrite and the signature binding
+> the artefact AS PUBLISHED (the rename-before-sign fix, which is what makes
+> the URL resolve at all).
+>
+> **AND IT WAS PUBLISHED TO `v1.29.28`, and MEASURED FROM THE PUBLIC
+> INTERNET**: the lane printed `renaming the artifact for publication: Brain
+> Shell.app.tar.gz -> Brain-Shell.app.tar.gz` (the rename fix doing its work)
+> and `the round trip holds: the artifact's signature verifies against the
+> pinned key`; then `latest.json` → **HTTP 200** naming `release_tag:
+> v1.29.28`, the artefact it names → **HTTP 200, 26,371,332 bytes**, and
+> **those fetched bytes verifying against the application's OWN pinned key**
+> (`Signature and comment signature verified`, trusted comment
+> `file:Brain-Shell.app.tar.gz  version:0.1.1`). **THE SIGNED PATH IS LIVE
+> FOR `v1.29.28`.**
+>
+> **AND THE OBLIGATION IS RECORDED WHERE IT WILL BE READ** — the register
+> carries the row, the release notes carry the note, and the plans repo's
+> ledger now says the same. **What is OWED is a guard that makes it
+> IMPOSSIBLE TO MISS**: the release workflow cannot sign (it holds no key),
+> and the chain lands AFTER the release is published, so the workflow's own
+> fail-closed gate cannot require it. A script that must be remembered is a
+> script that will be forgotten; the honest guard is a check on the RELEASE's
+> published assets — "does this release carry a manifest?" — and it belongs
+> beside the release's other gates.
+>
+> **ponytail:** one register row, one release-note section, one ledger line;
+> no behaviour change, and the finding is the whole value.
+
 > **R133 "Witness" (2026-10-21): the release helper said GREEN while both
 > public runs were still running.** The v1.29.26 cut shipped, and the helper
 > that watches the matrix told the operator *"all public runs for v1.29.26 are

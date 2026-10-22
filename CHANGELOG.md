@@ -13,6 +13,27 @@ measured. Those records are kept as they were written (this file is
 append-only), and their heading says `Unreleased` because that is what they
 were when the round landed — not because the work is still unreleased.
 
+## [Unreleased] — every release now has to carry the update chain
+
+**A release that ships without the update chain BREAKS the updater's path for
+everyone.** The endpoint the application fetches is the latest release's copy
+of the update manifest, so the moment a new release is published, the manifest
+the previous release carried stops being the one that is served. The
+`v1.29.28` cut reproduced it exactly: the release published, and the update
+manifest's address returned "not found" — not because the chain was wrong
+(the `v1.29.27` chain was verified end to end, byte for byte, from the public
+internet) but because the newest release did not carry one.
+
+**So from here on, every release carries the chain**: the update artefact, its
+signature and the manifest, published together. The failure mode stays safe —
+the application reports the endpoint as unreachable rather than claiming to
+be up to date — but a release without a chain leaves the path dead.
+
+The release notes below record what that means for the next release, and the
+chain is published to `v1.29.28` as part of this round — the manifest answers,
+the artefact it names downloads, and the downloaded bytes verify against the
+one public key the application ships.
+
 ## [1.29.28] — 2026-10-22 — the desktop app carries no slop, and the update chain's address resolves
 
 **The last release published an update chain whose download address could not
