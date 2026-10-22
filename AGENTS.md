@@ -1,5 +1,124 @@
 # Agent Execution Log — brain-server
 
+> **R137 "Lantern" (Phase III-8, 2026-10-22): the plugin's suite ran NOWHERE —
+> and the integration is now proved against the binary that actually ships.**
+> The OpenClaw plugin carried 1,768 lines of tests across seven files and
+> nothing executed any of them: no workflow ran `plugin/test/**`, the
+> plugin's `package.json` had no `test` script, and `npm install` in
+> `plugin/` failed outright (`workspace:*` in devDependencies is an
+> unresolvable URL outside the host's monorepo), so the tree could not fetch
+> its own toolchain. Run by hand: five of seven files failed to LOAD, the two
+> that loaded ran 70 tests, in a developer's terminal and in no lane at all.
+>
+> **THREE MEASUREMENTS DECIDED THE ROUND, and the first corrected the prompt.**
+> (1) The claim that the invisible-set fixture "names a path that no longer
+> exists" was FALSE — `plugin/src/format.test.ts` exists, is tracked, and was
+> one of the two files that loaded. The real defect was DARKNESS: the
+> fixture's consumer (2) ran nowhere, so its "changing any consumer without
+> the server fails its lane" was a false claim. The prompt's §3 said to
+> re-measure before coding if a failure was not what it claimed; the
+> re-measure is what found this. (2) The install shape was chosen from FOUR
+> measured candidates, not from the plausible one: removal loses the host
+> monorepo's link; `optionalDependencies: "*"` resolves to the REGISTRY in a
+> pnpm 12 workspace (measured with a synthetic three-package workspace:
+> NOT linked) and costs every consumer a 404; `workspace:*` in an
+> install-time field is published VERBATIM by npm — measured with `npm pack`
+> — which would hand every CONSUMER the same EUNSUPPORTEDPROTOCOL the round
+> exists to fix. The winner is the optional peer with the `workspace:*`
+> specifier preserved: installs standalone (measured), keeps the monorepo
+> link (measured: linked), and the published tarball installs (measured) —
+> npm skips an optional peer. (3) The minisign format was measured against
+> the `minisign` CLI's own verdicts, and the FIRST reading was wrong: the
+> signature file's SECONDARY line decodes to the RAW 64-byte signature, with
+> no algorithm marker and no key id — slicing it as a 74-byte blob truncates
+> it, and five plausible payloads (trusted comment alone, comment then
+> signature, and their hashed forms) all refused a perfectly good chain. The
+> truth, from the Rust `minisign` crate the app itself uses: the primary
+> signs the BLAKE2b-512 prehash, and the secondary signs the primary
+> signature followed by the trusted comment.
+>
+> **D2 WAS DECIDED ON A FACT, AND THE TRADE IS RECORDED.** Shape (a) —
+> injecting the entry helper into `index.ts` as a parameter — would need the
+> HOST's call site to move: the plugin is loaded BY the host
+> (`openclaw.extensions: ["./index.ts"]`), and the SDK is not published
+> (`@openclaw/plugin-sdk` is 404 on npm — measured). So shape (b): the lane
+> aliases that one specifier to a local stub, the shipped code does not move
+> AT ALL, and the cost — the suite proves the plugin against a STUB of the
+> host's helper — is named in the register row rather than blurred. The stub
+> is deliberately STRICTER than the host is known to be (it validates the
+> five fields the ambient `PluginEntry` declares): a stricter stand-in can
+> false-red, a laxer one false-greens, and only one of those ships broken
+> code.
+>
+> **GATE 9 IS CLOSED, AND THE OBSERVATION IS RECORDED.** The new drill
+> (`plugin/scripts/integration-drill.mjs`) fetches the manifest the APP
+> fetches — the endpoint from the app's own configuration, not a URL written
+> beside it — downloads the artefact it names, verifies the minisign
+> signature against the app's OWN pinned key (both halves), checks the
+> binding and the announced kernel version, extracts the bundle, runs the
+> kernel that ships INSIDE it, and drives the plugin's REAL `BrainClient`
+> against that process. Exit 0 pass, 1 REFUSED, 2 COULD NOT RUN — never
+> green when it could not measure. **The full drill ran, exit 0:** release
+> `v1.29.29`, manifest version 0.1.1, pinned key `D5626019111E7CC2`, binding
+> `file:Brain-Shell.app.tar.gz version:0.1.1`, kernel `brain-server 1.29.29`
+> extracted from the verified bundle, `/health` answering `status ok` at
+> `1.29.29`, the plugin's client STORING id 1 and RECALLING it (decision
+> `ok`, 1 hit, `untrusted: true`), review queue read 0 rows. **A unit suite
+> that mocks `fetch` proves the plugin's request shapes; only the shipped
+> binary proves gate 9.**
+>
+> **ELEVEN DRILLS, every one RUN and REVERTED, and the observed red:** the
+> `workspace:` devDependency restored → the vitest pin reds TWICE (the
+> structural arm naming the field, and npm's own `EUNSUPPORTEDPROTOCOL`) and
+> the Rust pin reds beside it; the lane alias removed → five arms red, the
+> first naming the exact failure the round started from (`Cannot find
+> package 'openclaw/plugin-sdk/plugin-entry'`); a stale path in the fixture's
+> comment → the consumer-list arm; a named consumer moved aside → `a consumer
+> that is never consulted is a dark tree, and the comment is a false claim`;
+> the suite step excised → `the lane must run the plugin's suite`; the lane
+> paths-filtered → `the plugin lane must not be paths-filtered — D1 says
+> every push`; the include glob maimed → `src/brain-client.contract.spec.ts
+> is no longer covered`; the drill's key check disabled → the pin reds naming
+> the missing refusal; and on the REAL published chain, the genuine artefact
+> renamed → `the signature names another file`, one byte changed → `the
+> artefact's signature is not the pinned key's signature`.
+>
+> **AND A DRILL DISCIPLINE NOTE THAT COST TWO REVERTS, which is why it is
+> recorded.** A guard that lives in a file the round EDITS cannot be reverted
+> with `git checkout` — during the P2 drill it silently restored the HEAD
+> manifest (the suite then failed with `Missing script: "test"`), and during
+> the P4 drill it restored the HEAD fixture comment. Both were caught by
+> READING the suite's red rather than trusting the revert. A round that edits
+> tracked files must restore from the round's own content, not from git.
+>
+> **THE CENSUS AND THE BADGE MOVED, and both were re-derived rather than
+> hand-typed:** `docs/test-census.md` re-derived (+3 structural — the new
+> Rust pin), 3,521 → 3,524; the README badge re-derived 3470 → 3473 and
+> `--verify-count` agrees. **The kernel, the shell, the client, the wire and
+> the plugin's BEHAVIOUR are unchanged**: `src/` is untouched except the new
+> test file, `shell/` and `client/` are untouched, and the plugin's
+> production TypeScript is byte-identical (the only file it ships that moved
+> is `package.json`'s dependency metadata).
+>
+> **OWED, named, not hidden:** the lane's first RUNNER execution (the same
+> owed shape the bundle-macos lane carried until its first run — the workflow
+> is written and its shape is pinned, and no runner has executed it); the
+> full integration drill is an OPERATOR act per release (it downloads a
+> 26 MB macOS bundle and runs a macOS app — the drill's refusal arms are what
+> CI holds); the plugin's fidelity against the REAL host helper (the stub's
+> residual, closed only by the drill); the fork host's consumer (4), which
+> lives in another repository and can only be named; the approve action
+> (needs its own authorization proof); and the Apple identity
+> (revenue-gated).
+>
+> **ponytail:** one workflow, one Rust pin file, two vitest pin files, one
+> stub, one vitest config, one drill script, one resolver hook, one ambient
+> test surface, one manifest, one lockfile, one fixture comment, one census
+> re-derivation and one badge; no kernel change, no wire change, no shell
+> change, no client change, no plugin behaviour change, no new runtime
+> dependency (vitest and typescript are dev-only; typebox was already there),
+> and no key in the tree.
+
 > **R134 "Artefact" (Phase III-7, 2026-10-21): the release shipped NOTHING the
 > updater could fetch, and the manifest pointed at a tag that could never
 > exist.** The updater landed in `v1.29.26` and it can update from nothing: the

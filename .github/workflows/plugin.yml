@@ -1,0 +1,55 @@
+name: plugin
+
+# The OpenClaw plugin's own lane: its pins RUN here, on EVERY push (D1, III-8).
+#
+# ── WHY THIS IS ITS OWN WORKFLOW, AND NOT A JOB IN shell.yml ────────────────
+#
+# shell.yml is paths-filtered (shell/**, openapi.yaml, the invisible-classes
+# fixture), so a lane placed there would NOT fire on every push — D1 says
+# every push. And the shell lane is the expensive one (a Tauri build and a
+# Playwright e2e); a plugin-only change would spend that to run a 30-second
+# npm suite. The plugin's lane is unfiltered on push to main and on pull
+# requests, which is exactly "every push", and it costs what it costs.
+#
+# ── WHY THE STEPS ARE IN THIS ORDER ────────────────────────────────────────
+#
+# install → type-check → suite, and each step's failure is the lane's
+# failure (D6). Until III-8 the plugin's dependencies could not be installed
+# at all outside the host's monorepo (`workspace:*` in devDependencies is an
+# unresolvable URL for standalone npm), so nothing here could run.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plugin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: plugin
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: plugin/package-lock.json
+
+      - name: Install the plugin's dependencies (clean checkout, frozen lockfile)
+        run: npm ci --no-audit --no-fund
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: The plugin's suite
+        run: npm test

@@ -5,12 +5,24 @@
   "license": "MIT",
   "type": "module",
   "main": "./index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
   "dependencies": {
     "typebox": "1.3.33"
   },
   "devDependencies": {
-    "@openclaw/plugin-sdk": "workspace:*",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "vitest": "^5.0.5"
+  },
+  "peerDependencies": {
+    "@openclaw/plugin-sdk": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@openclaw/plugin-sdk": {
+      "optional": true
+    }
   },
   "openclaw": {
     "extensions": [

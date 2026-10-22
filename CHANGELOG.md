@@ -13,6 +13,114 @@ measured. Those records are kept as they were written (this file is
 append-only), and their heading says `Unreleased` because that is what they
 were when the round landed — not because the work is still unreleased.
 
+## [Unreleased] — the plugin's suite RUNS, and the OpenClaw integration is proved against the shipped signed binary (III-8)
+
+**THE FINDING, measured 2026-10-22 at `dc7a571b`:** the OpenClaw plugin carried
+1,768 lines of tests across seven files and **nothing executed any of them**.
+No workflow ran `plugin/test/**`; the plugin's `package.json` had no `test`
+script; and `npm install` in `plugin/` failed outright (`workspace:*` in
+devDependencies is an unresolvable URL outside the host's monorepo), so the
+tree could not even fetch its own toolchain. Run by hand, five of the seven
+files failed to LOAD and the two that loaded ran 70 tests — in a developer's
+terminal, and in no lane at all. A pin no lane executes is a comment with
+assertions in it.
+
+**Three defects, one round, none needing the Apple identity:**
+
+1. **The install (D3).** The `workspace:*` devDependency is removed and the
+   SDK is declared as the host's **optional peer** instead. Three shapes were
+   measured before the choice: removal loses the host monorepo's link;
+   `optionalDependencies: "*"` resolves to the REGISTRY in a pnpm 12
+   workspace (measured: not linked) and costs every consumer a 404; the
+   optional peer with the `workspace:*` specifier preserved is the only shape
+   that installs standalone (measured), keeps the monorepo link (measured
+   with a synthetic three-package workspace: linked), and leaves the
+   published tarball installable — npm skips an optional peer, measured
+   against a packed tarball, whereas `workspace:*` in an install-time field
+   is published VERBATIM and hands every consumer the same
+   EUNSUPPORTEDPROTOCOL the round exists to fix.
+2. **The entry point (D2, shape (b) — a test-lane alias, trade recorded).**
+   `index.ts` imports the host's `definePluginEntry` — a value — and calls it
+   at module scope, and the host loads the plugin through that default
+   export. Shape (a), the injected seam, was REJECTED on a measured fact: the
+   SDK is not published (`@openclaw/plugin-sdk` is 404 on npm), so an
+   injected seam needs the HOST's call site to move, in a repository this one
+   does not own. So the shipped code does not move at all, and the lane
+   resolves that one specifier to a stub whose contract is the ambient
+   declaration's — deliberately STRICTER than the host is known to be, since
+   a stricter stand-in can false-red while a laxer one false-greens. The
+   residual (real-host fidelity) is what the integration drill is for, and it
+   is named as owed rather than blurred.
+3. **The lane (D1).** `.github/workflows/plugin.yml` — its own workflow,
+   because `shell.yml` is paths-filtered and a lane placed there would not
+   fire on every push (and a plugin-only change would spend the shell lane's
+   Tauri build to run a 30-second npm suite). Unfiltered on push to main and
+   on pull requests: install → type-check → suite, each step's failure the
+   lane's failure.
+
+**Measured result: all NINE files load, 232 tests pass, the type-check is
+clean, and the lane runs all three on every push.** The 70 that passed at the
+baseline still pass; the five files that failed to load now run — 162 further
+tests, plus the round's own pins.
+
+**AND THE DRIFT ALARM'S CONSUMERS ARE LIVE (D4).** The invisible-set fixture
+names its consumers; the prompt's claim that one path "no longer exists" was
+FALSE — `plugin/src/format.test.ts` exists, is tracked, and was one of the two
+files that loaded. The real defect was DARKNESS: consumer (2) ran nowhere, so
+the fixture's "changing any consumer without the server fails its lane" was
+false for it. The comment now names the real paths AND the lane that runs
+each, and `plugin/test/lane-pins.test.ts` holds that list to the tree four
+ways: the named paths exist, each in-repo consumer actually reads the fixture,
+each runs in a lane, and the consumer SET itself is pinned.
+
+**AND GATE 9 IS CLOSED AGAINST THE SHIPPED SIGNED BINARY (D5).** A new drill
+fetches the manifest the APP fetches (the endpoint from the app's own
+configuration), downloads the artefact it names, verifies the minisign
+signature against the app's OWN pinned key — both halves — checks the
+binding and the announced kernel version, extracts the bundle, runs the
+kernel that ships inside it, and drives the plugin's REAL client against that
+process. The verification is pure Node, and the format was measured, not
+guessed: the secondary signature line decodes to the RAW 64-byte signature
+(no algorithm marker, no key id — slicing it as a 74-byte blob truncates it
+and refuses a perfectly good chain), the primary signs the BLAKE2b-512
+prehash, and the secondary signs the primary signature followed by the
+trusted comment. The Node verifier agrees with the `minisign` CLI on all
+three. **The recorded observation (exit 0):** release `v1.29.29`, manifest
+version 0.1.1, pinned key `D5626019111E7CC2`, binding
+`file:Brain-Shell.app.tar.gz version:0.1.1`, kernel `brain-server 1.29.29`
+extracted from the verified bundle, `/health` answering `status ok` at
+`1.29.29`, the plugin's client STORING id 1 and RECALLING it (decision `ok`,
+1 hit, `untrusted: true`), review queue read 0 rows.
+
+**Eleven drills, every one RUN and REVERTED, and the observed red text:**
+the `workspace:` devDependency restored → the vitest pin reds twice at once
+(the structural arm naming the field, and npm's own `EUNSUPPORTEDPROTOCOL`)
+and the Rust pin reds naming the field; the lane alias removed → five arms
+red, the first naming the exact failure the round started from
+(`Cannot find package 'openclaw/plugin-sdk/plugin-entry'`); a stale path
+substituted into the fixture's comment → the consumer-list arm reds; a named
+consumer moved aside → `a consumer that is never consulted is a dark tree,
+and the comment is a false claim`; the suite step excised from the lane →
+`the lane must run the plugin's suite`; the lane paths-filtered →
+`the plugin lane must not be paths-filtered — D1 says every push`; the
+include glob maimed → `src/brain-client.contract.spec.ts is no longer
+covered`; the drill's key check disabled in source → the pin reds naming the
+missing refusal; and against the REAL published chain, the genuine artefact
+renamed → `the signature names another file`, one byte changed → `the
+artefact's signature is not the pinned key's signature`. **Two drill
+discipline notes, recorded because each cost a revert:** a guard that lives
+in a file the round EDITS cannot be reverted with `git checkout` — doing so
+during two drills silently restored the HEAD manifest and the HEAD fixture
+comment, destroying the round's own work, and was caught by reading the
+suite's red rather than trusting the revert.
+
+**The lane's first runner execution is OWED**, the same owed shape the
+bundle-macos lane carried until its first run: the workflow is written, the
+pins hold its shape, and no runner has executed it yet. The full integration
+drill is an OPERATOR act per release (it downloads a 26 MB macOS bundle and
+runs a macOS app); the drill's refusal arms are what CI holds. The approve
+action and the Apple identity remain owed from earlier rounds.
+
 ## [1.29.29] — 2026-10-22 — every release now has to carry the update chain
 
 **A release that ships without the update chain BREAKS the updater's path for
