@@ -121,6 +121,48 @@
 > the `cargo metadata --no-deps` conversion of the S2/S3 Cargo arms); and the
 > hand-made archive (upstream's to answer).
 >
+> **AND THE DE-SLOP WATCHDOG NOW COVERS THE WHOLE TAURI APP — and the
+> ceiling this round named turned out to be MIS-DIAGNOSED, which is worth more
+> than the fix.** The watchdog's `SCAN_PATHS` covered the server, the client,
+> the shared crates and (from the previous round) the Tauri app's Rust CORE —
+> and NOT the app's FRONTEND (`shell/src`, 93 tracked files) and NOT the Rust
+> crate's TEST MODULES. **The reason the test modules were dark was
+> lipstyk 0.3.0's `is_test_file`, and it is a FILE-NAME rule**: a `.rs` file
+> whose stem is `tests`, `test`, or ends with `_test`/`_tests` is skipped
+> WHOLE. **This round's own claim — "the shell's are exempt while the root's
+> are scanned" — was WRONG, and the measurement said so**: a diagnostic
+> planted inside the ROOT's inline `#[cfg(test)] mod` in `src/role.rs` IS
+> caught (`src/role.rs:510 [warn] two-arm match could be simpler`), because
+> the root's test code lives INSIDE a production file and the tool's
+> attribute check never sees a test FILE. The Tauri crate's six test modules
+> ARE files named `<name>_tests.rs`, and the whole file went dark. **So the
+> fix is the NAME** — `<name>_pins.rs`, the repo's own word for a test that
+> pins a property — with the `#[cfg(test)]` attribute still on the `mod`
+> declaration in `lib.rs`, which is what actually marks them as tests, and a
+> NEW PIN ARM (d) that refuses any tracked `.rs` file in that tree whose
+> name the tool would skip. **Without that arm the next `foo_tests.rs` — the
+> name Rust's own convention invites — would re-enter the scope with the whole
+> file invisible, and nothing would say so.**
+>
+> **THE FRONTEND JOINED THE SCOPE TOO, and its first drill found a rule that
+> cannot be scoped to changed lines.** Changing ONE UI component's import
+> header made `cross-file-imports` fire on TWELVE files — ELEVEN of them
+> UNCHANGED — which is the same class the config already disables for Rust
+> (`cross-file-duplicate`). It is disabled with the same reason; the
+> LINE-scoped rules stay armed, which is where a finding about NEW code
+> matters. `ts-structural-repetition` was checked SEPARATELY and is
+> diff-SAFE (one finding per group, at the group's first member), so it
+> stays armed. **THE GENERATED i18n TREE IS SAFE TO HAVE IN SCOPE**:
+> `shell/src/paraglide` is gitignored, so the gate's `git add -N` stages
+> nothing and the diff only ever sees tracked, changed lines.
+>
+> **AND THREE PLANTS WERE WRONG PLANTS BEFORE ONE WAS RIGHT**, which is the
+> lesson worth keeping: a two-arm match with a block-bodied arm does NOT fire
+> `verbose-match`, and a `0 => ..` / `_ => ..` match does not either — only
+> the `Some`/`None` shape does. **A drill that does not fire proves nothing
+> about the DRILL**, and the natural reading of a green drill is "the gate
+> is blind". Here it was the drill, twice, and once more in a different tree.
+>
 > **ponytail:** one script, one writer input, one workflow job, one test file,
 > one Rust pin; no new dependency, no new crate, no kernel change, no plugin
 > change, no contract change, no key in the tree, no public CI job that signs,

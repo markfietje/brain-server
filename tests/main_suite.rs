@@ -21320,7 +21320,14 @@ mod r42sh_artifact_integrity {
             .split_whitespace()
             .map(str::to_string)
             .collect();
-        for tree in ["src", "client", "plugin", "crates", "shell/src-tauri", "shell/src"] {
+        for tree in [
+            "src",
+            "client",
+            "plugin",
+            "crates",
+            "shell/src-tauri",
+            "shell/src",
+        ] {
             assert!(
                 scan_paths.iter().any(|p| p == tree),
                 "`{tree}` must be in the watchdog's scan list, found {scan_paths:?} — \
@@ -21363,6 +21370,49 @@ mod r42sh_artifact_integrity {
             "the local gate and the CI watchdog must scan the SAME trees. A tree in one \
              and absent from the other is scanned on exactly one of the two surfaces, \
              which is the failure this pin exists to close."
+        );
+
+        // (d) NO FILE IN A SCANNED RUST TREE MAY CARRY A NAME THE TOOL TREATS
+        //     AS A TEST FILE.
+        //
+        //     lipstyk 0.3.0's `is_test_file` (rules/mod.rs) skips a `.rs`
+        //     file whose stem is `tests`, `test`, or ends with `_test` or
+        //     `_tests` — the WHOLE file, not just its test code. The ROOT
+        //     crate's test code lives in `#[cfg(test)] mod tests { .. }`
+        //     INSIDE a production file, and the tool's attribute check does
+        //     not suppress it (measured: a planted diagnostic inside
+        //     `src/role.rs`'s test module IS caught). The Tauri crate puts
+        //     its test modules in `src/<name>_tests.rs`, so the tool's
+        //     FILE-NAME rule silently skipped the whole crate's tests —
+        //     which is why they were renamed to `<name>_pins.rs`.
+        //
+        //     This arm holds that rename. Without it, the next `foo_tests.rs`
+        //     — the name Rust's own convention invites — would re-enter the
+        //     scope with the whole file invisible to the watchdog, and
+        //     nothing would say so.
+        let tool_skipped_stems = ["tests", "test"];
+        let shell_src =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shell/src-tauri/src");
+        let offenders: Vec<String> = std::fs::read_dir(&shell_src)
+            .expect("the Tauri crate's src tree is readable")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("rs"))
+            .filter(|entry| {
+                let path = entry.path();
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                tool_skipped_stems.contains(&stem)
+                    || stem.ends_with("_test")
+                    || stem.ends_with("_tests")
+            })
+            .map(|entry| entry.path().display().to_string())
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "these files are named the way lipstyk skips a whole file, so the de-slop \
+             watchdog cannot see them: {offenders:?}. The Tauri crate's test modules \
+             are `<name>_pins.rs` — the name keeps them in the watchdog's scope, and \
+             the `#[cfg(test)]` attribute on the `mod` declaration is what marks them \
+             as tests."
         );
     }
 

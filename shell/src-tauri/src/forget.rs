@@ -324,7 +324,7 @@ impl ForgetOutcome {
     }
 
     /// The wire token this arm serializes under. Tied to the serialization by
-    /// `forget_tests.rs`, so it cannot drift from the serde tag without the pin
+    /// `forget_pins.rs`, so it cannot drift from the serde tag without the pin
     /// going red — see `verify.rs`'s `state_token` for the same arrangement.
     pub fn state_token(&self) -> &'static str {
         match self {

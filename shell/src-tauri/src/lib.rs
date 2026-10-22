@@ -29,17 +29,17 @@ pub mod verify;
 mod token;
 
 #[cfg(test)]
-mod forget_tests;
+mod forget_pins;
 #[cfg(test)]
-mod recall_tests;
+mod recall_pins;
 #[cfg(test)]
-mod sidecar_tests;
+mod sidecar_pins;
 #[cfg(test)]
-mod token_tests;
+mod token_pins;
 #[cfg(test)]
-mod updater_tests;
+mod updater_pins;
 #[cfg(test)]
-mod verify_tests;
+mod verify_pins;
 
 pub use forget::{
     AuthorizedForget, ForgetDoc, ForgetOutcome, ForgetRefusal, ForgetRequest, ForgetResult,

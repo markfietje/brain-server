@@ -198,7 +198,7 @@ fn the_test_suite_never_constructs_the_platform_keychain() {
             } else if path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with("_tests.rs"))
+                .is_some_and(|name| name.ends_with("_pins.rs"))
             {
                 files.push(path);
             }

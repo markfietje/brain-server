@@ -169,12 +169,12 @@ check belong to the first paying customer.
   provably the one the application ships — the pairing is checked on the two
   public halves, and a key that is not that key is refused by name — and it
   is able to sign.
-- **The shell's own core is now watched by the same quality gate as the
-  server.** The de-slop check covered the server, the client and the shared
-  crates, and not the desktop application's core — the code that owns the
-  updater's gate, the refusal that starts the kernel and the keychain token.
-  It is covered now, and a check keeps the gate and the build pipeline
-  reading one list instead of two.
+- **The desktop application's own code is now watched by the same quality
+  gate as the server.** The de-slop check covered the server, the client and
+  the shared crates, and not the application: neither its renderer nor the
+  code that owns the updater's gate, the refusal that starts the kernel and
+  the keychain token. All of it is covered now, and a check keeps the gate
+  and the build pipeline reading one list instead of two.
 
 ### Engineering record
 
