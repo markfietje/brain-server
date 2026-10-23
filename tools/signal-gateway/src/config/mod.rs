@@ -133,7 +133,7 @@ impl Config {
             .with_context(|| format!("Failed to read config file: {}", path.as_ref().display()))?;
 
         let config: Config =
-            serde_yaml::from_str(&contents).context("Failed to parse config file")?;
+            serde_norway::from_str(&contents).context("Failed to parse config file")?;
 
         Ok(config)
     }

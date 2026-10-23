@@ -814,10 +814,11 @@ impl SignalWorker {
         use presage::libsignal_service::content::ContentBody;
 
         let uuid = content.metadata.sender.raw_uuid().to_string();
-        // Upstream presage moved Metadata.timestamp from a raw u64 to
-        // chrono::DateTime<Utc>; Signal wire timestamps are epoch MILLIS, so
-        // timestamp_millis() preserves the exact value the old cast carried.
-        let ts = content.metadata.timestamp.timestamp_millis();
+        // Upstream presage/libsignal-service moved Metadata.timestamp to
+        // Metadata.client_timestamp (chrono::DateTime<Utc>); Signal wire
+        // timestamps are epoch MILLIS, so timestamp_millis() preserves the
+        // exact value the old u64 cast carried.
+        let ts = content.metadata.client_timestamp.timestamp_millis();
 
         let (text, att, quote, group) = match &content.body {
             ContentBody::DataMessage(dm) => {
@@ -854,7 +855,16 @@ impl SignalWorker {
             }
             ContentBody::SynchronizeMessage(sm) => {
                 tracing::info!("[SYNC] SynchronizeMessage received");
-                if let Some(sent) = sm.sent.as_ref() {
+                // Upstream moved SyncMessage's optional fields into the
+                // `content` oneof; Sent rides SyncContent::Sent now.
+                let sent = match sm.content.as_ref() {
+                    Some(presage::proto::sync_message::Content::Sent(sent)) => Some(sent),
+                    other => {
+                        tracing::debug!("[SYNC] non-Sent sync content: {:?}", other.is_some());
+                        None
+                    }
+                };
+                if let Some(sent) = sent.as_ref() {
                     tracing::debug!("[SYNC] sent transfer");
                     if let Some(msg) = sent.message.as_ref() {
                         tracing::debug!("[SYNC] message body present");

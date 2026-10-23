@@ -13,7 +13,7 @@ measured. Those records are kept as they were written (this file is
 append-only), and their heading says `Unreleased` because that is what they
 were when the round landed — not because the work is still unreleased.
 
-## [Unreleased] — the plugin's suite RUNS, and the OpenClaw integration is proved against the shipped signed binary (III-8)
+## [1.29.30] — 2026-10-23 — the plugin's suite runs, and the integration is proved against the shipped binary
 
 **THE FINDING, measured 2026-10-22 at `dc7a571b`:** the OpenClaw plugin carried
 1,768 lines of tests across seven files and **nothing executed any of them**.
@@ -120,6 +120,63 @@ pins hold its shape, and no runner has executed it yet. The full integration
 drill is an OPERATOR act per release (it downloads a 26 MB macOS bundle and
 runs a macOS app); the drill's refusal arms are what CI holds. The approve
 action and the Apple identity remain owed from earlier rounds.
+
+### Release notes
+
+**New**
+
+- **The OpenClaw plugin's tests now run on every push.** The plugin ships its
+  own CI lane: nine test files, 232 tests, type-checked before they run. Until
+  this release the plugin's tests existed but nothing executed them — five of
+  the seven files could not even load, and the plugin could not install its
+  own dependencies outside the host's monorepo.
+
+- **A new drill proves the OpenClaw integration against the desktop app that
+  actually ships.** It downloads the published, signed app bundle, checks the
+  signature against the key the application itself ships, runs the memory
+  server from inside that bundle, and then stores and recalls a memory through
+  the plugin's real client. What the app answered is recorded, and the drill
+  refuses to report success when it could not measure.
+
+**Improvements**
+
+- **The plugin can be installed and developed on its own.** `npm install`
+  inside the plugin directory now works without the host's monorepo: the
+  host's SDK is declared the way npm means it — the host provides it — so a
+  standalone checkout can install, type-check and test the plugin.
+
+**Changed**
+
+- **The Signal gateway's pinned libsignal stack moved forward four months of
+  upstream fixes.** The presage pin moved from the June-era revision to presage
+  main (2026-10-19, which pins libsignal-service 2026-10-15); the libsignal tag
+  itself is unchanged, so the package version is unchanged. Two call-site shims
+  came with the move (upstream renamed `Metadata.timestamp` to
+  `client_timestamp`, and SyncMessage's optional fields became a `content`
+  oneof), and the gateway's 60 tests, clippy and fmt all pass. Measured and
+  recorded in the manifest: the stack's remaining unmaintained-crate warnings
+  (bincode, atomic-polyfill, proc-macro-error2) are carried by the NEWEST
+  upstream revisions too, so they clear only with upstream releases.
+
+- **The canonical invisible-character fixture now names its consumers and the
+  lane that runs each.** A test holds that list to the tree, so a consumer
+  that stops running turns a lane red instead of leaving behind a claim that
+  nothing checks.
+
+**Security fixes**
+
+- **The async runtime is updated to the release that fixes a race condition in
+  its timer interval, and every workspace's dependencies are refreshed to
+  their current compatible versions.** The release lane's audit went red on
+  the runtime before the release was cut; all seven tracked lockfiles — the
+  ones the audit job scans — now pass the same `cargo audit` command CI runs,
+  and the fuzz workspace's local lock was refreshed alongside them (it is a
+  dev tool's, untracked by design). The refresh also retires two dependencies
+  the tree had been holding by choice: the signal gateway's YAML parser, whose
+  unmaintained backend was the reason the switch had been deferred and which
+  the maintained fork has now replaced, and a stale schema library in the
+  OpenClaw plugin. The shell's frontend lock is refreshed and frozen-installs
+  clean.
 
 ## [1.29.29] — 2026-10-22 — every release now has to carry the update chain
 

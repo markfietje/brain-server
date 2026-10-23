@@ -86,7 +86,9 @@
 #
 # Re-check triggers (any one → revisit these ignores):
 #   - model2vec-rs releases with hf-hub >= 0.5  (clears number_prefix)
-#   - tokenizers release without paste          (clears paste)
+#   - tokenizers release without paste          (clears paste — root/fuzz path;
+#     the client has a SECOND paste path: image → exr → pulp, all latest, so it
+#     clears only when pulp/exr adopt pastey too)
 #   - a real vulnerability lands against either crate (re-evaluate posture)
 #   - tauri 2.x bumps gtk ≥ 0.19 / glib ≥ 0.20  (clears RUSTSEC-2024-0429)
 #   - tauri-plugin-updater releases whose `zip` requirement reaches >= 9.0.0
@@ -102,7 +104,7 @@
 # lockfile — a fixed-and-removed advisory must not stay suppressed forever.
 ignore = [
     "RUSTSEC-2023-0071", # rsa — the Marvin timing model (X-C7); no fixed upstream
-    "RUSTSEC-2024-0436", # paste — clears when tokenizers drops paste
+    "RUSTSEC-2024-0436", # paste — clears when tokenizers drops paste (root, fuzz) AND when image→exr→pulp moves to pastey (client; pulp 0.22.3 is latest and still requires paste ^1)
     "RUSTSEC-2024-0429", # glib — clears when tauri bumps gtk >= 0.19 / glib >= 0.20
     "RUSTSEC-2025-0119", # number_prefix — clears when model2vec-rs ships hf-hub >= 0.5
     "RUSTSEC-2026-0367", # zip — windows-only path in tauri-plugin-updater; the zip feature is off and no windows build ships; clears when the plugin's zip requirement reaches >= 9.0.0

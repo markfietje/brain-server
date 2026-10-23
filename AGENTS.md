@@ -122,10 +122,56 @@
 > (needs its own authorization proof); and the Apple identity
 > (revenue-gated).
 >
+> **AND THE RELEASE LANE'S AUDIT WAS RED ON THE TREE AS IT STOOD, found
+> before the push rather than by it.** The `cargo audit` job on the mirror's
+> `main` (`dc7a571b`) failed on `tokio 1.54.0` — a race condition in
+> `tokio::time::Interval` (RUSTSEC-2026-0384), and a version the registry has
+> since YANKED — carried by SIX of the seven TRACKED lockfiles: the root, the
+> tauri shell, the steward harness, the channel bridge, the signal gateway and
+> the client. **The fix is an update, not an ignore**: `cargo update` per
+> workspace moved every lock to its current compatible versions (`tokio
+> 1.54.1` among them, measured to be the registry's newest 1.x), and all
+> seven then pass the EXACT command CI runs (`cargo audit --file <lock>`,
+> exit 0 each). The remaining findings are the allowed unmaintained warnings
+> the root `.cargo/audit.toml` already names — none is a vulnerability, and
+> none was newly silenced.
+>
+> **THE SWEEP'S SECOND PASS FOUND AN EIGHTH LOCK, AND THE HONEST RECORD IS
+> THAT IT IS NOT A CI SUBJECT.** `fuzz/Cargo.lock` is GITIGNORED
+> (`fuzz/.gitignore:5`) — there are SEVEN tracked lockfiles, exactly the set
+> the audit job scans — so a claim of "eight tracked lockfiles" would have
+> been false; the fuzz workspace's lock was still refreshed (it now pins
+> `rustls-webpki 0.103.16`, the post-advisory line, and audits clean), because
+> a dev tool's stale lock is a local hazard even when it is not shippable.
+> **And two held-by-choice dependencies left for maintained ones**: the
+> signal gateway's `serde_yaml` (its `unsafe-libyaml` backend is
+> RUSTSEC-2024-0449, unmaintained) moved to `serde_norway 0.9.42` once that
+> fork replaced the unsafe backend (0.9.41+, measured on the index
+> 2026-10-23) — one call site, API-compatible; and the plugin's `typebox`
+> moved 1.3.33 → 1.4.3 with its lockfile. The shell's `pnpm-lock.yaml` was
+> refreshed too, and still frozen-installs.
+>
+> **EVERY HALF WAS THEN VERIFIED BY THE COMMAND ITS OWN LANE RUNS**, because
+> an audit fix that breaks a build has only moved the red: the root's
+> clippy/test in default, bench and otel features plus all six feature lanes;
+> the engine crates (including the harness-kernel arm); the steward harness;
+> both tools with `--locked`; the tauri core; the client; the shell frontend
+> (`svelte-check` 0 errors/0 warnings, `vitest` 240 passed); and the plugin
+> (`npm ci` from the lock, `tsc --noEmit` clean, 232 tests).
+>
+> **And one flake was seen and is recorded, not claimed away:** the full
+> `--features otel` run failed `capability_soft_forget_lane_is_unchanged`
+> once, while the same test passed alone and passed inside its own file, and
+> the full otel run then passed on the post-update tree. This round changed NO
+> kernel code; the observation is recorded as a flake under load, and if it
+> recurs it is a candidate for the bounded-treatment R135 recorded for the
+> keychain pin.
+>
 > **ponytail:** one workflow, one Rust pin file, two vitest pin files, one
 > stub, one vitest config, one drill script, one resolver hook, one ambient
 > test surface, one manifest, one lockfile, one fixture comment, one census
-> re-derivation and one badge; no kernel change, no wire change, no shell
+> re-derivation, one badge and one dependency refresh (a security update, not
+> a feature); no kernel change, no wire change, no shell
 > change, no client change, no plugin behaviour change, no new runtime
 > dependency (vitest and typescript are dev-only; typebox was already there),
 > and no key in the tree.

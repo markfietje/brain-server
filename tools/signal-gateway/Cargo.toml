@@ -16,8 +16,19 @@ license = "MIT OR Apache-2.0"
 # the whole libsignal stack under a green build. The rev below is the commit
 # the stack-policy note describes — moving it is a deliberate, reviewed act:
 # change the rev, re-lock, and bump this package's version together.
-presage = { git = "https://github.com/whisperfish/presage", rev = "f74b96e0fb9099ce8be2b28b7ca9d11f78a6faea" }
-presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "f74b96e0fb9099ce8be2b28b7ca9d11f78a6faea" }
+# MOVED 2026-10-23 (operator-ordered refresh): f74b96e0 (2026-06-era) →
+# 6f630791 (presage main, 2026-10-19) → libsignal-service fae0679d
+# (2026-10-15). The libsignal tag stays v0.99.0 (upstream's own pin), so the
+# package version stays 0.99.0. Two call-site shims came with it:
+# Metadata.timestamp → client_timestamp (chrono), and SyncMessage's optional
+# fields → the `content` oneof (SyncContent::Sent). 60 tests green.
+# MEASURED and NOT cleared by the bump: bincode 1.3.3 (libsignal's workspace
+# itself pins bincode 1.3.2 at v0.105.4 — same major), atomic-polyfill
+# (postcard 1.1.3, latest, still requires heapless ^0.7), proc-macro-error2
+# (libcrux 0.0.10, which libsignal v0.105.4 also still pins). All three
+# clear only with upstream libsignal/libsignal-service releases.
+presage = { git = "https://github.com/whisperfish/presage", rev = "6f630791b2c7bf3d5b00c75f5a6c94131bf79c8c" }
+presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "6f630791b2c7bf3d5b00c75f5a6c94131bf79c8c" }
 
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "fs"], default-features = false }
 
@@ -28,11 +39,15 @@ reqwest = { version = "0.13.5", features = ["json"], default-features = false }
 
 serde = "1.0.229"
 serde_json = "1.0.151"
-# serde_yaml is DEPRECATED upstream (latest 0.9.34+deprecated, unmaintained
-# since dtolnay's 2024 archive notice). Held at 0.9 because the switch to
-# `serde_yml` / `serde_norway` is a BEHAVIOURAL rename of the crate, not a
-# version bump — see the stack-policy note at the bottom of this file.
-serde_yaml = "0.9.34"
+# serde_yaml is DEPRECATED upstream (archived by dtolnay, 2024) and its
+# `unsafe-libyaml` backend is itself unmaintained (RUSTSEC-2024-0449). This
+# manifest HELD at serde_yaml 0.9 because the successor was a BEHAVIOURAL
+# rename of the same crate — the fork still shipped unsafe-libyaml, so the
+# switch bought nothing. That premise moved: serde_norway 0.9.41+ REPLACED
+# unsafe-libyaml (measured on the index 2026-10-23), so the fork now carries
+# the maintained parser the hold was waiting for. One call site
+# (config/mod.rs from_str); API-compatible for it.
+serde_norway = "0.9.42"
 
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
