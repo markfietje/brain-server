@@ -178,6 +178,37 @@ action and the Apple identity remain owed from earlier rounds.
   OpenClaw plugin. The shell's frontend lock is refreshed and frozen-installs
   clean.
 
+## [Unreleased] — the drill fetches only the release channel, and the download never becomes a file
+
+CodeQL's security-extended TypeScript lane raised two alerts on the
+integration drill (`plugin/scripts/integration-drill.mjs`), and both are real
+properties of the script worth holding, not noise:
+
+1. **`js/file-access-to-http` — the config-derived endpoint reaches `fetch`.**
+   This flow is the drill's OWN law (the endpoint comes from the app's
+   configuration, not a URL written beside it), so it stays — now GUARDED:
+   `releaseChannelUrl` holds every URL `fetchBytes` fetches to https, on the
+   hosts the release channel actually uses (`github.com`, the
+   `githubusercontent.com` release CDN), before anything is fetched. A
+   configuration naming another origin is REFUSED (exit 1) with the origin
+   named. The residual flow is suppressed IN SOURCE beside the guard
+   (`// codeql[js/file-access-to-http]`) because the analyser cannot see an
+   origin allowlist — a disable with its measured reason, not a dismissal.
+2. **`js/http-to-file-access` — the downloaded artefact was written to disk.**
+   The bytes were minisign-verified before the write, but the honest fix is
+   REMOVAL, not guarding: the verified bytes now stream into `tar` on stdin
+   and no unverified-or-verified download ever exists as a file. Every answer
+   is also BOUNDED now: `MAX_DOWNLOAD_BYTES` (64 MiB against the measured
+   26,371,332-byte v1.29.28 artefact) refuses a body that cannot be the
+   release channel answering.
+
+Four pins join `plugin/test/integration-drill-pins.test.ts` (232 → 236): the
+two endpoint arms drive the REAL drill in a scratch tree whose app
+configuration names the hostile origin, and two structural arms hold the
+guard call, the suppression-with-its-guard, the ceiling and the stdin
+extraction. Two drills RUN and reverted; both red-proofs are recorded in the
+gate-law register's row for the guard.
+
 ## [1.29.29] — 2026-10-22 — every release now has to carry the update chain
 
 **A release that ships without the update chain BREAKS the updater's path for

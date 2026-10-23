@@ -26,6 +26,11 @@ declare const Buffer: {
 declare module "node:fs" {
 	/** The one-argument form: without an encoding the file comes back as bytes. */
 	export function readFileSync(path: string): BufferLike;
+
+	/** The endpoint arms mirror the drill into a scratch tree beside a hostile
+	 * app configuration, so the lane needs the two directory/copy primitives. */
+	export function mkdirSync(path: string, options?: { recursive?: boolean }): void;
+	export function copyFileSync(src: string, dest: string): void;
 }
 
 declare module "node:url" {

@@ -80,6 +80,14 @@ const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 /** The drill's marker: a sentence no corpus contains, so a hit IS the round trip. */
 const DRILL_TEXT = 'the quokka fleet sails at midnight on the eleventh tide';
 
+/**
+ * The download ceiling, against the channel's own measurement: the published
+ * artefact is 26,371,332 bytes (v1.29.28), so anything past 64 MiB is not the
+ * release channel answering. Every answer is bounded, and the ceiling is
+ * named when it fires.
+ */
+const MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024;
+
 class Refusal extends Error {}
 class CouldNotRun extends Error {}
 
@@ -187,17 +195,55 @@ function trustedFields(comment) {
 	return fields;
 }
 
+/**
+ * The drill talks to the app's release channel and to NOTHING else. Both URLs
+ * it fetches are untrusted input BY DESIGN — the manifest endpoint is read
+ * from the app's own configuration and the artefact URL is named by the
+ * published manifest — so each is held to https, on a host the channel
+ * actually uses, before anything is fetched. A config that names another
+ * origin is not a network hiccup: it is REFUSED (exit 1), not shrugged at.
+ */
+function releaseChannelUrl(raw, what) {
+	let url;
+	try {
+		url = new URL(String(raw));
+	} catch {
+		fail(`the ${what} is not a URL: ${raw}`);
+	}
+	if (url.protocol !== 'https:') {
+		fail(`the ${what} is ${url.protocol} — the drill fetches https only`);
+	}
+	if (url.hostname !== 'github.com' && !url.hostname.endsWith('.githubusercontent.com')) {
+		fail(`the ${what} names a host the release channel does not use: ${url.hostname}`);
+	}
+	return url;
+}
+
 async function fetchBytes(url, what) {
+	releaseChannelUrl(url, what);
 	let response;
 	try {
-		response = await fetch(url, { redirect: 'follow' });
+		// The URL is untrusted input BY DESIGN — the endpoint comes from the
+		// app's configuration and the artefact URL from the published manifest
+		// — and `releaseChannelUrl` above holds it to https on the release
+		// channel's hosts before anything is fetched. The analyser cannot see
+		// an origin allowlist, so this one fetch shape is suppressed HERE,
+		// beside its guard, rather than dismissed.
+		response = await fetch(url, { redirect: 'follow' }); // codeql[js/file-access-to-http]
 	} catch (error) {
 		couldNotRun(`the ${what} could not be fetched from ${url}: ${error?.message ?? error}`);
 	}
 	if (!response.ok) {
 		couldNotRun(`the ${what} answered HTTP ${response.status} at ${url}`);
 	}
-	return Buffer.from(await response.arrayBuffer());
+	const body = Buffer.from(await response.arrayBuffer());
+	if (body.length > MAX_DOWNLOAD_BYTES) {
+		fail(
+			`the ${what} is ${body.length} bytes — past the ${MAX_DOWNLOAD_BYTES}-byte ceiling, ` +
+				'so it is not the release channel answering'
+		);
+	}
+	return body;
 }
 
 /** A free TCP port, released before the kernel binds it. */
@@ -447,11 +493,15 @@ async function main() {
 			`the binding:          file:${fields.file} version:${fields.version} timestamp:${fields.timestamp}`
 		);
 
-		const artefactPath = join(dataRoot, basename(artefactUrl));
-		writeFileSync(artefactPath, artefact);
 		const extracted = join(dataRoot, 'extracted');
 		mkdirSync(extracted);
-		const untar = spawnSync('tar', ['-xzf', artefactPath, '-C', extracted], { encoding: 'utf8' });
+		// The VERIFIED bytes go straight into the extractor: the drill never
+		// writes the download to the filesystem, so no window exists in which
+		// network data sits on disk as a file.
+		const untar = spawnSync('tar', ['-xzf', '-', '-C', extracted], {
+			input: artefact,
+			encoding: 'utf8'
+		});
 		if (untar.status !== 0) {
 			couldNotRun(`the artefact could not be unpacked: ${untar.stderr}`);
 		}

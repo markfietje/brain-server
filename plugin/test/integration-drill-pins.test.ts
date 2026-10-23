@@ -1,4 +1,11 @@
-import { readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+	copyFileSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -211,5 +218,99 @@ describe('the drill is wired to the app, not to this tree', () => {
 		for (const word of ['REFUSED', 'COULD NOT RUN', 'OBSERVATION', 'PASS']) {
 			expect(source, `the drill must speak in outcomes: missing "${word}"`).toContain(word);
 		}
+	});
+});
+
+describe('the drill fetches only the release channel', () => {
+	/**
+	 * A scratch MIRROR of the tree the drill reads: the drill derives the app
+	 * configuration from its own location, so a copy of the drill beside a
+	 * hostile `tauri.conf.json` is driven without touching the real one. The
+	 * hostile config pins the MINTED key and the artefact is signed by it, so
+	 * local verification passes and the run REACHES the fetch — which is the
+	 * arm under test: the drill must refuse the URL before anything is
+	 * fetched, so no arm here touches the network.
+	 */
+	const runDrillWithEndpoint = (endpoint: string): { status: number | null; output: string } => {
+		const scratch = mkdtempSync(join(tmpdir(), 'iii8-drill-url-'));
+		try {
+			const scripts = join(scratch, 'plugin', 'scripts');
+			mkdirSync(scripts, { recursive: true });
+			copyFileSync(drill, join(scripts, 'integration-drill.mjs'));
+			const minted = mintKeypair();
+			const name = 'Brain-Shell.app.tar.gz';
+			const message = Buffer.from('bytes the minted key signed for the endpoint arm');
+			const signature = minisignSign(
+				minted.privateKey,
+				minted.keynum,
+				message,
+				`timestamp:1\tfile:${name}\tversion:0.1.1`
+			);
+			mkdirSync(join(scratch, 'shell', 'src-tauri'), { recursive: true });
+			writeFileSync(
+				join(scratch, 'shell', 'src-tauri', 'tauri.conf.json'),
+				JSON.stringify({
+					plugins: {
+						updater: {
+							pubkey: Buffer.from(minted.pubkeyText).toString('base64'),
+							endpoints: [endpoint]
+						}
+					}
+				})
+			);
+			const artefactPath = join(scratch, name);
+			writeFileSync(artefactPath, message.toString('latin1'));
+			// The published `.sig` carries the base64 of the minisign TEXT.
+			writeFileSync(`${artefactPath}.sig`, Buffer.from(signature).toString('base64'));
+			const run = spawnSync(
+				'node',
+				[join(scripts, 'integration-drill.mjs'), '--artifact', artefactPath],
+				{ encoding: 'utf8', timeout: 120_000 }
+			);
+			return { status: run.status, output: `${run.stdout}\n${run.stderr}` };
+		} finally {
+			rmSync(scratch, { recursive: true, force: true });
+		}
+	};
+
+	test('an http:// endpoint in the app configuration is refused before anything is fetched', () => {
+		const { status, output } = runDrillWithEndpoint(
+			'http://github.com/markfietje/brain-server/releases/latest/download/latest.json'
+		);
+		expect(status, `the drill fetched over http:\n${output}`).toBe(1);
+		expect(output).toContain('REFUSED');
+		expect(output).toContain('the drill fetches https only');
+	});
+
+	test('a host the release channel does not use is refused, named', () => {
+		const { status, output } = runDrillWithEndpoint('https://evil.example/latest.json');
+		expect(status, `the drill fetched from a foreign host:\n${output}`).toBe(1);
+		expect(output).toContain('the release channel does not use');
+		expect(output).toContain('evil.example');
+	});
+
+	test('the fetch is guarded and the suppression names the guard', () => {
+		const source = readFileSync(drill, 'utf8');
+		expect(
+			source.includes('releaseChannelUrl(url, what);'),
+			'every URL fetchBytes fetches must pass the release-channel guard first'
+		).toBe(true);
+		expect(
+			source.includes('// codeql[js/file-access-to-http]'),
+			'the config-derived fetch stays suppressed in source, beside the guard that holds it — a suppression without its guard in the tree is a blind spot, not a decision'
+		).toBe(true);
+	});
+
+	test('the download is bounded and never written to the filesystem', () => {
+		const source = readFileSync(drill, 'utf8');
+		expect(source).toContain('MAX_DOWNLOAD_BYTES');
+		expect(
+			source.includes('writeFileSync(artefactPath'),
+			'the drill must not write the fetched artefact to disk — the verified bytes stream to the extractor'
+		).toBe(false);
+		expect(
+			source.includes("['-xzf', '-', '-C', extracted]"),
+			'the extractor must read the verified bytes from stdin'
+		).toBe(true);
 	});
 });
