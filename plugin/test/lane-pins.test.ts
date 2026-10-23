@@ -34,17 +34,21 @@ describe('the plugin installs standalone', () => {
 		const scratch = mkdtempSync(join(tmpdir(), 'iii8-install-'));
 		try {
 			writeFileSync(join(scratch, 'package.json'), read('package.json'));
-			// Resolution only, from the warm cache — the lane's `npm ci` has just
-			// populated it. **The pin is deliberately OFFLINE**, because a pin
-			// that reaches for the registry is a pin at the network's mercy: it
-			// flaked once in five runs (measured 2026-10-22), and R135's lesson
-			// about the keychain applies verbatim — a pin that shells out past
-			// the machine must be bounded, or it is a flake. Offline keeps the
-			// LAW intact: npm still parses the manifest and still refuses a
+			// The LOCKFILE comes too: this is the shape a clean checkout has
+			// (the lane installs with `npm ci`, which REQUIRES it), and with it
+			// npm resolves from the lock without the registry. A manifest-ONLY
+			// scratch tree looks equivalent and is not: every range must then be
+			// resolved from the registry's packuments, which `npm ci` does not
+			// cache — measured in CI, where this arm failed ENOTCACHED on
+			// `typebox` while passing on a developer machine whose cache held
+			// the older packument. **The pin is deliberately OFFLINE**, because
+			// a pin that reaches for the registry is a pin at the network's
+			// mercy (it flaked once in five runs); offline keeps the LAW intact,
+			// because npm still parses the manifest and still refuses a
 			// `workspace:` URL before it looks at any cache (measured — the
 			// restored devDependency reds with npm's own EUNSUPPORTEDPROTOCOL
-			// under `--offline` too). The lane's own `npm ci` remains the proof
-			// that the full install works on a clean checkout, network and all.
+			// under `--offline` on a COLD cache too).
+			writeFileSync(join(scratch, 'package-lock.json'), read('package-lock.json'));
 			const install = spawnSync(
 				'npm',
 				[
