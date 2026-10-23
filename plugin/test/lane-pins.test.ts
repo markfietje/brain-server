@@ -32,6 +32,12 @@ const vitestConfig = read('vitest.config.ts');
 describe('the plugin installs standalone', () => {
 	test('npm resolves the plugin manifest with no host present', () => {
 		const scratch = mkdtempSync(join(tmpdir(), 'iii8-install-'));
+		// **AN EMPTY CACHE, on purpose.** The arm must measure the LOCKFILE
+		// resolution, not how warm the machine happens to be: a pin that passes
+		// on a developer's cache and fails on a runner's is a pin that lies
+		// about the tree. That is exactly how this arm's first CI run went red
+		// (ENOTCACHED on `typebox`) while passing locally.
+		const cache = mkdtempSync(join(tmpdir(), 'iii8-npm-cache-'));
 		try {
 			writeFileSync(join(scratch, 'package.json'), read('package.json'));
 			// The LOCKFILE comes too: this is the shape a clean checkout has
@@ -47,7 +53,7 @@ describe('the plugin installs standalone', () => {
 			// because npm still parses the manifest and still refuses a
 			// `workspace:` URL before it looks at any cache (measured — the
 			// restored devDependency reds with npm's own EUNSUPPORTEDPROTOCOL
-			// under `--offline` on a COLD cache too).
+			// under `--offline` on an EMPTY cache too).
 			writeFileSync(join(scratch, 'package-lock.json'), read('package-lock.json'));
 			const install = spawnSync(
 				'npm',
@@ -59,19 +65,25 @@ describe('the plugin installs standalone', () => {
 					'--no-fund',
 					'--ignore-scripts'
 				],
-				{ cwd: scratch, encoding: 'utf8', timeout: 120_000 }
+				{
+					cwd: scratch,
+					encoding: 'utf8',
+					timeout: 120_000,
+					env: { ...process.env, npm_config_cache: cache }
+				}
 			);
 			const output = `${install.stdout}\n${install.stderr}`;
 			expect(
 				install.status,
-				`npm install --package-lock-only failed in a clean tree ` +
-					`(if this names missing packages, the cache was cold — run npm ci first):\n${output}`
+				`npm install --package-lock-only failed on an EMPTY cache; the lockfile must ` +
+					`resolve the tree without a registry or a warm machine:\n${output}`
 			).toBe(0);
 			// npm's own failure for the blocking shape is EUNSUPPORTEDPROTOCOL —
 			// the red-proof restores it and expects exactly this string.
 			expect(output).not.toContain('EUNSUPPORTEDPROTOCOL');
 		} finally {
 			rmSync(scratch, { recursive: true, force: true });
+			rmSync(cache, { recursive: true, force: true });
 		}
 	});
 
