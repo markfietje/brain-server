@@ -191,9 +191,13 @@ properties of the script worth holding, not noise:
    hosts the release channel actually uses (`github.com`, the
    `githubusercontent.com` release CDN), before anything is fetched. A
    configuration naming another origin is REFUSED (exit 1) with the origin
-   named. The residual flow is suppressed IN SOURCE beside the guard
-   (`// codeql[js/file-access-to-http]`) because the analyser cannot see an
-   origin allowlist — a disable with its measured reason, not a dismissal.
+   named. The alert is DISMISSED with reason `mitigated` and its
+   `dismissed_comment` carrying the guard's reasoning — the analyser cannot
+   see an origin allowlist. (Measured 2026-10-23: the `// codeql[query-id]`
+   inline-suppression comment is NOT honored by this repository's analysis —
+   the alert re-opened at the very line carrying the comment — and no
+   current GitHub doc documents that mechanism, so the comment was removed
+   rather than left making a false claim; the dismissal is the record.)
 2. **`js/http-to-file-access` — the downloaded artefact was written to disk.**
    The bytes were minisign-verified before the write, but the honest fix is
    REMOVAL, not guarding: the verified bytes now stream into `tar` on stdin
@@ -202,10 +206,15 @@ properties of the script worth holding, not noise:
    26,371,332-byte v1.29.28 artefact) refuses a body that cannot be the
    release channel answering.
 
+**The measured outcome (2026-10-23, the next TypeScript scan):** #84 and the
+original #83 closed as FIXED; the analysis re-raised the guarded flow as #85
+at the commented line, and #85 is dismissed `mitigated` with the guard as the
+record.
+
 Four pins join `plugin/test/integration-drill-pins.test.ts` (232 → 236): the
 two endpoint arms drive the REAL drill in a scratch tree whose app
 configuration names the hostile origin, and two structural arms hold the
-guard call, the suppression-with-its-guard, the ceiling and the stdin
+guard call, the fetch line's comment naming the guard, the ceiling and the stdin
 extraction. Two drills RUN and reverted; both red-proofs are recorded in the
 gate-law register's row for the guard.
 

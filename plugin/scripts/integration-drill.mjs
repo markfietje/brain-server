@@ -226,10 +226,12 @@ async function fetchBytes(url, what) {
 		// The URL is untrusted input BY DESIGN — the endpoint comes from the
 		// app's configuration and the artefact URL from the published manifest
 		// — and `releaseChannelUrl` above holds it to https on the release
-		// channel's hosts before anything is fetched. The analyser cannot see
-		// an origin allowlist, so this one fetch shape is suppressed HERE,
-		// beside its guard, rather than dismissed.
-		response = await fetch(url, { redirect: 'follow' }); // codeql[js/file-access-to-http]
+		// channel's hosts before anything is fetched. That guard is the
+		// mitigation for the analyser's alert on this line: the origin
+		// allowlist is not something it can see, so the alert is DISMISSED
+		// with this comment's reasoning as its record (the gate-law register
+		// carries the row).
+		response = await fetch(url, { redirect: 'follow' });
 	} catch (error) {
 		couldNotRun(`the ${what} could not be fetched from ${url}: ${error?.message ?? error}`);
 	}

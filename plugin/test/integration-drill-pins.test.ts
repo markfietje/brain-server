@@ -289,15 +289,15 @@ describe('the drill fetches only the release channel', () => {
 		expect(output).toContain('evil.example');
 	});
 
-	test('the fetch is guarded and the suppression names the guard', () => {
+	test('the fetch is guarded, and the comment names the guard', () => {
 		const source = readFileSync(drill, 'utf8');
 		expect(
 			source.includes('releaseChannelUrl(url, what);'),
 			'every URL fetchBytes fetches must pass the release-channel guard first'
 		).toBe(true);
 		expect(
-			source.includes('// codeql[js/file-access-to-http]'),
-			'the config-derived fetch stays suppressed in source, beside the guard that holds it — a suppression without its guard in the tree is a blind spot, not a decision'
+			source.includes('allowlist is not something it can see'),
+			'the fetch line\'s comment must keep naming the guard the alert was dismissed with — a mute guard reads as an unmitigated flow'
 		).toBe(true);
 	});
 
