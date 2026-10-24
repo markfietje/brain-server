@@ -177,13 +177,15 @@ stated design.
    the returned `row_digest` — lifecycle proposals must copy `row` +
    `row_digest` unchanged. A `409 model_already_registered` means the
    `(id, version)` is taken; pick a new version, never reuse one.
-3. **Inspect from the console.** The `models` route
-   (`shell/src/routes/models/+page.svelte`) lists via
-   `GET /workflow/model-registry` and reads detail via
-   `GET /workflow/model-registry/{model_ref}` through the bounded parsers in
-   `shell/src/lib/model-registry.ts` (limits at `MODEL_REGISTRY_LIMITS`;
-   unknown values refused, never invented). Lifecycle moves go through the
-   human proposal gate, not a status button.
+3. **Inspect from the API.** The shell's `models` route retired in M3-a
+   (plan `21_CHAT_FIRST_IA`: an informational/ops concern, not a daily
+   surface) — inspect with the kernel's own API: `GET
+   /workflow/model-registry` lists, `GET
+   /workflow/model-registry/{model_ref}` reads detail (Admin bearer). The
+   bounded parsers stay in the tree (`shell/src/lib/model-registry.ts`;
+   limits at `MODEL_REGISTRY_LIMITS`; unknown values refused, never
+   invented) for the future Settings/ops surface. Lifecycle moves go
+   through the human proposal gate, not a status button.
 4. **Scope the domain.** `POST /domains` to create/warm, then bind posture:
    `POST /domains/{name}/profile` with `{"profile": "<preset>"}`. For true
    file isolation set `BRAIN_MULTI_DB=true` **before first use** (`global`
