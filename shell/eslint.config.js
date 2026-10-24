@@ -7,7 +7,10 @@ export default [
 	js.configs.recommended,
 	...svelte.configs['flat/recommended'],
 	{
-		files: ['**/*.svelte'],
+		// `.svelte.ts`/`.svelte.js` are rune MODULES (M3-b's wire-status store
+		// is the first): eslint-plugin-svelte parses them, and without the TS
+		// parser wired here a type annotation is a parse error, not a finding.
+		files: ['**/*.svelte', '**/*.svelte.ts', '**/*.svelte.js'],
 		languageOptions: {
 			globals: { ...globals.browser },
 			parserOptions: {

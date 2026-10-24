@@ -208,6 +208,15 @@
 	"chat.forget.no_such_row": "für Sie nicht verfügbar — es wurde nichts gelöscht",
 	"chat.forget.unavailable": "nicht abgeschlossen — das Löschen ist beeinträchtigt, nicht leer",
 	"chat.forget.violation": "die Antwort war nicht lesbar — es wird nichts als vergessen gemeldet",
+	"chat.empty.greeting": "Willkommen.",
+	"chat.empty.chip.ask": "Fragen",
+	"chat.empty.chip.trace": "Abrufverlauf",
+	"chat.empty.chip.review": "Prüfwarteschlange",
+	"chat.evidence.count": "{count} Belege",
+	"chat.evidence.expand": "Belege zeigen",
+	"chat.evidence.collapse": "Belege verbergen",
+	"chat.status.restart": "Kernel neu starten",
+	"chat.status.restarting": "Wird neu gestartet…",
 	"gate.checking": "Der lokale Kernel wird geprüft…",
 	"gate.starting": "Der lokale Kernel wird gestartet…",
 	"gate.consent.heading": "Lokalen Kernel starten?",
@@ -286,5 +295,6 @@
 	"review.row.content": "Inhalt",
 	"review.row.content_unavailable": "Offline nicht verfügbar — die Kopie enthält nur Metadaten.",
 	"review.row.digest": "Inhalts-Digest",
-	"review.value.none": "nicht gesetzt"
+	"review.value.none": "nicht gesetzt",
+	"review.badge": "Prüfwarteschlange — {count} offen"
 }

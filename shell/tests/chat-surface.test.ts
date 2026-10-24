@@ -165,6 +165,20 @@ async function sendQuery(scope: Scope = screen as unknown as Scope): Promise<voi
 	});
 }
 
+/**
+ * Opens an answered turn's evidence disclosure (M3-b: collapsed is the
+ * DEFAULT). The pins that assert citation content drive the OPENED state
+ * they have always driven — this helper is their setup step, so the
+ * collapsed-default law lives in `chat-home-state.test.ts`, not in a
+ * template accident here.
+ */
+async function openEvidence(scope: Scope = screen as unknown as Scope): Promise<void> {
+	await userEvent.click(scope.getByTestId('chat-evidence'));
+	await waitFor(() =>
+		expect(scope.queryAllByTestId('chat-citation').length).toBeGreaterThan(0)
+	);
+}
+
 describe('II-3 the composer', () => {
 	test('the_composer_is_focused_with_zero_navigation_before_typing', async () => {
 		await renderChat(ANSWERED);
@@ -198,6 +212,7 @@ describe('II-4 / II-5 the surface renders every state distinctly', () => {
 	test('an_answered_turn_renders_its_provenance_with_a_historical_marker', async () => {
 		await renderChat(ANSWERED);
 		await sendQuery();
+		await openEvidence();
 		await waitFor(() => expect(screen.getAllByTestId('chat-turn').length).toBe(1));
 
 		const turn = screen.getAllByTestId('chat-turn')[0]!;
@@ -264,6 +279,9 @@ describe('II-7 accessibility', () => {
 	test('axe_AA_clean_on_the_chat_route', async () => {
 		await renderChat(ANSWERED);
 		await sendQuery();
+		// The swept document is the OPENED one, as before M3-b: the collapsed
+		// default's own sweep lives in chat-home-state.test.ts.
+		await openEvidence();
 		await waitFor(() => expect(screen.getAllByTestId('chat-turn').length).toBe(1));
 		const { default: axe } = await import('axe-core');
 		const results = await axe.run(document.body, {

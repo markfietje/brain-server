@@ -54,6 +54,60 @@ const GERMAN_LOANWORDS = new Set([
 // (M3-a: the overview.*/models.* entries retired with their keys — a
 // loanword entry for a key no catalog carries would be dead cover.)
 
+/**
+ * M3-b — the fr/es/nl arms of the SAME rule (READ FIRST ⑦ of the M3-b
+ * prompt): `nav.chat` first shipped as "Chat" in all five locales, and fr's
+ * nav block was otherwise fully translated — a smell the de-only gate could
+ * not see. Each list is MEASURED (2026-10-24, 298 keys) and every entry is
+ * a genuine loanword or a same-spelling cognate in that language, not an
+ * untranslated string wearing a locale label.
+ */
+const FRENCH_LOANWORDS = new Set([
+	// "Pipeline"/"Mode"/"Version"/"RRF k" are the same technical terms in
+	// French; "Leg" is the retrieval leg, a term of art kept verbatim;
+	// "Conversation"/"Scores"/"Salience" are French words of identical
+	// spelling — cognates, not copies.
+	'decisions.list.pipeline',
+	'decisions.detail.mode',
+	'decisions.detail.model_version',
+	'decisions.detail.rrf_k',
+	'decisions.detail.leg',
+	'chat.title',
+	'review.row.scores',
+	'review.row.salience'
+]);
+
+const SPANISH_LOANWORDS = new Set([
+	// "Chat", "Pipeline" and "Kernel" are established Spanish loanwords;
+	// "Actor" and "RRF k" are the same terms of art.
+	'nav.chat',
+	'recall.trace.fields.actor',
+	'decisions.list.pipeline',
+	'decisions.detail.rrf_k',
+	'decisions.detail.kernel'
+]);
+
+const DUTCH_LOANWORDS = new Set([
+	// "Chat", "Pipeline" and "Kernel" are established Dutch loanwords;
+	// "Actor", "Model" and "Scores" are same-spelling cognates; "conflict"
+	// and "Conflict" are Dutch words in their own right.
+	'nav.chat',
+	'recall.conflict',
+	'recall.trace.fields.actor',
+	'decisions.list.pipeline',
+	'decisions.detail.model_id',
+	'decisions.detail.kernel',
+	'review.row.scores',
+	'review.row.conflict'
+]);
+
+const LOANWORD_LISTS: Readonly<Record<string, ReadonlySet<string>>> = {
+	de: GERMAN_LOANWORDS,
+	fr: FRENCH_LOANWORDS,
+	es: SPANISH_LOANWORDS,
+	nl: DUTCH_LOANWORDS
+};
+
 describe('the de locale decision', () => {
 	test('de_is_a_STATED_retrieval_only_value_and_not_a_default', () => {
 		// THE PIN. `de` carries an explicit `retrieval_only`, read from the
@@ -187,5 +241,36 @@ describe('the de locale decision', () => {
 		const differing = Object.keys(en).filter((key) => en[key] !== de[key]);
 		expect(differing.length).toBeGreaterThan(Object.keys(en).length * 0.9);
 		expect(Object.keys(de).length).toBe(Object.keys(en).length);
+	});
+
+	test('the_fr_es_nl_catalogs_are_really_translated_and_not_the_english_strings_relabelled', () => {
+		// M3-b — the "Chat"-in-French lesson: the identical-to-en check now
+		// covers EVERY locale, each with its own measured allow-list. A new
+		// untranslated key in fr, es or nl is a RED TEST naming the key, the
+		// same fail-closed shape the de arm has had since II-7f.
+		const en = catalog('en');
+		for (const locale of ['fr', 'es', 'nl']) {
+			const cat = catalog(locale);
+			expect(Object.keys(cat).length, `${locale} must be key-complete with en`).toBe(
+				Object.keys(en).length
+			);
+			const identical = Object.keys(en).filter((key) => en[key] === cat[key]);
+			expect(
+				identical.filter((key) => !LOANWORD_LISTS[locale]!.has(key)),
+				`these ${locale} keys are byte-identical to en and are not declared loanwords: ${identical
+					.filter((key) => !LOANWORD_LISTS[locale]!.has(key))
+					.join(', ')}`
+			).toEqual([]);
+			// The allow-list stays an exception list, not a blank cheque.
+			expect(
+				identical.length / Object.keys(en).length,
+				`${identical.length} of ${Object.keys(en).length} ${locale} keys are identical to en`
+			).toBeLessThan(0.1);
+			// Anti-vacuity: the catalog measurably differs from en.
+			const differing = Object.keys(en).filter((key) => en[key] !== cat[key]);
+			expect(differing.length, `${locale} differs from en on too few keys`).toBeGreaterThan(
+				Object.keys(en).length * 0.9
+			);
+		}
 	});
 });

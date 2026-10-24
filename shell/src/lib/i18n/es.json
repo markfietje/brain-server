@@ -208,6 +208,15 @@
 	"chat.forget.no_such_row": "no disponible para ti — no se borró nada",
 	"chat.forget.unavailable": "no se completó — el borrado está degradado, no vacío",
 	"chat.forget.violation": "no se pudo leer la respuesta — no se informa nada como olvidado",
+	"chat.empty.greeting": "Bienvenido.",
+	"chat.empty.chip.ask": "Preguntar",
+	"chat.empty.chip.trace": "Historial",
+	"chat.empty.chip.review": "Cola de revisión",
+	"chat.evidence.count": "{count} fuentes",
+	"chat.evidence.expand": "mostrar las fuentes",
+	"chat.evidence.collapse": "ocultar las fuentes",
+	"chat.status.restart": "Reiniciar el kernel",
+	"chat.status.restarting": "Reiniciando…",
 	"gate.checking": "Comprobando el kernel local…",
 	"gate.starting": "Iniciando el kernel local…",
 	"gate.consent.heading": "¿Iniciar el kernel local?",
@@ -286,5 +295,6 @@
 	"review.row.content": "Contenido",
 	"review.row.content_unavailable": "No disponible sin conexión — la copia solo contiene metadatos.",
 	"review.row.digest": "Resumen del contenido",
-	"review.value.none": "sin definir"
+	"review.value.none": "sin definir",
+	"review.badge": "Cola de revisión — {count} en espera"
 }

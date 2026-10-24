@@ -208,6 +208,15 @@
 	"chat.forget.no_such_row": "niet voor jou beschikbaar — er is niets gewist",
 	"chat.forget.unavailable": "niet voltooid — het wissen is beperkt, niet leeg",
 	"chat.forget.violation": "het antwoord was onleesbaar — er wordt niets als vergeten gemeld",
+	"chat.empty.greeting": "Welkom.",
+	"chat.empty.chip.ask": "Vragen",
+	"chat.empty.chip.trace": "Geschiedenis",
+	"chat.empty.chip.review": "Revisierij",
+	"chat.evidence.count": "{count} bronnen",
+	"chat.evidence.expand": "bronnen tonen",
+	"chat.evidence.collapse": "bronnen verbergen",
+	"chat.status.restart": "Kernel herstarten",
+	"chat.status.restarting": "Herstarten…",
 	"gate.checking": "Het lokale kernel wordt gecontroleerd…",
 	"gate.starting": "Het lokale kernel wordt gestart…",
 	"gate.consent.heading": "Lokaal kernel starten?",
@@ -286,5 +295,6 @@
 	"review.row.content": "Inhoud",
 	"review.row.content_unavailable": "Niet beschikbaar offline — de kopie bevat alleen metadata.",
 	"review.row.digest": "Inhoudsdigest",
-	"review.value.none": "niet ingesteld"
+	"review.value.none": "niet ingesteld",
+	"review.badge": "Revisierij — {count} te beoordelen"
 }

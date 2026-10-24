@@ -208,6 +208,15 @@
 	"chat.forget.no_such_row": "not available to you — nothing was erased",
 	"chat.forget.unavailable": "could not be completed — erasure is degraded, not empty",
 	"chat.forget.violation": "the answer could not be read — nothing is reported as forgotten",
+	"chat.empty.greeting": "Welcome.",
+	"chat.empty.chip.ask": "Ask",
+	"chat.empty.chip.trace": "Recall history",
+	"chat.empty.chip.review": "Review queue",
+	"chat.evidence.count": "{count} citations",
+	"chat.evidence.expand": "show citations",
+	"chat.evidence.collapse": "hide citations",
+	"chat.status.restart": "Restart the kernel",
+	"chat.status.restarting": "Restarting…",
 	"gate.checking": "Checking the local kernel…",
 	"gate.starting": "Starting the local kernel…",
 	"gate.consent.heading": "Start the local kernel?",
@@ -286,5 +295,6 @@
 	"review.row.content": "Content",
 	"review.row.content_unavailable": "Not available offline — the cached copy holds metadata only.",
 	"review.row.digest": "Content digest",
-	"review.value.none": "not set"
+	"review.value.none": "not set",
+	"review.badge": "Review queue — {count} waiting"
 }

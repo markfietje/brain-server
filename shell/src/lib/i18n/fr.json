@@ -208,6 +208,15 @@
 	"chat.forget.no_such_row": "indisponible pour vous — rien n’a été effacé",
 	"chat.forget.unavailable": "incomplet — l’effacement est dégradé, non vide",
 	"chat.forget.violation": "la réponse était illisible — rien n’est signalé comme oublié",
+	"chat.empty.greeting": "Bienvenue.",
+	"chat.empty.chip.ask": "Demander",
+	"chat.empty.chip.trace": "Historique",
+	"chat.empty.chip.review": "File de relecture",
+	"chat.evidence.count": "{count} sources",
+	"chat.evidence.expand": "voir les sources",
+	"chat.evidence.collapse": "masquer les sources",
+	"chat.status.restart": "Redémarrer le noyau",
+	"chat.status.restarting": "Redémarrage…",
 	"gate.checking": "Vérification du noyau local…",
 	"gate.starting": "Démarrage du noyau local…",
 	"gate.consent.heading": "Démarrer le noyau local ?",
@@ -286,5 +295,6 @@
 	"review.row.content": "Contenu",
 	"review.row.content_unavailable": "Indisponible hors ligne — la copie ne contient que des métadonnées.",
 	"review.row.digest": "Empreinte du contenu",
-	"review.value.none": "non défini"
+	"review.value.none": "non défini",
+	"review.badge": "File de relecture — {count} en attente"
 }

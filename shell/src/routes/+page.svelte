@@ -16,6 +16,8 @@
 	// NO `{@html}` anywhere, per `eslint.config.js` and Plan 04 §3: every
 	// interpolated value below is a text node.
 	import { m } from '$paraglide/messages.js';
+	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
 	import {
 		recallMemory,
 		typedRecallTransport,
@@ -25,6 +27,13 @@
 	} from '#lib/api/recall.js';
 	import { renderTurn, renderingToken, type TurnRendering } from '#lib/chat/turn.js';
 	import { provenanceBlock, type ProvenanceBlock } from '#lib/chat/provenance.js';
+	import { wireFaultMessage } from '#lib/api/wire-fault.js';
+	import type { WireFault } from '#lib/api/client.js';
+	import {
+		classifyWireFault,
+		clearWireFault,
+		currentWireFault
+	} from '#lib/chat/wire-status.svelte.js';
 	import {
 		verifyClaim,
 		typedVerifyTransport,
@@ -248,6 +257,13 @@
 			// fabricated evidence -- the opposite failure of omitting one.
 			const provenance =
 				rendering.kind === 'answered' ? provenanceBlock(rendering.passages, rendering.confidence, Date.now()) : null;
+			// M3-b: an `unreachable` that CAME BACK from the pipeline is the
+			// transport arm — the wire itself failed while the core answered —
+			// so it is the one classified state that buys the banner's
+			// sentence. A refusal is the kernel SPEAKING and never a fault;
+			// the catch arm below is the app's own core failing, which a
+			// "restart the kernel" banner would misname.
+			if (rendering.kind === 'unreachable') void classifyWireFaultByProbe();
 			turns = turns.map((turn) => (turn.id === id ? { ...turn, rendering, provenance } : turn));
 		} catch (error) {
 			// A core that cannot be reached is DEGRADED and STATED, never an
@@ -272,6 +288,86 @@
 		}
 	}
 
+	// ── M3-b: the fault banner (exception chrome, plan 21 §1) ─────────────
+	//
+	// The renderer cannot name a wire failure — the browser engine reports a
+	// blocked response, a rejected bearer and a dead port identically — so
+	// classification asks the core ONCE, at the fault moment (`diagnoseWire`'s
+	// vocabulary, kept local because client.ts's copy is not exported; the
+	// list is the six `WireFault` literals and drift is impossible without
+	// the type changing too). One bounded probe per fault event: no polling,
+	// no interval, no watchdog (plan 22 R2).
+	const NAMED_FAULTS: readonly WireFault[] = [
+		'unreachable',
+		'origin_not_allowed',
+		'no_credential',
+		'unauthorized',
+		'unexpected'
+	];
+
+	async function classifyWireFaultByProbe(): Promise<void> {
+		try {
+			const { invoke } = await import('@tauri-apps/api/core');
+			const dto = await invoke<{ kind: string }>('kernel_wire_status');
+			const named = dto?.kind as WireFault;
+			classifyWireFault(NAMED_FAULTS.includes(named) ? named : 'unknown');
+		} catch {
+			// No core to ask (the PWA posture): the honest answer is `unknown`,
+			// whose sentence names the situation without inventing a cause.
+			classifyWireFault('unknown');
+		}
+	}
+
+	const bannerFault = $derived(currentWireFault());
+
+	function inTauri(): boolean {
+		return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+	}
+
+	let restarting = $state(false);
+
+	/**
+	 * Restart re-runs the EXISTING gate flow — `kernel_status`, then
+	 * `kernel_start` from `notRunning` only, then the gate's own health read.
+	 * The consent marker and the data root already exist from the first run,
+	 * so there is no second consent dialog; a probe that answers `ready` is
+	 * the one thing that dismisses the banner, and any other outcome leaves
+	 * the fault on the screen because it is still the live fact.
+	 */
+	async function restartKernel(): Promise<void> {
+		if (restarting) return;
+		restarting = true;
+		try {
+			const { invoke } = await import('@tauri-apps/api/core');
+			const status = await invoke<{ state: string }>('kernel_status');
+			if (status.state === 'notRunning') {
+				await invoke('kernel_start', { consent: true });
+			}
+			const probe = await invoke<{ state: string }>('kernel_status');
+			if (probe.state === 'ready') clearWireFault();
+		} catch {
+			// The banner stays: a restart that could not even ask the core has
+			// not changed the fact the banner names.
+		} finally {
+			restarting = false;
+		}
+	}
+
+	// ── M3-b: the collapsed evidence disclosure (plan 21 §3) ──────────────
+	//
+	// Collapsed is the DEFAULT (absent key = closed); the affordances render
+	// INSIDE the opened disclosure, and `receipt` is untouched — it reads the
+	// provenance block, never the DOM's expansion state.
+	let evidenceOpen = $state<Record<number, boolean>>({});
+
+	function evidenceIsOpen(turnId: number): boolean {
+		return evidenceOpen[turnId] ?? false;
+	}
+
+	function toggleEvidence(turnId: number): void {
+		evidenceOpen = { ...evidenceOpen, [turnId]: !evidenceIsOpen(turnId) };
+	}
+
 	function onKeydown(event: KeyboardEvent): void {
 		// ⌘⏎ sends; a bare Enter inserts a newline. Plan 02 §3's gesture set, and
 		// the one a user has to be able to discover — so it is on the element's
@@ -285,6 +381,54 @@
 
 <div class="mx-auto grid w-full max-w-2xl gap-4" data-testid="chat-surface">
 	<h1 class="sr-only">{m['chat.title']()}</h1>
+
+	<!-- M3-b — the empty state IS the first paint (plan 21 §1/§3.8): a
+	     one-line greeting and three chips that ACT. The chips are the
+	     onboarding — each does the thing it names, none explains a page —
+	     and the first turn replaces them, because a transcript with chips
+	     below it is clutter. The composer keeps its mount focus: the chips
+	     render beside it, they never take focus for themselves. -->
+	{#if turns.length === 0}
+		<div class="grid gap-3 pt-6" data-testid="chat-empty">
+			<p class="text-base font-medium">{m['chat.empty.greeting']()}</p>
+			<div class="flex flex-wrap gap-2">
+				<Button
+					type="button"
+					variant="outline"
+					size="sm"
+					data-testid="chat-empty-ask"
+					onclick={() => {
+						// The composer's id — the same identity its label binds
+						// to — not `composerEl`: the component-bound ref is the
+						// mount effect's channel and is not populated under
+						// jsdom, and a chip whose act only works where the ref
+						// binds would be unpinnable where pins run.
+						document.getElementById('chat-composer')?.focus();
+					}}
+				>
+					{m['chat.empty.chip.ask']()}
+				</Button>
+				<Button
+					type="button"
+					variant="outline"
+					size="sm"
+					data-testid="chat-empty-trace"
+					onclick={() => goto(resolve('/recall'))}
+				>
+					{m['chat.empty.chip.trace']()}
+				</Button>
+				<Button
+					type="button"
+					variant="outline"
+					size="sm"
+					data-testid="chat-empty-review"
+					onclick={() => goto(resolve('/review'))}
+				>
+					{m['chat.empty.chip.review']()}
+				</Button>
+			</div>
+		</div>
+	{/if}
 
 	<!-- The transcript. `aria-live="polite"` so a streaming or slow turn
 	     announces without interrupting (Plan 02 §5). -->
@@ -320,7 +464,33 @@
 								· {m['chat.confidence.unknown']()}
 							{/if}
 						</p>
-						<ul class="grid gap-3">
+						<!-- M3-b — the verdict line is the answer; the citations
+						     are EVIDENCE, collapsed by default and opened on
+						     demand (plan 21 §3). A real disclosure control: in
+						     the tab order, operable by keyboard, carrying
+						     aria-expanded and aria-controls. The affordances
+						     render only inside the OPENED list, so the II-7g
+						     pins keep driving the opened state they always
+						     drove. -->
+						<Button
+							type="button"
+							variant="ghost"
+							size="sm"
+							class="w-fit"
+							data-testid="chat-evidence"
+							aria-expanded={evidenceIsOpen(turn.id)}
+							aria-controls="chat-evidence-list-{turn.id}"
+							onclick={() => toggleEvidence(turn.id)}
+						>
+							{#if evidenceIsOpen(turn.id)}
+								{m['chat.evidence.collapse']()}
+							{:else}
+								{m['chat.evidence.count']({ count: turn.provenance.count })}
+								<span class="sr-only"> — {m['chat.evidence.expand']()}</span>
+							{/if}
+						</Button>
+						{#if evidenceIsOpen(turn.id)}
+							<ul class="grid gap-3" id="chat-evidence-list-{turn.id}">
 							{#each turn.provenance.citations as citation (citation.id)}
 								{@const action = actionFor(citation.id)}
 								<li class="grid gap-1 text-sm" data-testid="chat-citation">
@@ -472,8 +642,9 @@
 										</p>
 									{/if}
 								</li>
-							{/each}
-						</ul>
+								{/each}
+							</ul>
+						{/if}
 					{/if}
 				{:else if turn.rendering.kind === 'absent'}
 					<!-- An ABSENCE: the search ran and the store holds nothing. -->
@@ -508,6 +679,35 @@
 			</article>
 		{/each}
 	</div>
+
+	<!-- M3-b — the fault banner: the ONE interrupt plan 21 §1 allows. It
+	     renders only when a wire fault was CLASSIFIED (silent while green is
+	     structural — no node, not a hidden one), it names the fault's own
+	     sentence via `wireFaultMessage` (never a generic "something went
+	     wrong"), and its Restart re-runs the existing gate flow. A refusal
+	     never reaches here: it is the kernel speaking, not the wire failing. -->
+	{#if bannerFault !== null}
+		<div
+			role="alert"
+			data-testid="chat-fault-banner"
+			data-fault={bannerFault}
+			class="grid gap-2 rounded-lg border border-destructive/60 p-3"
+		>
+			<p class="text-sm">{wireFaultMessage(bannerFault)}</p>
+			{#if inTauri()}
+				<Button
+					type="button"
+					size="sm"
+					class="w-fit"
+					data-testid="chat-fault-restart"
+					disabled={restarting}
+					onclick={() => void restartKernel()}
+				>
+					{restarting ? m['chat.status.restarting']() : m['chat.status.restart']()}
+				</Button>
+			{/if}
+		</div>
+	{/if}
 
 	<!-- The composer. Focused on mount, so the app opens ready to type. -->
 	<form

@@ -10,6 +10,15 @@ vi.mock('$app/state', () => ({
 	page: { url: new URL('http://localhost/'), params: {} }
 }));
 
+
+// M3-b: AppShell reads the review queue on mount (the badge's wire). The
+// host import below is STATIC, so the typed client would capture the real
+// `fetch` before any stub could land — the queue read is mocked at the
+// module boundary instead, answering an EMPTY queue: this file's subject is
+// the palette/token flows, and an absent badge is the neutral chrome state.
+vi.mock('#lib/queue/client.js', () => ({
+	fetchPendingQueue: vi.fn(async () => ({ kind: 'ok', rows: [] }))
+}));
 import { goto } from '$app/navigation';
 import AppShellHost from './AppShellHost.svelte';
 

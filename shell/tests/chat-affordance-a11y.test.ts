@@ -123,6 +123,14 @@ async function renderAnswered(): Promise<void> {
 		expect(turns.length).toBeGreaterThan(0);
 		expect(turns[turns.length - 1]!.getAttribute('data-rendering')).toBe('answered');
 	});
+
+	// M3-b: evidence collapses by default, and these pins drive the OPENED
+	// state they have always driven — the affordances render inside the
+	// disclosure, so it is opened here, in the setup, not per arm.
+	await userEvent.click(screen.getByTestId('chat-evidence'));
+	await waitFor(() =>
+		expect(screen.queryAllByTestId('chat-citation').length).toBeGreaterThan(0)
+	);
 }
 
 /** Runs the same axe profile the `/chat` arm uses. Every state below is

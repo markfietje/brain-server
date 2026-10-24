@@ -25,6 +25,8 @@
 	import { Label } from '#lib/components/ui/label/index.js';
 	import { DEFAULT_BASE, apiBase, setApiBase } from '#lib/api/client.js';
 	import { refreshBearer } from '#lib/api/bootstrap.js';
+	import { fetchPendingQueue } from '#lib/queue/client.js';
+	import { classifyWireFault, clearWireFault } from '#lib/chat/wire-status.svelte.js';
 
 	let paletteOpen = $state(false);
 	let settingsOpen = $state(false);
@@ -50,9 +52,10 @@
 		{ route: '/', key: 'nav.chat' as const, Icon: MessageCircleIcon },
 		{ route: '/decisions', key: 'nav.decisions' as const, Icon: ListTreeIcon },
 		{ route: '/recall', key: 'nav.recall' as const, Icon: HistoryIcon },
-		// The review queue — the operator's decision surface. NO badge yet:
-		// that needs the queue-count wire (M3-b). Until then /review is
-		// reachable here and by URL — by design, recorded, not forgotten.
+		// The review queue — the operator's decision surface. M3-b: the
+		// EXCEPTION control over it lives in the header (the badge below),
+		// absent while the queue is empty; this palette entry stays for the
+		// keyboard path that does not depend on the queue's state.
 		{ route: '/review', key: 'nav.review' as const, Icon: ClipboardCheckIcon }
 	] as const;
 
@@ -83,6 +86,45 @@
 		paletteOpen = false;
 		run();
 	}
+
+	// ── M3-b: the review badge (the ONE exception control) ────────────────
+	//
+	// The badge's wire is the queue read ITSELF (plan 22 R4, corrected by
+	// measurement: the proposal path publishes NO event, so there is nothing
+	// to subscribe to). It refreshes at the GLANCE moments — app mount,
+	// window focus, palette open — three triggers, no loop: a polling
+	// interval would tax every idle second for a fact that changes rarely.
+	// The read is bounded by `QUEUE_LIMITS`; the badge needs EXISTENCE, and
+	// the count in its label is the count the read happened to return.
+	//
+	// A failed read renders NOTHING (an unreadable queue is not a non-empty
+	// queue), but an OFFLINE read is a wire-level fault — the one fact that
+	// feeds the home page's banner, exactly as a turn's transport fault does.
+	let queueCount = $state<number | null>(null);
+
+	async function refreshQueue(): Promise<void> {
+		const read = await fetchPendingQueue();
+		if (read.kind === 'ok') {
+			// The kernel answered — the wire is healthy, so a stale banner
+			// over a live wire comes down (silence while green).
+			clearWireFault();
+			queueCount = read.rows.length;
+			return;
+		}
+		// Unknown means absent: the badge is chrome, not a fault surface.
+		queueCount = null;
+		if (read.kind === 'offline') classifyWireFault(read.fault);
+		// A refusal means the kernel SPOKE — never a fault (the taxonomy's
+		// law), and never a badge either: the queue stays unread, not "empty".
+	}
+
+	$effect(() => {
+		void refreshQueue();
+	});
+
+	$effect(() => {
+		if (paletteOpen) void refreshQueue();
+	});
 
 	// ── settings: session locale ─────────────────────────────────────────
 	const LOCALES = [
@@ -289,12 +331,32 @@
 	}
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onfocus={() => void refreshQueue()} />
 
 <div data-slot="app-shell" class="mx-auto w-full max-w-3xl px-5 pb-16">
 	<header class="flex items-center justify-between gap-3 pt-4" data-tauri-drag-region>
 		<span class="text-sm font-semibold tracking-tight" data-tauri-drag-region>StewardOS</span>
 		<div class="flex items-center gap-1">
+			<!-- M3-b — the review badge: the header's ONE exception control,
+			     rendered ONLY while the pending queue holds rows and absent
+			     the rest of the time (plan 21 §1: an empty queue costs the UI
+			     nothing). The copy is five locales deep; `data-queue` is the
+			     stable state token (II-7g), and the count rides the
+			     accessible name. -->
+			{#if queueCount !== null && queueCount > 0}
+				<Button
+					variant="ghost"
+					size="sm"
+					class="gap-1.5"
+					data-testid="review-badge"
+					data-queue="nonempty"
+					aria-label={m['review.badge']({ count: queueCount })}
+					onclick={() => goto(resolve('/review'))}
+				>
+					<ClipboardCheckIcon aria-hidden="true" />
+					<span aria-hidden="true">{queueCount}</span>
+				</Button>
+			{/if}
 			<Button
 				variant="ghost"
 				size="icon-sm"
