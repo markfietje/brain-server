@@ -30,8 +30,8 @@
  * ## THE LOCAL-STATE LAW
  *
  * sessionStorage ONLY — tab-session-local. Never localStorage, never a cookie,
- * never the kernel. This is the wizard's law (`src/lib/wizard/session.ts`), and
- * the reason is the same: progress dies with the tab session.
+ * never the kernel: progress dies with the tab session. (The law was first
+ * written for the wizard's session module, retired in M3-a; the law stands.)
  */
 
 import { stripInvisible } from '../sanitize.js';

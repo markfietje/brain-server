@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, expect, test, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/svelte';
-import { catalogPayload, shellRoot } from './fixtures';
+import { shellRoot } from './fixtures';
 import { CENSUS_ROUTES, type CensusRoute } from './route-census';
 
 /**
@@ -12,14 +12,16 @@ import { CENSUS_ROUTES, type CensusRoute } from './route-census';
  *
  * Gate 5's claim ("keyboard-complete, axe AA clean") had five per-view arms —
  * renderer, chat-surface, chat-affordance-a11y, models-view (six states),
- * decision-view (four states) — and four census routes with NO arm at all:
- * `/overview`, `/search`, `/recall`, `/recall/[trace_id]/trace`. The plan said
- * "the other eight routes have never been swept"; measured against the tree,
- * four carry no arm, not eight. This file is the BREADTH artifact: every one
- * of the nine census routes, one sweep each. It does not replace the per-view
- * arms — those carry state DEPTH (models: list/403/detail/evaluation/proposal/
- * conflict; decisions: list/error/detail/error) that a single default render
- * does not. Breadth and depth are different claims.
+ * decision-view (four states) — and four census routes with NO arm at all.
+ * This file is the BREADTH artifact: every census route, one sweep each. It
+ * does not replace the per-view arms — those carry state DEPTH (decisions:
+ * list/error/detail/error; the chat: every rendering kind) that a single
+ * default render does not. Breadth and depth are different claims.
+ *
+ * M3-a (plan `21_CHAT_FIRST_IA`): the census is six routes — the chat was
+ * promoted to `/`, and the wizard, `/search`, `/overview` and `/models`
+ * retired, recipes and all. The home recipe waits for the CHAT render proof
+ * (the composer), never a wizard render.
  *
  * ## The anti-vacuity law (TRAP 5)
  *
@@ -50,13 +52,13 @@ import { CENSUS_ROUTES, type CensusRoute } from './route-census';
  * global's IDENTITY never changes: one `fetchMock` for the whole file, and
  * each test swaps the responder UNDERNEATH it. `$app/state` is mocked once
  * with a mutable holder carrying both `params` (decisions/[id], trace) and
- * `url` (models) — per test, mutate the holder, never re-register the mock.
+ * `url` — per test, mutate the holder, never re-register the mock.
  *
  * ## The axe profile (TRAP 6)
  *
  * `axe.run(document.body, { runOnly: { type: 'tag', values: ['wcag2a',
- * 'wcag2aa'] } })` and `violations` `toEqual([])` — the exact profile the five
- * existing arms use. Under jsdom `color-contrast` reports `incomplete` (no
+ * 'wcag2aa'] } })` and `violations` `toEqual([])` — the exact profile the
+ * per-view arms use. Under jsdom `color-contrast` reports `incomplete` (no
  * layout), never a violation, so a non-empty violations list is a REAL
  * structural finding: fix the surface or record a named exception inline.
  *
@@ -125,12 +127,6 @@ function fixture(name: string): Record<string, unknown> {
 	return parsed as Record<string, unknown>;
 }
 
-function fixtureList(): Record<string, unknown> {
-	const list = fixture('model-registry.json')['list'];
-	if (typeof list !== 'object' || list === null) throw new Error('fixture list must be an object');
-	return list as Record<string, unknown>;
-}
-
 function decisionListBody(): Record<string, unknown> {
 	return {
 		rows: [
@@ -168,59 +164,16 @@ interface RouteRecipe {
  * the census must fail here, visibly, with its own name.
  */
 const RECIPES: Partial<Record<CensusRoute, RouteRecipe>> = {
+	// The PROMOTED home route: the conversation. No wire call at rest — the
+	// page renders composer + empty transcript and waits; the IPC seam is
+	// stubbed loud (an accidental call is a finding), exactly as the old
+	// `/chat` recipe did before M3-a moved the file.
 	'/': {
 		prepare: () => {
-			responder = async () => jsonResponse(catalogPayload());
+			responder = async () => jsonResponse({ hits: [], decision: 'ok' });
 		},
 		load: () => import('../src/routes/+page.svelte'),
-		proof: { kind: 'text', value: 'Choose a form' }
-	},
-	'/overview': {
-		prepare: () => {
-			responder = async (url) => {
-				const path = new URL(url).pathname;
-				if (path === '/health') return jsonResponse({ status: 'ok', version: '1.28.92' });
-				if (path === '/version') {
-					return new Response('1.28.92', {
-						status: 200,
-						headers: { 'content-type': 'text/plain' }
-					});
-				}
-				if (path === '/stats') {
-					return jsonResponse({
-						count: 42,
-						embeddings: 42,
-						entities: 7,
-						relationships: 11,
-						model: 'test-embed-model',
-						version: '1.28.92'
-					});
-				}
-				return new Response('not found', { status: 404 });
-			};
-		},
-		load: () => import('../src/routes/overview/+page.svelte'),
-		proof: { kind: 'testid', value: 'stat-health' }
-	},
-	'/search': {
-		prepare: () => {
-			serveJsonByPath({
-				'/search': {
-					success: true,
-					results: [
-						{
-							id: 3,
-							similarity: 0.9137,
-							title: 'Lead-safe wiring note',
-							snippet: 'the bench wiring is lead-safe and labelled',
-							source: 'vector'
-						}
-					]
-				}
-			});
-		},
-		load: () => import('../src/routes/search/+page.svelte'),
-		proof: { kind: 'testid', value: 'search-input' }
+		proof: { kind: 'testid', value: 'chat-composer' }
 	},
 	'/recall': {
 		prepare: () => {
@@ -277,14 +230,6 @@ const RECIPES: Partial<Record<CensusRoute, RouteRecipe>> = {
 		load: () => import('../src/routes/decisions/[id]/+page.svelte'),
 		proof: { kind: 'testid', value: 'decision-detail-ready' }
 	},
-	'/models': {
-		prepare: () => {
-			pageState.url = new URL('http://127.0.0.1/models');
-			serveJsonByPath({ '/workflow/model-registry': fixtureList() });
-		},
-		load: () => import('../src/routes/models/+page.svelte'),
-		proof: { kind: 'testid', value: 'models-list-row' }
-	},
 	'/review': {
 		prepare: () => {
 			responder = async (url) => {
@@ -321,13 +266,6 @@ const RECIPES: Partial<Record<CensusRoute, RouteRecipe>> = {
 		},
 		load: () => import('../src/routes/review/+page.svelte'),
 		proof: { kind: 'testid', value: 'review-list-row' }
-	},
-	'/chat': {
-		prepare: () => {
-			responder = async () => jsonResponse({ hits: [], decision: 'ok' });
-		},
-		load: () => import('../src/routes/chat/+page.svelte'),
-		proof: { kind: 'testid', value: 'chat-composer' }
 	}
 };
 
@@ -478,16 +416,16 @@ for (const route of CENSUS_ROUTES) {
 }
 
 /**
- * The label walk's own anti-vacuity arm. Twelve controls across five routes,
- * measured 2026-10-19. Four routes legitimately carry none (`/`, `/overview`,
- * `/models` at rest, and the trace view) — a floor on the TOTAL, not on each
- * route, is the honest shape: a per-route floor would have to invent a control
- * on surfaces that have none.
+ * The label walk's own anti-vacuity arm. The floor is a TOTAL, not per route:
+ * several census routes legitimately carry no text-entry control at rest (the
+ * trace view, the review queue) — a per-route floor would have to invent a
+ * control on surfaces that have none. The number is a MEASUREMENT, re-measured
+ * whenever the census or a recipe moves.
  */
 test('the_label_walk_measured_a_real_population_not_an_empty_one', () => {
-	// Every census route must have RECORDED a count — including the four that
+	// Every census route must have RECORDED a count — including those that
 	// legitimately recorded zero. A missing key means a sweep did not run, and
-	// a total over eight routes is not the measurement this floor is set on.
+	// a total over fewer routes is not the measurement this floor is set on.
 	expect(
 		[...measuredControls.keys()].sort(),
 		'every census route must record what its label walk saw, zero included — a missing key is a sweep that did not run'
@@ -495,8 +433,11 @@ test('the_label_walk_measured_a_real_population_not_an_empty_one', () => {
 	const total = [...measuredControls.values()].reduce((sum, count) => sum + count, 0);
 	expect(
 		total,
-		`the label walk saw ${total} control(s) across ${measuredControls.size} route(s). It measured 12 on 2026-10-19; a walk that finds nothing passes every route vacuously, which is the failure this floor exists for`
-	).toBeGreaterThanOrEqual(12);
+		`the label walk saw ${total} control(s) across ${measuredControls.size} route(s). It measured ` +
+			'12 on 2026-10-19 and 11 on 2026-10-24 (M3-a: the search input and the replay-form fields ' +
+			'retire with their routes; the chat composer arrives with the home route); a walk that finds ' +
+			'nothing passes every route vacuously, which is the failure this floor exists for'
+	).toBeGreaterThanOrEqual(11);
 });
 
 test('the_sweep_route_set_equals_the_census_route_set_in_both_directions', () => {

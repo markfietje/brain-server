@@ -18,7 +18,7 @@ import { shellRoot } from './fixtures';
  * `data-rendering` token instead, which is what the components bind.
  */
 
-const routeSource = readFileSync(join(shellRoot, 'src/routes/chat/+page.svelte'), 'utf8');
+const routeSource = readFileSync(join(shellRoot, 'src/routes/+page.svelte'), 'utf8');
 
 /** Strips comment-only lines — a comment does not execute. */
 function codeOf(source: string): string {
@@ -72,7 +72,7 @@ vi.stubGlobal(
 	vi.fn(async () => new Response(JSON.stringify({ hits: [], decision: 'ok' }), { status: 200 }))
 );
 
-const chatModule = await import('../src/routes/chat/+page.svelte');
+const chatModule = await import('../src/routes/+page.svelte');
 
 /**
  * What `render` hands back, plus the typed scope each assertion reads through.

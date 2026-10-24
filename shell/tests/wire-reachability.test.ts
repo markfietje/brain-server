@@ -61,15 +61,19 @@ test('the_first_wire_read_waits_for_the_credential', async () => {
 		'fetch',
 		vi.fn(async (request: Request) => {
 			sent.push(request.headers.get('Authorization') ?? '');
-			return new Response(JSON.stringify({ count: 0, packs: [] }), {
+			return new Response(JSON.stringify([]), {
 				status: 200,
 				headers: { 'content-type': 'application/json' }
 			});
 		})
 	);
 
-	const { fetchWizardPacks } = await import('../src/lib/api/client');
-	const pending = fetchWizardPacks();
+	// M3-a: the wizard read this test drove retired with the wizard; the
+	// subject here is the CREDENTIAL GATE, and the review queue's typed read
+	// (`fetchPendingQueue` → GET /proposals, the one a live route owns) is
+	// the same shape: one typed GET through the shared client.
+	const { fetchPendingQueue } = await import('../src/lib/queue/client');
+	const pending = fetchPendingQueue();
 
 	// The credential has NOT resolved yet. The read must still be waiting:
 	// before the fix, this request went out with no bearer at all.
@@ -77,9 +81,9 @@ test('the_first_wire_read_waits_for_the_credential', async () => {
 	expect(sent, 'the read must not go out before the credential resolves').toHaveLength(0);
 
 	credential.release?.('the-bearer');
-	const data = await pending;
+	const read = await pending;
 	expect(sent, 'the read must carry the credential').toEqual(['Bearer the-bearer']);
-	expect(data.count).toBe(0);
+	expect(read, 'an empty queue reads as the kernel saying so').toEqual({ kind: 'ok', rows: [] });
 });
 
 test('a_wire_failure_names_its_fault', async () => {
@@ -95,23 +99,24 @@ test('a_wire_failure_names_its_fault', async () => {
 		})
 	);
 
-	const { fetchWizardPacks } = await import('../src/lib/api/client');
-	const pending = fetchWizardPacks();
+	const { fetchPendingQueue } = await import('../src/lib/queue/client');
+	const pending = fetchPendingQueue();
 	// The credential resolves (the read waits for it — that is the fix), and
-	// then the wire fails.
+	// then the wire fails. The queue read NAMES the fault in its result —
+	// the surface renders the refusal, never an empty queue.
 	await new Promise((resolve) => setTimeout(resolve, 20));
 	credential.release?.('the-bearer');
-	await expect(pending).rejects.toMatchObject({ fault: 'origin_not_allowed' });
+	await expect(pending).resolves.toMatchObject({ kind: 'refused', fault: 'origin_not_allowed' });
 
 	// And a DIFFERENT fault is a different name — the message is not one
 	// sentence for every failure.
 	credential.kind = 'unauthorized';
 	vi.resetModules();
-	const again = await import('../src/lib/api/client');
-	const second = again.fetchWizardPacks();
+	const again = await import('../src/lib/queue/client');
+	const second = again.fetchPendingQueue();
 	await new Promise((resolve) => setTimeout(resolve, 20));
 	credential.release?.('the-bearer');
-	await expect(second).rejects.toMatchObject({ fault: 'unauthorized' });
+	await expect(second).resolves.toMatchObject({ kind: 'refused', fault: 'unauthorized' });
 });
 
 test('every_named_fault_has_its_own_message', async () => {

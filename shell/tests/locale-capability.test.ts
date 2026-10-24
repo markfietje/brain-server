@@ -44,19 +44,15 @@ function catalog(locale: string): Record<string, string> {
  * drifts quietly as the catalog grows.
  */
 const GERMAN_LOANWORDS = new Set([
-	'overview.version',
-	'overview.stats.count',
-	'overview.stats.embeddings',
+	'nav.chat',
 	'decisions.list.pipeline',
 	'decisions.detail.model_version',
 	'decisions.detail.limit',
 	'decisions.detail.leg',
-	'decisions.detail.kernel',
-	'models.identity.id',
-	'models.identity.version',
-	'models.identity.name',
-	'models.kind.reranker'
+	'decisions.detail.kernel'
 ]);
+// (M3-a: the overview.*/models.* entries retired with their keys — a
+// loanword entry for a key no catalog carries would be dead cover.)
 
 describe('the de locale decision', () => {
 	test('de_is_a_STATED_retrieval_only_value_and_not_a_default', () => {

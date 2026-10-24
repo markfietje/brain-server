@@ -202,16 +202,3 @@ export function resetApiBase(): void {
 	const base = resolveBase();
 	if (base !== activeBase) rebuildClient(base);
 }
-
-/** One typed catalog read — the renderer's entire kernel surface this
- * round (D3: no intake submission, no telemetry write, no answer RPC). */
-export async function fetchWizardPacks(): Promise<{
-	packs: Array<{ id: string; question_count: number; pack: unknown }>;
-	count: number;
-}> {
-	const { data, error } = await client.GET('/workflow/wizard/packs');
-	if (error !== undefined || data === undefined) {
-		throw new Error('wire_error');
-	}
-	return data;
-}

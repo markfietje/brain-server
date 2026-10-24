@@ -1,22 +1,21 @@
 <script lang="ts">
-	// The app chrome (M2-S1): top bar + nav over the child routes, the ⌘K
-	// command palette (in-page; NO OS global shortcut — plan §7.4), and the
-	// session settings panel (kernel-origin override + locale). The origin
-	// override is LOOPBACK-ENFORCED client-side (client.ts refuses anything
-	// else — fail-safe, never fail-open) and persists SESSION-LOCAL only.
-	// Nav marks the active route with aria-current — never color alone.
+	// The app chrome (M3-a, plan `21_CHAT_FIRST_IA` — chat-first IA): a top
+	// bar with NO nav — the brand mark, the ⌘K command palette button and the
+	// settings gear are the ENTIRE permanent chrome — over the child routes,
+	// the in-page palette (NO OS global shortcut — plan §7.4), and the session
+	// settings panel (kernel-origin override + locale). The origin override is
+	// LOOPBACK-ENFORCED client-side (client.ts refuses anything else —
+	// fail-safe, never fail-open) and persists SESSION-LOCAL only.
+	// Chrome appears by exception, never by default: the conversation is the
+	// window; every other surface is the palette, a dialog, or a URL.
 	import { m } from '$paraglide/messages.js';
 	import { assertIsLocale, setLocale } from '$paraglide/runtime.js';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { page } from '$app/state';
-	import HouseIcon from '@lucide/svelte/icons/house';
-	import ClipboardListIcon from '@lucide/svelte/icons/clipboard-list';
 	import ClipboardCheckIcon from '@lucide/svelte/icons/clipboard-check';
-	import SearchIcon from '@lucide/svelte/icons/search';
 	import ListTreeIcon from '@lucide/svelte/icons/list-tree';
-	import CpuIcon from '@lucide/svelte/icons/cpu';
 	import HistoryIcon from '@lucide/svelte/icons/history';
+	import MessageCircleIcon from '@lucide/svelte/icons/message-circle';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import CommandIcon from '@lucide/svelte/icons/command';
 	import { Button } from '#lib/components/ui/button/index.js';
@@ -27,28 +26,10 @@
 	import { DEFAULT_BASE, apiBase, setApiBase } from '#lib/api/client.js';
 	import { refreshBearer } from '#lib/api/bootstrap.js';
 
-	const NAV = [
-		{ route: '/overview', key: 'nav.overview', Icon: HouseIcon },
-		{ route: '/', key: 'nav.wizard', Icon: ClipboardListIcon },
-		{ route: '/search', key: 'nav.search', Icon: SearchIcon },
-		{ route: '/decisions', key: 'nav.decisions', Icon: ListTreeIcon },
-		{ route: '/models', key: 'nav.models', Icon: CpuIcon },
-		{ route: '/recall', key: 'nav.recall', Icon: HistoryIcon },
-		// III-6: the review queue — the operator's decision surface, and the
-		// one surface the decommissioned desktop app had and the shell did
-		// not. It is in the nav so it is REACHABLE, not typed.
-		{ route: '/review', key: 'nav.review', Icon: ClipboardCheckIcon }
-	] as const;
-
 	let paletteOpen = $state(false);
 	let settingsOpen = $state(false);
 
 	let { children } = $props();
-
-	function isCurrent(href: string): boolean {
-		const path = page.url.pathname;
-		return href === '/' ? path === '/' : path.startsWith(href);
-	}
 
 	function onKeydown(event: KeyboardEvent): void {
 		if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
@@ -57,12 +38,28 @@
 		}
 	}
 
-	// The palette's two groups, derived so a NAV change is reflected in the
-	// command list without a second source of truth.
+	/**
+	 * The palette's navigate group, EXPLICIT — not derived from the census.
+	 * The census is the census, the palette is the palette: the two param'd
+	 * detail routes (`/decisions/[id]`, `/recall/[trace_id]/trace`) are opened
+	 * from their list pages and citations — a palette entry to a route whose
+	 * id the palette does not have is a broken link, not navigation. The chat
+	 * home is listed so every other surface is one ⌘K from getting back.
+	 */
+	const PALETTE_NAVIGATE = [
+		{ route: '/', key: 'nav.chat' as const, Icon: MessageCircleIcon },
+		{ route: '/decisions', key: 'nav.decisions' as const, Icon: ListTreeIcon },
+		{ route: '/recall', key: 'nav.recall' as const, Icon: HistoryIcon },
+		// The review queue — the operator's decision surface. NO badge yet:
+		// that needs the queue-count wire (M3-b). Until then /review is
+		// reachable here and by URL — by design, recorded, not forgotten.
+		{ route: '/review', key: 'nav.review' as const, Icon: ClipboardCheckIcon }
+	] as const;
+
 	const PALETTE_GROUPS = $derived([
 		{
 			heading: m["palette.navigate"](),
-			items: NAV.map((item) => ({
+			items: PALETTE_NAVIGATE.map((item) => ({
 				value: item.route,
 				label: m[item.key](),
 				Icon: item.Icon,
@@ -297,19 +294,6 @@
 <div data-slot="app-shell" class="mx-auto w-full max-w-3xl px-5 pb-16">
 	<header class="flex items-center justify-between gap-3 pt-4" data-tauri-drag-region>
 		<span class="text-sm font-semibold tracking-tight" data-tauri-drag-region>StewardOS</span>
-		<nav aria-label={m["nav.label"]()} class="flex items-center gap-1">
-			{#each NAV as item (item.route)}
-				<a
-					href={resolve(item.route)}
-					aria-current={isCurrent(resolve(item.route)) ? 'page' : undefined}
-					class="rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors hover:bg-muted aria-current-page:text-brand aria-current-page:font-semibold"
-				>
-					<item.Icon class="mr-1 inline size-4 align-[-2px]" aria-hidden="true" />
-					<span class="hidden sm:inline">{m[item.key]()}</span>
-					<span class="sr-only sm:hidden">{m[item.key]()}</span>
-				</a>
-			{/each}
-		</nav>
 		<div class="flex items-center gap-1">
 			<Button
 				variant="ghost"

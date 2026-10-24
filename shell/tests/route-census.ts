@@ -18,24 +18,23 @@
  * exact-set assertion and the sweep's coverage assertion until both artifacts
  * are given the route — growth is fail-closed on both.
  */
-export const ROUTE_FLOOR = 10;
+export const ROUTE_FLOOR = 6;
 
 /**
- * The measured census, re-measured by III-6 (2026-10-21): the shell gained
- * `/review` — the human review queue, the operator's decision surface, which
- * the Dioxus app had and the shell did not.
+ * The measured census, re-measured by M3-a (2026-10-22, plan
+ * `21_CHAT_FIRST_IA`): the chat is the app. `/chat` is PROMOTED to `/` and
+ * the wizard that served `/` is dropped with its lib; `/search`, `/overview`
+ * and `/models` retire as routes (a chat turn IS the recall; overview folds
+ * into the chat home state; models is an ops concern behind Settings).
+ * Six routes: the conversation and the surfaces a conversation cites.
  */
 export const CENSUS_ROUTES = [
 	'/',
-	'/chat',
 	'/decisions',
 	'/decisions/[id]',
-	'/models',
-	'/overview',
 	'/recall',
 	'/recall/[trace_id]/trace',
-	'/review',
-	'/search'
+	'/review'
 ] as const;
 
 export type CensusRoute = (typeof CENSUS_ROUTES)[number];

@@ -7,14 +7,25 @@ import {
 	recordAbandon,
 	exportTelemetry
 } from '../src/lib/telemetry/buffer';
-import { saveProgress, restoreProgress, clearProgress } from '../src/lib/wizard/session';
 
+/**
+ * M3-a (plan `21_CHAT_FIRST_IA`): the wizard retired, and with it the
+ * wizard-session describe below (it tested `lib/wizard/session.ts`, deleted
+ * with the lib). The TELEMETRY half stays — the buffer module stays — with
+ * the wizard's name dropped from the two tests that described the buffer's
+ * own laws, not the wizard's.
+ *
+ * NOT SETTLED HERE, recorded: with the wizard page gone the buffer has no
+ * production caller. It is kept because this round's scope is the IA, not a
+ * sweep for orphaned lib modules; its retirement (or a caller) is a later
+ * round's decision, made on its own measurement.
+ */
 describe('D8 telemetry — ids and coarse numbers ONLY', () => {
 	beforeEach(() => {
 		beginFlow();
 	});
 
-	test('wizard_dropoff_field_is_recorded_anonymized', () => {
+	test('dropoff_field_is_recorded_anonymized', () => {
 		recordTouch('q_class');
 		recordAnswer('q_class');
 		recordTouch('q_priority');
@@ -38,7 +49,7 @@ describe('D8 telemetry — ids and coarse numbers ONLY', () => {
 		expect(t.msToFirstAction as number).toBeLessThan(60_000);
 	});
 
-	test('wizard_error_recurrence_is_measured_not_opinion', () => {
+	test('error_recurrence_is_measured_not_opinion', () => {
 		recordError('q_class');
 		recordError('q_class');
 		recordError('q_known');
@@ -53,40 +64,5 @@ describe('D8 telemetry — ids and coarse numbers ONLY', () => {
 		recordAnswer('q_class');
 		const t = exportTelemetry();
 		expect(t.dropoffQuestionId).toBeNull();
-	});
-});
-
-describe('session progress (D1 resume)', () => {
-	test('wizard_resume_restores_saved_progress', () => {
-		const answers = { q_class: 'billing', q_priority: 1 };
-		saveProgress(
-			{ pack: 'support-ticket' } as Parameters<typeof saveProgress>[0],
-			'q_known',
-			answers
-		);
-		const restored = restoreProgress('support-ticket');
-		expect(restored).not.toBeNull();
-		expect(restored?.currentQuestionId).toBe('q_known');
-		expect(restored?.answers).toEqual(answers);
-
-		clearProgress('support-ticket');
-		expect(restoreProgress('support-ticket')).toBeNull();
-	});
-
-	test('a saved blob for ANOTHER pack never restores (the key is the pack id)', () => {
-		saveProgress({ pack: 'tele-health' } as Parameters<typeof saveProgress>[0], 'q_modality', {});
-		expect(restoreProgress('support-ticket')).toBeNull();
-		clearProgress('tele-health');
-	});
-
-	test('corrupt session blobs restore as null, never throw', () => {
-		window.sessionStorage.setItem('brain-wizard-progress:support-ticket', '{not json');
-		expect(restoreProgress('support-ticket')).toBeNull();
-		window.sessionStorage.setItem(
-			'brain-wizard-progress:support-ticket',
-			JSON.stringify({ packId: 'other', currentQuestionId: 5, answers: null })
-		);
-		expect(restoreProgress('support-ticket')).toBeNull();
-		window.sessionStorage.removeItem('brain-wizard-progress:support-ticket');
 	});
 });

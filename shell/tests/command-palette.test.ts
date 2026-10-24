@@ -40,12 +40,12 @@ test('command_palette_opens_and_navigates', async () => {
 	const input = screen.getByPlaceholderText(PALETTE_PLACEHOLDER);
 	expect(input).toBeTruthy();
 
-	// Selecting the Overview item navigates (goto over resolve) and closes
-	// the palette. The nav bar ALSO says "Overview" — query inside the
-	// palette dialog.
-	await user.type(input, 'Overview');
-	await user.click(within(dialog as HTMLElement).getByText('Overview'));
-	await waitFor(() => expect(vi.mocked(goto)).toHaveBeenCalledWith('/overview'));
+	// Selecting the Recall item navigates (goto over resolve) and closes
+	// the palette. M3-a: there is no nav bar — the palette is the only place
+	// the label is spoken, so the query runs over the whole screen.
+	await user.type(input, 'Recall');
+	await user.click(within(dialog as HTMLElement).getByText('Recall'));
+	await waitFor(() => expect(vi.mocked(goto)).toHaveBeenCalledWith('/recall'));
 	await waitFor(() =>
 		expect(screen.queryByPlaceholderText(PALETTE_PLACEHOLDER)).toBeNull()
 	);

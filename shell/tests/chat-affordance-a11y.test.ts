@@ -59,7 +59,7 @@ vi.stubGlobal(
 	vi.fn(async () => new Response(JSON.stringify({ hits: [], decision: 'ok' }), { status: 200 }))
 );
 
-const chatModule = await import('../src/routes/chat/+page.svelte');
+const chatModule = await import('../src/routes/+page.svelte');
 
 const ANSWERED = {
 	state: 'answered',

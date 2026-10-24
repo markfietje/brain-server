@@ -39,7 +39,7 @@ import { recallMemory, type RecallOutcome } from '../src/lib/api/recall';
  */
 
 const srcDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'src');
-const chatDir = join(srcDir, 'routes', 'chat');
+const chatDir = join(srcDir, 'routes');
 
 /** The chat-side modules that must not open their own wire. */
 function chatWireModules(): string[] {
@@ -61,7 +61,11 @@ function chatWireModules(): string[] {
 			}
 		}
 	};
-	walk(chatDir);
+	// M3-a: the chat page IS `routes/+page.svelte` — the scan keys on THAT
+	// file, not on the whole routes tree (the other pages have their own
+	// surfaces and their own arms).
+	const homePage = join(chatDir, '+page.svelte');
+	if (existsSync(homePage)) found.push(homePage);
 	// The chat turn's own logic lives beside the route, under lib/.
 	const chatLib = join(srcDir, 'lib', 'chat');
 	let libEntries: string[] = [];
@@ -169,7 +173,7 @@ test('the_chat_surface_reads_through_the_core_and_never_opens_its_own_wire', asy
 	//                          quietly satisfied
 	//
 	// The second half is not a loophole: it names the one file that would flip
-	// it. Drop `+page.svelte` into `routes/chat/` and the first half takes
+	// it. Drop `+page.svelte` into `routes/` and the first half takes
 	// over on the next run.
 	const modules = chatWireModules();
 	const routeExists = existsSync(join(chatDir, '+page.svelte'));
@@ -181,7 +185,7 @@ test('the_chat_surface_reads_through_the_core_and_never_opens_its_own_wire', asy
 	} else {
 		expect(
 			modules,
-			'chat modules exist but routes/chat/+page.svelte does not — the route is the thing the scan keys on'
+			'chat modules exist but routes/+page.svelte does not — the home route is the thing the scan keys on'
 		).toEqual([]);
 	}
 

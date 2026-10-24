@@ -10,13 +10,21 @@ import { expect, test } from '@playwright/test';
  * before this spec the command list had NO browser coverage at all, which is
  * how a rewrite can pass 85 unit tests and still ship a palette where Enter
  * does nothing.
+ *
+ * M3-a (plan `21_CHAT_FIRST_IA`): there is no nav bar to wait for — the
+ * chrome is the brand mark, the ⌘K button and the settings gear, and `/` is
+ * the conversation. The composer visible is the chrome-render proof; the
+ * palette is driven to Recall, a route the six-route census kept.
  */
 test('palette_opens_filters_and_lands_on_the_top_result', async ({ page }) => {
 	const errors: string[] = [];
 	page.on('pageerror', (e) => errors.push(e.message));
 
 	await page.goto('/');
-	await page.getByRole('link', { name: 'Overview' }).waitFor();
+	// The home route renders the conversation, composer first (the chat-first
+	// law) — and no nav landmark anywhere in the chrome.
+	await page.getByTestId('chat-composer').waitFor();
+	expect(await page.locator('nav').count()).toBe(0);
 
 	const input = page.getByPlaceholder(/command or search/i);
 	await expect(input).toHaveCount(0);
@@ -25,7 +33,7 @@ test('palette_opens_filters_and_lands_on_the_top_result', async ({ page }) => {
 	await expect(input).toBeVisible({ timeout: 5_000 });
 
 	// Filtering narrows the list.
-	await input.fill('models');
+	await input.fill('recall');
 	await page.waitForTimeout(300);
 	await expect(page.getByRole('option')).toHaveCount(1);
 
@@ -33,7 +41,7 @@ test('palette_opens_filters_and_lands_on_the_top_result', async ({ page }) => {
 	await expect(page.locator('[data-part="item"][data-highlighted]')).toHaveCount(1);
 	await page.keyboard.press('Enter');
 
-	await page.waitForURL(/\/models/, { timeout: 10_000 });
-	expect(page.url()).toContain('/models');
+	await page.waitForURL(/\/recall/, { timeout: 10_000 });
+	expect(page.url()).toContain('/recall');
 	expect(errors).toEqual([]);
 });

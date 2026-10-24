@@ -36,13 +36,14 @@ import { CENSUS_ROUTES, ROUTE_FLOOR } from './route-census';
  * The floor. Not a count of what the walk happens to find today — a LOWER
  * bound, so adding routes cannot break this and removing them cannot pass it.
  *
- * 9 is the measured census as of II-7d. It is deliberately below the exact set
- * asserted in the next test so that the floor and the enumeration are two
- * independent statements: one says "the walk found something", the other says
- * "and it is exactly these".
+ * Numerically EQUAL to the exact set at M3-a (it was 9 at II-7d and 10 after
+ * III-6 — the exact set moved around it, which is the two literals doing
+ * their jobs). They stay separate statements: one says "the walk found
+ * something", the other says "and it is exactly these", and a future route
+ * reds the exact set before the floor has an opinion.
  *
  * III-0c: the literal MOVED to `route-census.ts` so the a11y sweep reads the
- * SAME set — see that module's header. This file's seven pins are unchanged.
+ * SAME set — see that module's header. This file's pins are unchanged in law.
  */
 
 /** One census entry: the route path AND the page file it was derived from.
@@ -193,52 +194,38 @@ interface RouteParity {
 
 /**
  * THE TABLE. One row per user-reachable shell route, every route carrying a
- * verdict, and `/chat` carrying `no_counterpart` — which is the finding Plan 09
- * §1 records as "missing on both" and which is STILL TRUE on the Dioxus side
- * even though the shell grew `/chat` in II-3.
+ * verdict.
  *
- * Two rows are `no_counterpart` where Plan 09 §1 claims a counterpart exists.
- * That is not this table being clever: `client/src/main.rs` has no `/overview`
- * and no `/models` route, and a table that reported parity for them would be
- * asserting a match that does not exist. Recorded in the register as a
- * plan-truth finding rather than quietly reconciled.
+ * M3-a (plan `21_CHAT_FIRST_IA`): the chat is the app. The wizard that served
+ * `/` is dropped, `/chat` is PROMOTED to `/`, and `/overview`, `/search` and
+ * `/models` retire as routes — so the table is six rows, and `/` carries
+ * `no_counterpart`: the Dioxus `/` is a connect-first landing, and chat has
+ * no counterpart on either side. That is Plan 09 §1's original "missing on
+ * both" finding for the conversation surface, true by design now that the
+ * surface IS the shell's home route. A false `renamed` reads as coverage
+ * (the III-6 lesson, twice recorded) — no counterpart is invented to make
+ * the home row prettier.
  */
 const ROUTE_PARITY: readonly RouteParity[] = [
 	{
 		route: '/',
-		verdict: 'exact',
-		dioxus: '/',
-		because: 'both sides serve a dashboard at the root',
-		authz: {
-			kernel: { '/workflow/wizard/packs': 'Read' },
-			mutates: null
-		}
-	},
-	{
-		route: '/overview',
 		verdict: 'no_counterpart',
-		nearest: '/',
 		because:
-			'Plan 09 §1 marks overview as covered on both sides, but the Dioxus app has no /overview ' +
-			'route — only a root dashboard. Promoting `/` to the counterpart would be inventing a ' +
-			'match, so the verdict is that none exists.',
+			'the chat surface, PROMOTED to the home route in M3-a (plan 21: the chat is the app). Plan 09 §1 ' +
+			'records conversation as MISSING ON BOTH SIDES; the shell grew /chat in II-3 and M3-a made it the ' +
+			"shell's `/`. The Dioxus `/` is a connect-first landing — a different surface — and naming it the " +
+			'counterpart would invent a match that does not exist.',
 		authz: {
-			// Two public probes and one governed read: the shell asks the kernel
-			// who it is before it asks it anything else.
-			kernel: { '/health': 'public', '/version': 'public', '/stats': 'Read' },
-			mutates: null
-		}
-	},
-	{
-		route: '/search',
-		verdict: 'renamed',
-		dioxus: '/recall',
-		because:
-			'Plan 09 §1 records the gap itself ("folds into recall"). The Dioxus side has no /search ' +
-			'route; the surface is the recall surface, so this is a rename rather than a gap.',
-		authz: {
-			kernel: { '/search': 'Read' },
-			mutates: null
+			// The chat surface reaches three kernel verbs via `#lib/api/*`, and
+			// each is derived from the SYMBOL the page imports (the typed
+			// transports carry the call sites; recallMemory/verifyClaim/
+			// forgetRecord carry none). `[forget]` is the mutating one, and it
+			// is soft-only — asserted at this route's OWN call site below.
+			kernel: { '/recall': 'Read', '/verify': 'Read', '/ump/forget': 'Write' },
+			mutates: {
+				path: '/ump/forget',
+				act: 'tombstones the cited row — SOFT only: the request is `{id}` and nothing else, and the core refuses any request carrying `hard`'
+			}
 		}
 	},
 	{
@@ -326,49 +313,6 @@ const ROUTE_PARITY: readonly RouteParity[] = [
 			// kernel decides what comes back.
 			kernel: { '/proposals': 'Read' },
 			mutates: null
-		}
-	},
-	{
-		route: '/models',
-		verdict: 'no_counterpart',
-		nearest: '/register',
-		because:
-			'Plan 09 §1 marks models as covered on both sides, but the Dioxus app has no /models ' +
-			'route. `/register` registers CLIENTS and is the nearest path, not the same surface; ' +
-			'recorded as a near-miss rather than promoted to a match.',
-		authz: {
-			// The registry list is Admin, the single lookup is Read, and the
-			// proposal POST is the shell's second write: it queues a proposal
-			// for operator review. The write is to the QUEUE, never the corpus.
-			kernel: {
-				'/workflow/model-registry': 'Admin',
-				'/workflow/model-registry/{model_ref}': 'Read',
-				'/ingest/proposal': 'Write'
-			},
-			mutates: {
-				path: '/ingest/proposal',
-				act: 'queues a proposal for operator review — agents propose, operators dispose; the write lands in the review QUEUE, never in the corpus'
-			}
-		}
-	},
-	{
-		route: '/chat',
-		verdict: 'no_counterpart',
-		because:
-			'Plan 09 §1 records chat/conversation as MISSING ON BOTH SIDES. The shell grew /chat in ' +
-			'II-3, so the row is now present in the shell and still absent from the Dioxus route ' +
-			'table. There is no counterpart to compare against and this table does not invent one.',
-		authz: {
-			// The chat surface reaches three kernel verbs via `#lib/api/*`, and
-			// each is derived from the SYMBOL the page imports (the typed
-			// transports carry the call sites; recallMemory/verifyClaim/
-			// forgetRecord carry none). `[forget]` is the mutating one, and it
-			// is soft-only — asserted at this route's OWN call site below.
-			kernel: { '/recall': 'Read', '/verify': 'Read', '/ump/forget': 'Write' },
-			mutates: {
-				path: '/ump/forget',
-				act: 'tombstones the cited row — SOFT only: the request is `{id}` and nothing else, and the core refuses any request carrying `hard`'
-			}
 		}
 	}
 ];
@@ -497,17 +441,21 @@ test('every_user_reachable_shell_route_carries_a_parity_verdict', () => {
 		).toBeGreaterThan(20);
 	}
 
-	// ---- THE FINDING THE PROMPT NAMED: /chat HAS NO COUNTERPART ----
+	// ---- THE FINDING THE PROMPT NAMED: `/` HAS NO COUNTERPART ----
 	//
 	// Stated as its own assertion rather than left implicit in the table, because
-	// it is the row a reader is most likely to assume was quietly filled in.
-	const chat = ROUTE_PARITY.find((row) => row.route === '/chat');
-	expect(chat, '/chat must carry a verdict — it is the shell\'s newest route').toBeDefined();
-	expect(chat!.verdict).toBe('no_counterpart');
-	expect(chat!.dioxus).toBeUndefined();
-	expect(chat!.because).toContain('MISSING ON BOTH SIDES');
-	// And it is absent from the real Dioxus table, so the verdict is a
-	// measurement rather than a stance.
+	// it is the row a reader is most likely to assume was quietly filled in —
+	// the Dioxus side DOES have a `/`, and it is a different surface (a
+	// connect-first landing, not the conversation). M3-a promoted the chat to
+	// the shell's `/`; the verdict is Plan 09 §1's "missing on both", true by
+	// design now.
+	const home = ROUTE_PARITY.find((row) => row.route === '/');
+	expect(home, '/ must carry a verdict — it is the app\'s home route').toBeDefined();
+	expect(home!.verdict).toBe('no_counterpart');
+	expect(home!.dioxus).toBeUndefined();
+	expect(home!.because).toContain('MISSING ON BOTH SIDES');
+	// And the Dioxus root is a DIFFERENT surface: no chat or conversation path
+	// exists on that side, so the verdict is a measurement rather than a stance.
 	expect(dioxus.some((path) => path.includes('chat') || path.includes('conversation'))).toBe(
 		false
 	);
@@ -515,22 +463,25 @@ test('every_user_reachable_shell_route_carries_a_parity_verdict', () => {
 	// ---- AND THE VERDICT MIX IS ITSELF A FINDING ----
 	//
 	// Gate 1 says "every shell route has parity with its Dioxus counterpart".
-	// Three of ten do not, and two of those contradict Plan 09 §1's own table.
-	// Asserting the mix means a future route that arrives `exact` by default,
-	// or a table edited to make gate 1 look reachable, fails here.
+	// Four of the six do not carry `exact`, and the home row is the one a
+	// reader is most likely to "fix" — asserting the mix means a future route
+	// that arrives `exact` by default, or a table edited to make gate 1 look
+	// reachable, fails here.
 	//
 	// III-6: `/review` arrived `exact` (the Dioxus path is the same), and the
-	// two FALSE `renamed` rows were corrected rather than added around — so
-	// `renamed` stayed at four while `exact` went from two to three.
+	// two FALSE `renamed` rows were corrected rather than added around. M3-a:
+	// the wizard `/` (an `exact` row over the packs read) retired WITH the
+	// wizard, and the promoted chat `/` arrived `no_counterpart` — the mix
+	// moved from {3, 4, 3} to {2, 3, 1}.
 	const mix = ROUTE_PARITY.reduce<Record<ParityVerdict, number>>(
 		(acc, row) => ({ ...acc, [row.verdict]: (acc[row.verdict] ?? 0) + 1 }),
 		{} as Record<ParityVerdict, number>
 	);
-	expect(mix).toEqual({ exact: 3, renamed: 4, no_counterpart: 3 });
+	expect(mix).toEqual({ exact: 2, renamed: 3, no_counterpart: 1 });
 	expect(
 		mix.no_counterpart,
 		'gate 1 cannot go green while any route has no counterpart — recorded, not reconciled'
-	).toBe(3);
+	).toBe(1);
 });
 
 test('this_census_reads_the_SHELL_not_the_kernel_route_tables', () => {
@@ -554,7 +505,10 @@ test('this_census_reads_the_SHELL_not_the_kernel_route_tables', () => {
 	// Every shell route the kernel does NOT serve. These are precisely the routes
 	// a kernel-table census would MISS, so if someone swapped the walk for the
 	// kernel table, this set would collapse and the equality below would fail.
-	const shellOnly = ['/overview', '/decisions', '/decisions/[id]', '/models', '/chat', '/review'];
+	// (M3-a retired `/overview`, `/models` and `/chat` as route paths; the
+	// remaining shell-only set is the two decision surfaces and /review — the
+	// `/` and `/recall` routes share their names with kernel paths.)
+	const shellOnly = ['/decisions', '/decisions/[id]', '/review'];
 	for (const route of shellOnly) {
 		expect(shellRoutes, `the census must find ${route}`).toContain(route);
 		expect(
@@ -640,8 +594,8 @@ test('the_dioxus_counterpart_table_is_read_from_the_app_not_from_the_plan', () =
  *    file, plus the call sites of the `#lib/api/*` symbols that file imports.
  *    ONE hop into `api/`, deliberately: several pages import `client.ts` for
  *    its `client` object, and attributing the module's own fetcher on a mere
- *    import would credit every one of them with the wizard read. A call is
- *    attributed to the SYMBOL that carries it (`fetchWizardPacks`, the typed
+ *    import would credit every one of them with that fetcher's path. A call is
+ *    attributed to the SYMBOL that carries it (`fetchPendingQueue`, the typed
  *    `*Transport`s), and only a page importing THAT symbol inherits the path.
  * 2. **Scopes** are the kernel's — `AUTHZ_GATES` / `PUBLIC_PATHS` in
  *    `src/server/router/route_guards.rs`, parsed per region with floors and
@@ -913,10 +867,14 @@ test('every_user_reachable_shell_route_carries_its_kernels_own_authz_verdict', (
 		}
 		derivedTotal += derived.length;
 	}
+	// M3-a re-measure: 9 paths across the six routes — / (recall, verify,
+	// ump/forget), /recall, the trace, /decisions, /decisions/[id] (two),
+	// /review. It was 12+ over the ten-route table; /overview's three public
+	// probes and /models' registry reads retired with their routes.
 	expect(
 		derivedTotal,
-		'the whole table derived fewer than a dozen kernel paths — the derivation is not reading the wire'
-	).toBeGreaterThanOrEqual(12);
+		'the whole table derived fewer than the measured nine kernel paths — the derivation is not reading the wire'
+	).toBeGreaterThanOrEqual(9);
 });
 
 test('the_authz_table_is_derived_from_the_wire_the_routes_call', () => {
@@ -1050,7 +1008,7 @@ test('every_mutating_reach_is_enumerated_and_the_forget_affordance_is_soft_only_
 		[...writePaths].sort(),
 		'the Write-scoped paths the shell can reach are an EXHAUSTIVE fact: a new one fails here, where it ' +
 			'must be classified, rather than drifting in unlabelled'
-	).toEqual(['/ingest/proposal', '/ump/forget', '/workflow/decision-runs/{id}/replay-diff']);
+	).toEqual(['/ump/forget', '/workflow/decision-runs/{id}/replay-diff']);
 
 	const mutatingRows = ROUTE_PARITY.filter((row) => row.authz.mutates !== null);
 	const namedPaths = new Set(mutatingRows.map((row) => row.authz.mutates!.path));
@@ -1075,27 +1033,28 @@ test('every_mutating_reach_is_enumerated_and_the_forget_affordance_is_soft_only_
 		).toContain(row.authz.mutates!.path);
 	}
 
-	// The routes that can change stored state, exactly. Seven of nine reach
-	// NONE — and two of the three Write-scoped paths are not on this list,
+	// The routes that can change stored state, exactly. Five of six reach
+	// NONE — and one of the two Write-scoped paths is not on this list,
 	// which is the point of `mutates` being its own claim rather than a
-	// restatement of scope.
+	// restatement of scope. (M3-a: `/models` — the proposal queue — retired
+	// with its route; `/ingest/proposal` left the reachable set with it.)
 	expect(
 		mutatingRows.map((r) => r.route).sort(),
-		'the set of mutating routes is exhaustive: /chat via the tombstone, /models via the proposal queue, ' +
-			'and nothing else'
-	).toEqual(['/chat', '/models']);
+		'the set of mutating routes is exhaustive: `/` via the tombstone, and nothing else'
+	).toEqual(['/']);
 
 	// ---- AND the [forget] reach is SOFT at the route level ----
 	//
 	// Belt and braces with the core's `hard` refusal: even if a future caller
 	// found a way to express the field, the ONE route-level construction site
 	// is read here — the REAL call site, never a copy — and must still be
-	// `{id}` and nothing else.
-	const chatSource = readFileSync(join(routesDir, 'chat', '+page.svelte'), 'utf8');
+	// `{id}` and nothing else. (M3-a: the chat page IS the home route now;
+	// the file moved, the call did not change.)
+	const chatSource = readFileSync(join(routesDir, '+page.svelte'), 'utf8');
 	const call = /\bforgetRecord\(\s*(\{[\s\S]*?\})\s*,/.exec(chatSource);
 	expect(
 		call,
-		'the /chat route must still call forgetRecord — this arm reads the real call site, so it reds when the call moves'
+		'the / route must still call forgetRecord — this arm reads the real call site, so it reds when the call moves'
 	).not.toBeNull();
 	const firstArgument = call![1]!;
 	expect(
