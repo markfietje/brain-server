@@ -84,6 +84,40 @@
 # model2vec-rs 0.3.0 — the newest published — requires BOTH `hf-hub ^0.4` and
 # `ureq ^2` directly, so the shim cannot leave any tracked lockfile today.
 #
+# RUSTSEC-2026-0387 (crypto-bigint: multiple timing-variability issues in
+# operations intended to be constant-time; published 2026-10-23 — the day
+# AFTER v1.29.30 shipped green, which is why this entry did not exist for
+# that tag). Found by the v1.29.31 tag's own CI, before anything published
+# (release.yml fail-closed on the red matrix).
+#
+# TWO copies were in the root lock, and they are NOT the same story:
+#
+# 1. crypto-bigint 0.7.5 (rsa 0.10.0-rc.19 / crypto-primes 0.7.2 — the
+#    server's own keygen) — UPDATED FOR REAL to 0.7.7 (the fixed release,
+#    >= 0.7.6; ctutils rode along 0.4.4 -> 0.4.5). This entry's ignore never
+#    matches that copy again.
+# 2. crypto-bigint 0.5.5 — the one this ignore is FOR, and it is UNREACHABLE
+#    CODE: the chain is jsonwebtoken 11.1.0 -> ecdsa 0.16.9 / p256 0.13.2 /
+#    p384 0.13.1 -> elliptic-curve 0.13.8 -> crypto-bigint 0.5.5, and
+#    jsonwebtoken only enters the elliptic-curve code when verifying
+#    ES256/ES384 keys. This server pins RSA: `src/auth/jwks.rs` sets
+#    `pinned_alg: Algorithm::RS256` (and `src/reg_watch.rs:474` documents
+#    the RS256/RS384/RS512 posture) — no ECDSA verification is ever
+#    performed, so the constant-time operations the advisory is about never
+#    run. Same threat-model context as the Marvin entry above: loopback,
+#    single-tenant default.
+#
+# NOT REMOVABLE BY A RE-LOCK (measured 2026-10-25): jsonwebtoken 11.1.0 is
+# the newest release and still requires p256/p384 ^0.13; elliptic-curve
+# 0.13.8 is the line's newest; `cargo update -p jsonwebtoken` and
+# `-p elliptic-curve -p p256 -p p384 -p ecdsa -p primeorder` each lock ZERO
+# packages. The 0.5 line has no fixed release — the advisory's solution is
+# >= 0.7.6 only.
+#
+# Re-check trigger: an elliptic-curve/p256 0.14 release (or a jsonwebtoken
+# release moving its ECDSA stack to crypto-bigint >= 0.7.6) — then this
+# ignore is pruned, not re-dated.
+#
 # Re-check triggers (any one → revisit these ignores):
 #   - model2vec-rs releases with hf-hub >= 0.5  (clears number_prefix)
 #   - tokenizers release without paste          (clears paste — root/fuzz path;
@@ -110,5 +144,6 @@ ignore = [
     "RUSTSEC-2026-0367", # zip — windows-only path in tauri-plugin-updater; the zip feature is off and no windows build ships; clears when the plugin's zip requirement reaches >= 9.0.0
     "RUSTSEC-2026-0368", # zip — as above
     "RUSTSEC-2026-0369", # zip — as above
-    "RUSTSEC-2026-0381", # webpki-roots — the 0.26.11 semver shim compiles in the FIXED 1.0.10 roots (4x emSign G3 in 1.0.9, 0x in 1.0.10); clears when ureq 3.x / model2vec-rs drops ureq ^2
+    "RUSTSEC-2026-0381", # webpki-roots
+    "RUSTSEC-2026-0387", # crypto-bigint — the 0.7 copy was UPDATED to 0.7.7 (the fixed release); the remaining 0.5.5 copy is unreachable ECDSA code under RS256-pinned jsonwebtoken; clears when elliptic-curve/p256 0.14 (or jsonwebtoken moving to crypto-bigint >= 0.7.6) — the 0.26.11 semver shim compiles in the FIXED 1.0.10 roots (4x emSign G3 in 1.0.9, 0x in 1.0.10); clears when ureq 3.x / model2vec-rs drops ureq ^2
 ]

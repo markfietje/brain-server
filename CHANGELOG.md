@@ -34,6 +34,21 @@ never becomes a file (verified bytes stream into extraction, bounded at
 64 MiB); the remaining analyser alert is dismissed with its reason recorded,
 not suppressed.
 
+**AND THIS TAG'S OWN AUDIT WENT RED BEFORE ANYTHING PUBLISHED — the
+fail-closed lane doing its job.** RUSTSEC-2026-0387 (`crypto-bigint`,
+timing variability in constant-time operations) was published 2026-10-23,
+the day AFTER v1.29.30 shipped green, and the v1.29.31 tag's public matrix
+caught it (the local dry-run does not include `cargo audit`, which needs
+the advisory DB fetch; the tag run does it). The root lock carried two
+copies with two different verdicts: 0.7.5 — the server's own RSA keygen
+path — was UPDATED to 0.7.7, the advisory's fixed release; 0.5.5 — under
+jsonwebtoken's ECDSA stack — has no fixed release and no re-lock path
+(measured: every crate in the chain is at its newest compatible version),
+but is UNREACHABLE in this server, which pins RS256 and never performs
+ECDSA verification. That copy is ignored with the full analysis and a
+re-check trigger in `.cargo/audit.toml` (the zip/webpki-roots pattern);
+all seven tracked lockfiles audit exit 0 locally.
+
 The engineering records for the two shell rounds sit below, as `[Unreleased]`
 entries, per this file's two-layer law. The kernel, the wire contract and the
 updater lane are untouched by this release's diff; the version surfaces that
