@@ -264,6 +264,53 @@ checks the jurisdiction names Article 95 and "code of conduct";
 `docs/test-census.md` re-derived for the new behavioral pin (3045 →
 3046).
 
+**The second half of the round — the red-proofs, the legal basis, and the
+opt-in truth (2026-10-25).** The pin was written BEFORE the fix and
+red-proved three ways, every drill reverted from the round's own content:
+on the shipped strings → `ai-notice lost the reconciling sentence — the
+three notices no longer tell one truth: …`; `no_autonomous_generation`
+re-planted in the commitments → `cop-notice commits no_autonomous_generation
+beside an Art 50 notice that says the service may return AI-generated
+content`; the old label re-planted → `cop-notice must cite Article 95 as a
+code of CONDUCT: EU AI Act Code of Practice (Article 95)`. **The T4-04 fix
+is a RELABEL, not the audit's R-C re-cite to Article 56**: L4-03's own
+finding was "Neither — a memory store is not a GPAI model provider", so
+asserting Art 56 would have cured a wrong article with a wrong scope. The
+register (`docs/gate-law-register.md`) carries the row; `AUDIT.md`'s
+tenth-pass table files T4-03 as PARTIALLY CLOSED (the notices half closed;
+the four `MARK_AIGEN` classes still carry a signed claim of AI authorship
+on deterministic serializations — a wire-and-pin decision, named not
+slipped) and gains the T4-04 row it never had (CLOSED by relabel).
+
+**`COMPLIANCE.md` §6.6.1 names the provision the file never had: Art 2(12).**
+The MIT-released component is outside the Regulation unless placed on the
+market as high-risk or as an Art 5/Art 50 system; Art 25(4) carves
+open-source component suppliers out of the high-risk value-chain
+agreements; and **recital 103 ends the exemption on commercialisation** —
+a price, paid support or services, or personal-data use beyond
+security/compatibility/interoperability — which makes the operator's
+"first paying customer" decision (2026-10-21) the date this analysis must
+be redone. Art 2(12), Art 25(4) and recital 103 were read 2026-10-25 from
+the consolidated-text mirror (EUR-Lex is not reachable from a build); the
+role and high-risk determinations stay the operator's and counsel's, as
+the docs-truth pin already records.
+
+**And the opt-in controls stop reading as the shipped default.** §6.6's
+"generates no content, makes no autonomous decisions" is now stated as
+CONDITIONAL on the GDL provider (off by default, fail-closed at boot), and
+a new paragraph says plainly what is opt-in: the proposal gate routes agent
+writes only under `BRAIN_WRITE_POSTURE=review` (default `open`); the
+decision-evidence pipeline (`/ropa`, `/audit/export`, `/compliance/*`)
+ships behind the `compliance-pack` feature and does not exist on a default
+binary's wire; `BRAIN_AUDIT_RETENTION_DAYS` unset means rows are kept and
+nothing prunes. The §6.5 "not silent auto-commit" row carries the same
+qualifier; `docs/compliance.md` mirrors all of it; §7.1 is relabelled the
+code-of-conduct marker. The openapi description of
+`/.well-known/cop-notice` carries the relabel and
+`shell/src/lib/api/schema.d.ts` was REGENERATED (two lines moved, the
+drift gate's byte-exact rule intact). No wire shape changed, no
+`x-api-version` move, no new dependency.
+
 ## [Unreleased] — the home state: exception chrome, an empty state that teaches, and evidence that collapses (M3-b)
 
 Plan 21 §5's M3-b row, executed 2026-10-24 at `6ac23316` over the

@@ -2,9 +2,9 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
   "version": 1,
-  "serialNumber": "urn:uuid:ea1abde4-1944-4583-ac38-06ac3ea89543",
+  "serialNumber": "urn:uuid:153e35bc-0a88-4fd4-9243-5334303a3b15",
   "metadata": {
-    "timestamp": "2026-10-24T16:35:02.233729000Z",
+    "timestamp": "2026-10-24T17:54:19.942540000Z",
     "tools": [
       {
         "vendor": "CycloneDX",
@@ -2088,16 +2088,16 @@
     },
     {
       "type": "library",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#crypto-bigint@0.7.5",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#crypto-bigint@0.7.7",
       "author": "RustCrypto Developers",
       "name": "crypto-bigint",
-      "version": "0.7.5",
-      "description": "Pure Rust implementation of a big integer library which has been designed from the ground-up for use in cryptographic applications. Provides constant-time, no_std-friendly implementations of modern formulas using const generics. ",
+      "version": "0.7.7",
+      "description": "Pure Rust implementation of a big integer library which has been designed from the ground-up for use in cryptographic applications. Provides constant-time, `no_std`/`no_alloc`-friendly implementations of modern formulas using const generics. Also includes optional support for heap-backed integers. ",
       "scope": "required",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "1a52aa3fcda4e6302a9f48734f234d35d4721b96f8fe07d073f07ce9df4f0271"
+          "content": "cc907c45bb7e9ef8fc3778defd0f3cd8c81288f1b4e748eba064948f20c47122"
         }
       ],
       "licenses": [
@@ -2105,7 +2105,7 @@
           "expression": "Apache-2.0 OR MIT"
         }
       ],
-      "purl": "pkg:cargo/crypto-bigint@0.7.5",
+      "purl": "pkg:cargo/crypto-bigint@0.7.7",
       "externalReferences": [
         {
           "type": "vcs",
@@ -2234,16 +2234,16 @@
     },
     {
       "type": "library",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.4",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.5",
       "author": "RustCrypto Developers",
       "name": "ctutils",
-      "version": "0.4.4",
+      "version": "0.4.5",
       "description": "Constant-time utility library with selection and equality testing support targeting cryptographic applications. Supports `const fn` where appropriate. Built on the `cmov` crate which provides architecture-specific predication intrinsics. Heavily inspired by the `subtle` crate. ",
       "scope": "required",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "12218662ccac37d9714f2191252553d67585b97df8c839cbe49e0bde278dc865"
+          "content": "38d28fb6aa7dd680b3ffd1a3e64e115c177bdba63c0ae7f9cd48129ff05c4fa0"
         }
       ],
       "licenses": [
@@ -2251,7 +2251,7 @@
           "expression": "Apache-2.0 OR MIT"
         }
       ],
-      "purl": "pkg:cargo/ctutils@0.4.4",
+      "purl": "pkg:cargo/ctutils@0.4.5",
       "externalReferences": [
         {
           "type": "documentation",
@@ -11387,7 +11387,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#aes@0.9.3",
         "registry+https://github.com/rust-lang/crates.io-index#cipher@0.5.2",
         "registry+https://github.com/rust-lang/crates.io-index#ctr@0.10.1",
-        "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.4",
+        "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.5",
         "registry+https://github.com/rust-lang/crates.io-index#ghash@0.6.0"
       ]
     },
@@ -11744,10 +11744,10 @@
       ]
     },
     {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#crypto-bigint@0.7.5",
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#crypto-bigint@0.7.7",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#cpubits@0.1.1",
-        "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.4",
+        "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.5",
         "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
         "registry+https://github.com/rust-lang/crates.io-index#rand_core@0.10.1",
         "registry+https://github.com/rust-lang/crates.io-index#serdect@0.4.3",
@@ -11772,7 +11772,7 @@
     {
       "ref": "registry+https://github.com/rust-lang/crates.io-index#crypto-primes@0.7.2",
       "dependsOn": [
-        "registry+https://github.com/rust-lang/crates.io-index#crypto-bigint@0.7.5",
+        "registry+https://github.com/rust-lang/crates.io-index#crypto-bigint@0.7.7",
         "registry+https://github.com/rust-lang/crates.io-index#rand_core@0.10.1"
       ]
     },
@@ -11783,7 +11783,7 @@
       ]
     },
     {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.4",
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.5",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#cmov@0.5.4"
       ]
@@ -11896,7 +11896,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#block-buffer@0.12.1",
         "registry+https://github.com/rust-lang/crates.io-index#const-oid@0.10.2",
         "registry+https://github.com/rust-lang/crates.io-index#crypto-common@0.2.2",
-        "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.4"
+        "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.5"
       ]
     },
     {
@@ -12742,7 +12742,7 @@
       "ref": "registry+https://github.com/rust-lang/crates.io-index#phc@0.6.1",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#base64ct@1.8.3",
-        "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.4",
+        "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.5",
         "registry+https://github.com/rust-lang/crates.io-index#getrandom@0.4.3"
       ]
     },
@@ -13047,7 +13047,7 @@
       "ref": "registry+https://github.com/rust-lang/crates.io-index#rsa@0.10.0-rc.19",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#const-oid@0.10.2",
-        "registry+https://github.com/rust-lang/crates.io-index#crypto-bigint@0.7.5",
+        "registry+https://github.com/rust-lang/crates.io-index#crypto-bigint@0.7.7",
         "registry+https://github.com/rust-lang/crates.io-index#crypto-primes@0.7.2",
         "registry+https://github.com/rust-lang/crates.io-index#digest@0.11.3",
         "registry+https://github.com/rust-lang/crates.io-index#pkcs1@0.8.0-rc.5",
@@ -13663,7 +13663,7 @@
       "ref": "registry+https://github.com/rust-lang/crates.io-index#universal-hash@0.6.1",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#crypto-common@0.2.2",
-        "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.4"
+        "registry+https://github.com/rust-lang/crates.io-index#ctutils@0.4.5"
       ]
     },
     {
