@@ -13,6 +13,49 @@ measured. Those records are kept as they were written (this file is
 append-only), and their heading says `Unreleased` because that is what they
 were when the round landed — not because the work is still unreleased.
 
+## [1.29.31] — 2026-10-25 — the chat is the app: the chat-first IA lands, and the chrome earns its place by exception
+
+Two rounds, one operator decision (2026-10-22, plan `21_CHAT_FIRST_IA`): in a
+harness, chat is the app. M3-a promoted `/chat` to `/`, retired the wizard,
+`/search`, `/overview` and `/models` with their routes and tests, and removed
+the nav bar — the route census went from nine routes to six, the catalogs from
+366 keys to 288, and the palette became the only navigation. M3-b finishes the
+shape: the app opens on a focused composer with a greeting and three acting
+chips; status is silent while green and interrupts only to name a wire fault;
+the review badge exists only while work is waiting; and every answer leads
+with its verdict, its evidence collapsed behind a count. The chrome-pin law
+changed with it, on purpose: two PERMANENT header controls plus at most ONE
+exception control — the review badge — which must be absent when the queue is
+empty. Both halves of that amendment are red-proved, and every new pin was
+red before it was green (eight drills, each planted defect caught by name).
+Alongside: two plugin hardenings from the CodeQL findings — the integration
+drill's fetches are origin-allowlisted to the release channel, and a download
+never becomes a file (verified bytes stream into extraction, bounded at
+64 MiB); the remaining analyser alert is dismissed with its reason recorded,
+not suppressed.
+
+The engineering records for the two shell rounds sit below, as `[Unreleased]`
+entries, per this file's two-layer law. The kernel, the wire contract and the
+updater lane are untouched by this release's diff; the version surfaces that
+move are the kernel version (1.29.30 → 1.29.31), the OpenAPI contract's
+version stamps, the README badges, and the CycloneDX SBOM — all verified by
+the badges self-check, the OpenAPI version gate, and the schema-drift drill
+(the typed client regenerated and byte-compares clean).
+
+### Release notes
+
+**Changed**
+- The app opens on the conversation: the chat is the home route, the wizard, search, overview and models pages are retired with their routes, and there is no nav bar — the command palette and the settings gear are the whole permanent chrome.
+- The header's one exception control: a review badge that appears only while the review queue holds pending proposals and disappears when it drains, refreshed when the window is focused or the palette opened — no polling.
+
+**New**
+- The chat's empty state: a greeting and three suggested actions — Ask (focuses the composer), Recall history, Review queue — each performs its action instead of explaining, and the first turn replaces them.
+- A fault banner above the composer: silent while the kernel answers, it names the specific wire fault in that fault's own words when a read fails, and its Restart button re-runs the app's existing kernel start gate. A refused answer is drawn as an answer, never as an outage.
+- Answers lead with a one-line verdict; the citations collapse behind an "N citations" disclosure that expands on demand, with the correct and forget actions inside it.
+
+**Bug fixes**
+- The OpenClaw plugin's integration drill allows only the release channel's origins for its fetches, never writes a download to disk (verified bytes stream straight into extraction), and bounds every response at 64 MiB.
+
 ## [1.29.30] — 2026-10-23 — the plugin's suite runs, and the integration is proved against the shipped binary
 
 **THE FINDING, measured 2026-10-22 at `dc7a571b`:** the OpenClaw plugin carried
@@ -177,6 +220,135 @@ action and the Apple identity remain owed from earlier rounds.
   the maintained fork has now replaced, and a stale schema library in the
   OpenClaw plugin. The shell's frontend lock is refreshed and frozen-installs
   clean.
+
+## [Unreleased] — the home state: exception chrome, an empty state that teaches, and evidence that collapses (M3-b)
+
+Plan 21 §5's M3-b row, executed 2026-10-24 at `6ac23316` over the
+`cc330868` baseline (all lanes re-measured before trust). Four surfaces,
+one law — chrome by exception — landed as ONE atomic commit because their
+pins interlock (a chrome-pin amendment is meaningless without the badge;
+the badge without the queue read is a lie):
+
+1. **The empty state.** `turns.length === 0` renders the greeting and
+   exactly three ACTING chips — Ask (focuses the composer), Recall history
+   (`/recall`), Review queue (`/review`) — and the first turn replaces
+   them. The COUNT and the act-don't-explain law are pinned; the wording is
+   the operator's to tune. One measured wrinkle: the Ask chip focuses by
+   the composer's ID, because the component-bound `composerEl` ref is not
+   populated under jsdom (M3-a's recorded focus-assertion limitation; the
+   mount focus effect itself is untouched — do-not-touch §7).
+2. **The fault banner.** NO node while no fault is classified (silent
+   while green is STRUCTURAL — a planted banner reds the pin), the fault's
+   own sentence via `wireFaultMessage` over the EXISTING `wire.error.*`
+   family (measured decision: those sentences already name cause and
+   remedy, so no `chat.status.fault.*` family was minted), classified only
+   when a turn's TRANSPORT failed — `outcome.state === 'unreachable'`,
+   named by ONE bounded `kernel_wire_status` probe (plan 22 R2's re-probe;
+   no polling, no interval, no SSE, no watchdog) — or when the badge's
+   queue read went OFFLINE. A refused turn never draws it: the pin reds if
+   classification keys on any non-answered state, which is the exact
+   conflation the six-state taxonomy exists to prevent. Restart re-runs the
+   EXISTING gate flow verbatim (`kernel_status` → `kernel_start` from
+   `notRunning` only, `consent: true` — the marker and data root exist
+   from first run, no second dialog — → probe), only a `ready` probe
+   dismisses, and the button is Tauri-gated (the PWA posture owns its own
+   kernel). The IPC-catch arm deliberately does NOT classify: a
+   "restart the kernel" banner over a broken core would misname the fault.
+3. **The review badge.** `fetchPendingQueue` on app mount, window focus,
+   and palette open — three glance triggers (plan 22 R4 AS CORRECTED by
+   measurement: the `/ingest/proposal` → `/proposals` path publishes NO
+   event; the kernel's publish sites are `remember`/`revise`/`forget` at
+   `src/handlers/ump_ops.rs:161,757,840` and workflow alerts at
+   `channel_webhook.rs:228`, so SSE cannot drive this badge). It renders
+   only while the read returned rows (`data-queue="nonempty"`, the
+   returned count in the aria-label, click → `/review`); a failed read
+   renders nothing — an unreadable queue is not a non-empty queue.
+4. **The collapsed evidence.** The verdict line stays; the citations sit
+   behind a `chat.evidence.count` disclosure (`aria-expanded`/
+   `aria-controls`, keyboard-operable, collapsed DEFAULT); the
+   `[correct]`/`[forget]` affordances render inside the OPENED list (the
+   II-7g pins keep driving the opened state via an `openEvidence()` setup
+   step); `receipt` is untouched (it reads the provenance block, never the
+   DOM's expansion state); zero-passage states grow no disclosure.
+
+**The law change:** `the_app_shell_carries_no_nav_landmark_and_exactly_
+two_permanent_controls` is AMENDED, not bypassed — exactly two PERMANENT
+controls plus at most ONE exception control (the review badge), which must
+be ABSENT when the queue read is empty. The exception half is the pin's
+teeth: without it, "exception" decays into "permanent".
+
+**i18n:** +10 keys in all five locales (298 each) with REAL translations
+(measured: none identical to en in any locale), and the identical-to-en
+check EXTENDED to fr/es/nl with measured per-locale loanword lists
+(fr 8, es 5, nl 8 — cognates and terms of art, listed, not thresholded) —
+the "Chat"-in-French lesson (nav.chat first shipped untranslated in all
+five locales; fr's nav block was otherwise fully translated) closed
+structurally. The de arm and its six-entry list are unchanged.
+
+**Red-first, the record:** the new pins ran against the pre-build page and
+7 went red (the chips ×2, the banner ×4, the collapse ×1) while the
+absence arms greened vacuously — then eight drills planted each defect and
+each pin redded with its own name before every revert was confirmed green:
+a healthy-page banner, a planted third permanent control (named in the
+failure), an always-rendered badge (the exception law named), a FOURTH
+chip (the count), evidence expanded by default, classification keyed on
+`!== 'answered'` (a banner over the refused turn), a disclosure planted on
+an abstention, and an untranslated fr key (`chat.empty.chip.ask`, named by
+the loanword arm).
+
+**Lanes at `cc330868` + `6ac23316`:** shell 214 passed / 2 skipped (the
+recorded 201/2 baseline + the 13 new tests), `svelte-check` 0/0, eslint
+clean, `vite build` green, `src-tauri` 59 passed, `cargo fmt --check`
+clean, kernel register pins 2/2, e2e 4 passed in real Chromium/WebKit.
+**The signing-test cold/warm fact, re-measured on this workstation:** the
+prompt's own warm recipe — plain `pnpm tauri build --bundles app --target
+universal-apple-darwin` — was NOT sufficient (measured ~118 s warm, still
+red against the 5 s unit timeout); one pass with the lane's exact
+`--config src-tauri/tauri.release.conf.json` warms it (806 ms green,
+twice). The updater lane itself is untouched.
+
+**Also one build-infra fact:** `wire-status.svelte.ts` is the tree's first
+rune module, and eslint parsed `.svelte.ts` with no TypeScript parser
+wired (a type annotation was a parse error, not a finding) — the svelte
+block's file match now includes `**/*.svelte.ts`/`**/*.svelte.js`.
+
+## [Unreleased] — the chat is the app: `/chat` promoted to `/`, the wizard and three surfaces retired, the nav bar removed (M3-a)
+
+Plan 21, decided by the operator 2026-10-22 and executed at `20f5ea84`
+with a second pass at `cc330868` (one untranslated `nav.chat` key caught
+by the loanword gate — fr is "Discussion" — and one stale runbook path in
+`docs/model-identity.md`). The chat-first IA: the conversation is the
+window, everything else is the palette, a dialog, or a URL.
+
+- **The census went RED FIRST, as designed:** nine routes → six
+  (`/`, `/decisions`, `/decisions/[id]`, `/recall`,
+  `/recall/[trace_id]/trace`, `/review`) — the exact-set arm, the sweep
+  coverage arm and the label-walk population arm each red naming the
+  ten-vs-six mismatch, and the moves landed until green (201 passed /
+  2 skipped; 39 tests retired with their routes). The wizard family
+  (`lib/wizard/` in full, the `app.*`/`pick.*`/`flow.*` key families)
+  retired routes-tests-i18n-together; `nav.chat` arrived; `nav.*` ended at
+  FIVE (four survivors + the new label) against plan 21 §4's guess of
+  three — measure, don't assume.
+- **The chrome:** AppShell carries NO `<nav>` landmark and (pre-M3-b)
+  exactly two permanent controls — pinned structurally; the palette's
+  navigate group is EXPLICIT, not census-derived, and the two param'd
+  detail routes are palette-absent on purpose. `/review` was palette+URL
+  only until the badge (M3-b above).
+- **The authz stays DERIVED:** the `/` row inherits the chat's
+  recall/verify/forget map from the page's own imports; the closure
+  refused an orphaned call-carrying symbol, which retired
+  `fetchWizardPacks` with its only caller — while the kernel route
+  `/workflow/wizard/packs` stays REGISTERED and drift-gated, kept exactly
+  for the composer "+" procedures flow (a named deferral, not a loss).
+- **The promoted home route keeps the composer-focused pins** (repainted,
+  not rewritten), and the e2e palette spec now drives the home route in a
+  real browser.
+
+The register row carries the full record, including the §0 correction:
+the prompt's "shell suite 240 passed" was FALSE at `efde7e40` on a
+workstation — measured 239/1/2, the one red being the signing-lane pairing
+pin — and the M3-b round re-measured the signing fact entirely (above).
 
 ## [Unreleased] — the drill fetches only the release channel, and the download never becomes a file
 
