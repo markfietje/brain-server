@@ -62,6 +62,7 @@ the badges self-check, the OpenAPI version gate, and the schema-drift drill
 **Changed**
 - The app opens on the conversation: the chat is the home route, the wizard, search, overview and models pages are retired with their routes, and there is no nav bar — the command palette and the settings gear are the whole permanent chrome.
 - The header's one exception control: a review badge that appears only while the review queue holds pending proposals and disappears when it drains, refreshed when the window is focused or the palette opened — no polling.
+- The three public AI-Act notices (/.well-known/ai-notice, cop-notice, ai-literacy) now tell one truth: each carries the same conditional sentence — the service generates no content unless an operator configures a GDL provider, and model-drafted output is human-gated — and the code-of-conduct marker cites its actual instrument (Article 95, voluntary codes of conduct), with the human gate on model output as the reconciled commitment.
 
 **New**
 - The chat's empty state: a greeting and three suggested actions — Ask (focuses the composer), Recall history, Review queue — each performs its action instead of explaining, and the first turn replaces them.
@@ -235,6 +236,33 @@ action and the Apple identity remain owed from earlier rounds.
   the maintained fork has now replaced, and a stale schema library in the
   OpenClaw plugin. The shell's frontend lock is refreshed and frozen-installs
   clean.
+
+## [Unreleased] — the three public notices tell one truth, and the marker cites its real instrument (tenth-pass T4-03 + T4-04)
+
+Landed mid-release at the v1.29.31 tag (the tree was otherwise held for
+the audit fix): an auditor reads `/.well-known/ai-notice`, `cop-notice`
+and `ai-literacy` TOGETHER, and the three did not survive that reading.
+The CoP marker committed `no_autonomous_generation` while the Art 50
+notice said the service "may return content that is AI-generated" and
+the Art 4 notice said it "generates no content" — each defensible alone,
+not together, and none of them whole once an operator configures a GDL
+provider (since v1.29.0 the kernel can drive an external LLM, and
+model-drafted output enters as human-gated proposals). The reconciling
+sentence is the CONDITIONAL one and now appears verbatim in all three
+disclosures; "generates no content" is allowed nowhere outside it; the
+Art 50 notice still discloses that stored content may be AI-generated
+(reconciling is not retracting), and now points at the per-row origin
+metadata for which is which. The commitment set swaps
+`no_autonomous_generation` for `human_gated_model_output`. And the
+marker's instrument is corrected: Article 95 is codes of CONDUCT
+(voluntary, non-high-risk systems) — codes of PRACTICE are Article 56,
+the GPAI providers' instrument, which a memory component cannot follow.
+`last_review` stamped 2026-10-25. The pin
+(`cop_notice_and_ai_notice_cannot_both_be_whole_truth`) holds all three
+notices to the one sentence, refuses the unconditional overclaim, and
+checks the jurisdiction names Article 95 and "code of conduct";
+`docs/test-census.md` re-derived for the new behavioral pin (3045 →
+3046).
 
 ## [Unreleased] — the home state: exception chrome, an empty state that teaches, and evidence that collapses (M3-b)
 

@@ -1,6 +1,8 @@
 # Compliance
 
-> Coverage current through v1.29.2 (2026-09-26) — the 1.29.x governed
+> Coverage current through v1.29.2 (2026-09-26); AI Act posture revised
+> 2026-10-25 (the three public notices reconciled, the Art 2(12) open-source
+> analysis added, opt-in controls labelled as such — COMPLIANCE.md §6.6, §7.1) — the 1.29.x governed
 > model-identity line (digest-pinned model registry, decision-run/evaluation
 > records) rides the same compliance evidence base. Root mirror: [COMPLIANCE.md](../COMPLIANCE.md).
 
@@ -33,6 +35,14 @@ operator ── DSAR ──► /dsar ──► locate → export → purge → t
 no web crawler, no email, no location, no biometric collection. Ingestion paths
 are explicit client calls; nothing is inferred or scraped.
 
+**Generation, stated conditionally.** The kernel generates no content unless an
+operator configures a GDL provider (`BRAIN_GDL_PROVIDER_*`, off by default);
+when one is configured, `POST /workflow/cases/{id}/gdl` drives that external
+LLM and its drafted output is human-gated — a proposal a person approves
+before anything is stored or published. The three public notices
+(`/.well-known/ai-notice`, `ai-literacy`, `cop-notice`) carry that sentence
+verbatim, and a pin holds them to one truth (COMPLIANCE.md §6.6).
+
 ---
 
 ## Data minimization
@@ -46,6 +56,12 @@ are explicit client calls; nothing is inferred or scraped.
   "control, not a classifier"). No plaintext is stored in a placeholder vault.
 - Read-event auditing is **off by default in loopback**, **on by default in JWT
   mode**; sampling via `BRAIN_AUDIT_READ_SAMPLE_RATE`.
+- **Human review of agent writes is opt-in.** Under the shipped default
+  `BRAIN_WRITE_POSTURE=open`, agent writes land directly (screened, quarantined
+  when flagged, audited). Set `review` to route the agent-facing write surfaces
+  through the human approval queue instead. The decision-evidence pipeline
+  (decision records, oversight evidence, RoPA) additionally needs the opt-in
+  `compliance-pack` cargo feature (COMPLIANCE.md §6.6).
 
 ---
 
@@ -56,8 +72,9 @@ is a keyed HMAC-SHA256 over the full row under a per-DB epoch (`hmac256`, head
 pin `(id, hash, epoch)`, key via `BRAIN_AUDIT_CHAIN_KEY`/`BRAIN_AUDIT_CHAIN_KEY_FILE`);
 rows from before that release verify as legacy SHA-256 chains. `/audit/verify`
 proves integrity; `/metrics` reports `brain_audit_chain_ok`. Retention is
-configurable via `BRAIN_AUDIT_RETENTION_DAYS` (deployers: ≥180 days per AI Act
-Art 26(6) guidance).
+configurable via `BRAIN_AUDIT_RETENTION_DAYS` — unset by default, meaning rows
+are kept and nothing prunes; set it to make retention a policy (deployers: ≥180
+days per AI Act Art 26(6) guidance).
 
 | Event class | Recorded |
 |---|---|
@@ -105,7 +122,10 @@ Art 30 records of processing (`/art30`), the RoPA register (`/ropa`), a breach
 ledger (`/breach*`), cross-border transfer assessments (`/transfers/{id}/tia`
 and `/transfers/{id}/dpa`), re-fetchable DSAR deletion certificates
 (`/dsar/{id}/certificate`), and the ISO 10002 complaint lifecycle
-(`/workflow/runs/{id}/complaint/*`).
+(`/workflow/runs/{id}/complaint/*`). Of these, the RoPA register (`/ropa`) —
+together with `/audit/export` and the `/compliance/*` evidence routes — ships
+behind the opt-in `compliance-pack` cargo feature and does not exist on a
+default binary's wire; the others are always on.
 
 Populating the RoPA register is operator work (only you know your controller
 identity and lawful bases): edit
@@ -131,7 +151,7 @@ real rows behind it. The row-by-row depth for each lives in
 | **ISO/IEC 42001** | AI management-system posture documented; algorithmic-risk controls (abstention, human-in-the-loop write-back) |
 | **NIST AI RMF** | Govern / Map / Measure / Manage controls across the retrieval lifecycle. *Mid-revision note (L7-06): AI RMF 1.0's revision input window closed 2026-09-16 with no restructuring published as of this stamp (re-verified 2026-10-04) — the 1.0 frame still governs; re-check at the next compliance review and re-map if the frame restructures.* |
 | **SOC 2** | Audit log, access control, encryption-at-rest (backup), change control |
-| **EU AI Act** | Art 12/26(6) logging posture; Art 50 origin metadata note + `/.well-known/ai-notice` disclosure; Art 4 literacy playbook ([AI_LITERACY.md](./AI_LITERACY.md)). **AI Act clocks:** Art 50 transparency duties apply from **2026-08-02** (general application, Art 113 — verified against the act text 2026-09-12); the **2026-12-02** reg_watch row is the LEGACY-system grace END for systems placed on the market before Aug 2026 — not the start (four-month transitional period, Regulation (EU) 2026/1744 **Article 111(4)** — the operative provision; recital 38 is the recited reason, which confers no obligation. Audit-asserted, not source-verified: no EUR-Lex fetch is reachable from a build, so the article number is recorded on the eighth-pass audit's authority. `src/reg_watch.rs::art50_transitional_cites_an_operative_provision_not_a_recital` keeps both files on the operative cite). Deployers of systems placed on the market from Aug 2026 owe the duties NOW. **Deployer horizons from the same amending regulation (recital 40; no component duty moves):** Annex III high-risk obligations apply from **2027-12-02**, Annex I (embedded in regulated products) from **2028-08-02** — the L7-04 docs stamp; this component's Art 50 posture is unchanged by the amendment. |
+| **EU AI Act** | Art 12/26(6) logging posture; Art 50 origin metadata note + `/.well-known/ai-notice` disclosure; Art 4 literacy playbook ([AI_LITERACY.md](./AI_LITERACY.md)). **AI Act clocks:** Art 50 transparency duties apply from **2026-08-02** (general application, Art 113 — verified against the act text 2026-09-12); the **2026-12-02** reg_watch row is the LEGACY-system grace END for systems placed on the market before Aug 2026 — not the start (four-month transitional period, Regulation (EU) 2026/1744 **Article 111(4)** — the operative provision; recital 38 is the recited reason, which confers no obligation. Audit-asserted, not source-verified: no EUR-Lex fetch is reachable from a build, so the article number is recorded on the eighth-pass audit's authority. `src/reg_watch.rs::art50_transitional_cites_an_operative_provision_not_a_recital` keeps both files on the operative cite). Deployers of systems placed on the market from Aug 2026 owe the duties NOW. **Deployer horizons from the same amending regulation (recital 40; no component duty moves):** Annex III high-risk obligations apply from **2027-12-02**, Annex I (embedded in regulated products) from **2028-08-02** — the L7-04 docs stamp; this component's Art 50 posture is unchanged by the amendment. **Open-source posture (added 2026-10-25):** the MIT-released component is outside the Regulation under Art 2(12) unless placed on the market as high-risk or as an Art 5/Art 50 system, and recital 103 ends that exemption on commercialisation (a price, paid support or services, or personal-data use beyond security/compatibility/interoperability) — the analysis and the first-paying-customer trigger are in COMPLIANCE.md §6.6.1. |
 | **Singapore MGF for Agentic AI** | VOLUNTARY framework — buyer evidence, not a duty. IMDA + AI Verify Foundation published 2026-01-22, updated 2026-05-20; the primary document maps governance onto Four dimensions (assess and bound the risks upfront; make humans meaningfully accountable; implement technical controls; end-user enablement — the secondary "five dimensions" grouping is a grouping variance). This repo's evidence for it: the OS-boundary sandbox (v1.28.92 — risk bounding + technical controls), the human escape routes (accountability), and the per-case `law_version` stamp with the DPO quarterly diff (traceability). |
 | **CoE CETS 225 (Framework Convention on AI)** | IN FORCE 2025-09-01. Party-facing duties only — this repo is not a party; the operator's deployment jurisdiction decides applicability. Component posture unchanged: the audit chain, DSAR workflow, and human-in-the-loop controls are the evidence base a party-deployment would cite. |
 | **GDPR / CCPA / PH DPA** | Data portability, erasure, DSAR workflow, jurisdiction posture |

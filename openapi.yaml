@@ -7172,12 +7172,16 @@ paths:
                   art_4: true
   /.well-known/cop-notice:
     get:
-      summary: EU AI Act Code of Practice conformity marker (v1.17.1 M6)
+      summary: EU AI Act Art 95 code-of-conduct marker (v1.17.1 M6; relabelled 2026-10-25)
       description: >
-        PUBLIC route. Machine-readable self-attested conformity state the
-        client's CoP icon lane renders: covered commitments, self-assessment
-        link, last-review timestamp. Declarative only — asserts posture, not
-        certification (a certification badge is the v2.x external gate).
+        PUBLIC route. Machine-readable self-attested marker the client's CoP
+        icon lane renders: covered commitments, self-assessment link,
+        last-review timestamp. Declarative only — asserts posture, not
+        certification (a certification badge is the v2.x external gate). Cites
+        Article 95 (voluntary codes of CONDUCT for non-high-risk systems);
+        codes of PRACTICE are Article 56, the GPAI providers' instrument. The
+        route and its `cop` field keep their historical name for wire
+        compatibility.
       operationId: getCopNotice
       responses:
         "200":

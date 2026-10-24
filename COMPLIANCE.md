@@ -1,6 +1,7 @@
 # COMPLIANCE.md — Compliance Posture & Technical File
 
-**Version:** 1.28.92 "Ledger" · **Last updated:** 2026-09-22
+**Version:** 1.28.92 "Ledger" · **Last updated:** 2026-10-25 (AI Act posture: the
+three public notices reconciled and the Art 2(12) open-source analysis added — §6.6, §7.1)
 
 This is the buyer-facing technical file: what brain-server IS, what it logs,
 how it erases, and how it maps to the frameworks procurement asks about. It is
@@ -385,7 +386,7 @@ silent side effect of reading untrusted input.
 | ASI06 / research mitigation | brain-server evidence |
 |---|---|
 | Memory sanitization with provenance | Per-row model-vs-human `origin` marker (v1.18.2) + `source` / `assertion_kind` / `confidence`; `/export` provenance_summary (below, §7) |
-| Write-time gating (not silent auto-commit) | v1.14 proposal gate (`POST /ingest/proposal` → human approval) + quarantine/flagged-row exclusion (v0.9.7); no autonomous write promotion |
+| Write-time gating (not silent auto-commit) | v1.14 proposal gate (`POST /ingest/proposal` → human approval) + quarantine/flagged-row exclusion (v0.9.7); no autonomous write promotion through the gate. **Opt-in:** agent write surfaces route through the gate only under `BRAIN_WRITE_POSTURE=review`; the shipped default `open` commits agent writes directly after screening and the audit row (§6.6) |
 | Trust-aware retrieval | Superseded rows excluded from default recall (`valid_to IS NULL`); quarantined rows never served; `min_relevance` + scope-filter-before-ranking |
 | Behavior / write audit (MemGhost + GhostWriter's AM-Sentry audit trail) | Append-only SHA-256 hash-chained audit (§3); every ingest/approve/supersede/DSAR recorded (hash-only); read-event audit + replayable `/recall/{id}/trace` (v1.15) |
 | Erasure / forensic recovery of a poisoned entry | DSAR locate→purge→tombstone→certificate (§4); `/purge` by id/owner; supersession (`valid_to`) retires a bad entry and its traceable dependents |
@@ -431,16 +432,47 @@ original schedule:
 | High-risk, product-embedded (Annex I) | ~~2 Aug 2027~~ → **2 Aug 2028** | deferred by 2026/1744 |
 
 **Where brain-server sits.** This component is a memory store inside a wider
-AI system — it generates no content, makes no autonomous decisions, and by
-itself is not an Annex III use case. If the DEPLOYER's overall system is
-classified high-risk, the deferral moves that conformity deadline to
-2 December 2027; it does not remove any obligation. The deployer-side
-groundwork the high-risk regime expects is already built and documented here:
-Art 12-style logging (§3), Art 13-style technical documentation (this file),
-Art 14-style human oversight (the v1.14 proposal gate + review queue), and
-the audit chain every claim above is pinned to. A reviewer reading the
-deferral as a reason to deprioritize should read §7 instead: the obligations
-that were NOT deferred are the ones this component serves directly.
+AI system, and by itself it is not an Annex III use case. **The sentence that
+stood here — "it generates no content, makes no autonomous decisions" — is
+CONDITIONAL since v1.29.0 (2026-09-25), and the public notices now say so.**
+As shipped — no GDL provider configured, which is the default and is
+validated fail-closed at boot — the kernel runs no model and generates
+nothing. When an operator configures `BRAIN_GDL_PROVIDER_BASE_URL` /
+`_MODEL` / `_SECRET_FILE`, `POST /workflow/cases/{id}/gdl` drives that
+external LLM through the governed decision loop, and model-drafted output
+enters only as human-gated proposals, handoffs or routes: the production
+launch carries an empty, fail-closed tool registry, the agent principal can
+neither launch a case nor approve one, and nothing publishes automatically.
+The three public notices (`/.well-known/ai-notice`, `/.well-known/ai-literacy`,
+`/.well-known/cop-notice`) therefore carry ONE reconciling sentence —
+*generates no content unless an operator configures a GDL provider;
+LLM-drafted output is human-gated* — and
+`cop_notice_and_ai_notice_cannot_both_be_whole_truth`
+(`src/handlers/well_known.rs`) refuses a notice that drops it, re-asserts an
+unconditional claim, or commits `no_autonomous_generation` beside an Art 50
+notice that says the service may return AI-generated content (closes the
+tenth-pass audit's T4-03). If the DEPLOYER's overall system is classified
+high-risk, the deferral moves that conformity deadline to 2 December 2027;
+it does not remove any obligation.
+
+**The oversight groundwork is BUILT, and most of it is OPT-IN — do not read
+the controls below as the shipped default.** Art 12-style logging (§3) is on
+in every build (the hash chain is always written); audit *retention* becomes
+a policy only when `BRAIN_AUDIT_RETENTION_DAYS` is set (unset: rows are
+kept, nothing prunes). Art 14-style human oversight — the v1.14 proposal
+gate and review queue — exists in every build, but agent writes route
+through it only under `BRAIN_WRITE_POSTURE=review`; the shipped default is
+`open` (agents write directly, with screening, quarantine and the audit row,
+and no human approval). The Art 12/14 decision-evidence pipeline — decision
+records, oversight evidence, the RoPA register, `/audit/export` and the
+`/compliance/*` routes — ships behind the `compliance-pack` cargo feature,
+OFF by default: a default binary does not migrate those tables and those
+routes do not exist on its wire (`/art30`, `/retention` and the DSAR surfaces
+are always on). Art 13-style technical documentation is this file. A
+deployer claiming Art 14 oversight on this component therefore shows its own
+posture settings, not this document. A reviewer reading the deferral as a
+reason to deprioritize should read §7 instead: the obligations that were NOT
+deferred are the ones this component serves directly.
 
 **Art 50 went live on schedule — and so did this server's disclosure.**
 Article 50 transparency obligations apply from **2 August 2026** (untouched
@@ -450,6 +482,77 @@ generative-AI systems already placed on the market before
 2 August 2026 have a grace period ending 2 December 2026 to comply with the
 Article 50(2) machine-readable-marking duty; systems placed on the market
 from 2 August 2026 mark from day one.
+
+### 6.6.1 Open-source posture — Art 2(12), Art 25(4) and recital 103 (added 2026-10-25)
+
+The provision this file never named is the one that decides the PROJECT's
+own exposure. brain-server is released under the MIT licence (`LICENSE`;
+`Cargo.toml` `license = "MIT"`), and **Article 2(12)** reads: *"This
+Regulation does not apply to AI systems released under free and open-source
+licences, unless they are placed on the market or put into service as
+high-risk AI systems or as an AI system that falls under Article 5 or 50."*
+
+**What follows for the component as released today.**
+
+- *Not high-risk by itself* (§6.6), *no Article 5 practice*, and *not an
+  Article 50 system*: it does not interact directly with natural persons as
+  an AI system (the shell's chat is `/recall` retrieval with provenance; the
+  GDL lane is operator-launched, its output is human-gated, and nothing it
+  drafts reaches the public as synthetic content). So the Regulation's
+  provider chapter does not attach to brain-server as released, and the
+  obligations recorded in this file are **deployer** duties this component
+  supplies evidence for — the posture §6.6 and §7 already take, now with its
+  legal basis named.
+- **Article 25(4)** draws the same line into the high-risk value chain: a
+  deployer who integrates brain-server into a high-risk system owes written
+  agreements with its component suppliers, but *"this paragraph shall not
+  apply to third parties making accessible to the public tools, services,
+  processes, or components, other than general-purpose AI models, under a
+  free and open-source licence"*. The information such a deployer needs —
+  §3 logging, §7 origin metadata, this file — is supplied voluntarily, and
+  the docs-truth pins hold it to the tree.
+- **Article 4** (AI literacy, in force since 2 February 2025) binds providers
+  and deployers of AI systems for their own staff; the Digital Omnibus
+  softened it to *supporting the development of* AI literacy. §6.4 remains
+  the deployer-facing playbook.
+
+**The exemption is narrower than the licence, and the trigger is
+commercial.** **Recital 103** states that free and open-source AI components
+*provided against a price or otherwise monetised* — *"including through the
+provision of technical support or other services, including through a
+software platform, related to the AI component, or the use of personal data
+for reasons other than exclusively improving the security, compatibility or
+interoperability of the software"* — do not benefit from the exceptions,
+with the exception of transactions between microenterprises; making the
+component available through open repositories *"should not, in itself,
+constitute a monetisation"*. The operator's standing decision (2026-10-21)
+to defer the Apple Developer ID to the **first paying customer** therefore
+sets a date on which this analysis must be redone:
+
+1. The moment brain-server, paid support or services tied to it, or a paid
+   bundle (the signed desktop shell) is provided against a price, the Art
+   2(12) shield falls away for what is sold, and the "placing on the market"
+   question (Art 3(9)–(11)) is answered *yes* for that artefact.
+2. Without the shield, the project's duties are those of a provider of a
+   **non-high-risk** AI system — which the Regulation keeps light: Art 4 for
+   its own staff, Art 50 only if an Art 50 system is actually formed, and the
+   voluntary Art 95 code-of-conduct track (§7.1). The heavy regime (Chapter
+   III) attaches only if what is sold is high-risk, or a customer re-purposes
+   it into high-risk — in which case the customer becomes the provider under
+   **Article 25(1)(c)**.
+3. Any telemetry or personal-data use beyond security, compatibility or
+   interoperability voids the exemption on its own (recital 103). This
+   component has none (§1: no telemetry, no egress by default); a round that
+   adds any must re-run this section before it ships.
+
+*Verification posture:* Art 2(12), Art 25(4) and recital 103 were read on
+2026-10-25 from the consolidated-text mirror at artificialintelligenceact.eu
+(EUR-Lex is not reachable from a build). Whether a given deployment is an
+"AI system", whether it is high-risk, and which role the operator holds are
+operator and counsel determinations — the docs-truth pin
+`ai_act_deployer_horizons_are_stamped_from_the_amending_instrument` records
+them as open questions, and this section does not decide them. This is an
+engineering repository's analysis, not legal advice.
 
 ### 6.7 Contact-centre standards (COPC R8.0 / ISO 18295-1) — self-assessed posture
 
@@ -513,10 +616,12 @@ posture.
 **Machine-readable disclosure — an INPUT, not the disclosure itself.** The
 server serves a machine-readable statement at `GET /.well-known/ai-notice`
 (public, no auth): `art_50: true`, the human-readable text that stored content
-may be AI-generated, the `origin_metadata` fields a consumer can read per row
-(`source` / `origin` / `assertion_kind` / `confidence`), `effective_date:
-2026-08-02`, and `jurisdiction: EU AI Act Article 50 (Regulation (EU)
-2024/1689)`.
+may be AI-generated together with the conditional sentence every notice shares
+(*generates no content unless an operator configures a GDL provider;
+LLM-drafted output is human-gated* — §6.6), the `origin_metadata` fields a
+consumer can read per row (`source` / `origin` / `assertion_kind` /
+`confidence`), `effective_date: 2026-08-02`, and `jurisdiction: EU AI Act
+Article 50 (Regulation (EU) 2024/1689)`.
 
 **What this component does NOT discharge.** Art 50(5) requires the
 information to be provided **at the time of the first interaction** — a
@@ -539,15 +644,23 @@ disclosure); a `disclosure_timing` field was considered and **not** added,
 because it would be a wire change that would not discharge the deployer's
 duty anyway.
 
-### 7.1 EU AI Act Code of Practice marker (v1.17.1 M6)
+### 7.1 EU AI Act code-of-conduct marker — `/.well-known/cop-notice` (v1.17.1 M6; relabelled 2026-10-25)
 
 The server serves `GET /.well-known/cop-notice` (public, no auth) — a
-machine-readable, **self-attested** conformity marker the client's CoP icon
-lane renders: the covered commitments (human-in-the-loop write-back, no
-autonomous generation, inspectable decisions, full audit chain), the
-self-assessment pointer (`COMPLIANCE.md`), and a `last_review` timestamp. It
-is declarative — a posture statement, not a certification badge (external
-conformity assessment is an operator gate).
+machine-readable, **self-attested** marker the client's CoP icon lane
+renders: the covered commitments (human-gated model output, human-in-the-loop
+write-back, inspectable decisions, full audit chain), the self-assessment
+pointer (`COMPLIANCE.md`), and a `last_review` timestamp. It is declarative —
+a posture statement, not a certification badge (external conformity
+assessment is an operator gate). **The instrument it cites is Article 95**,
+the voluntary codes-of-CONDUCT provision for non-high-risk systems; codes of
+PRACTICE are Article 56, the general-purpose-AI providers' instrument, which
+a memory component cannot follow. Until 2026-10-25 the marker said "Code of
+Practice (Article 95)" and committed `no_autonomous_generation` (tenth-pass
+T4-04 and T4-03); the route and its `cop: true` field keep their historical
+name for wire compatibility, and its disclosure now carries the same
+conditional sentence as the two sibling notices (§6.6), held by
+`cop_notice_and_ai_notice_cannot_both_be_whole_truth`.
 
 ## 8. Retention Classes
 
