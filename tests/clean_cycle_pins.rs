@@ -426,7 +426,9 @@ fn r48_the_route_tables_are_unchanged() {
     // which states the same property positively and cannot be satisfied by
     // deleting rows.
     const OPEN_ROUTES: usize = 217;
-    const OPEN_GATES: usize = 203;
+    // +1 (204): v1.29.32's chat spine adds the one gated route
+    // /chat/turns (Read) — a named act, not drift.
+    const OPEN_GATES: usize = 204;
 
     let guards = read_repo("src/server/router/route_guards.rs");
     let between = |start: &str| -> String {

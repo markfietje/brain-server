@@ -17,7 +17,6 @@
 //!    bodies are deliberately minimal so they can be filled in without
 //!    changing the contract.
 
-pub mod chat;
 pub mod accounts;
 pub mod agreement;
 pub mod auth;
@@ -25,6 +24,7 @@ pub mod breaches;
 pub mod case_run;
 pub mod channel;
 pub mod channel_webhook;
+pub mod chat;
 pub mod claims;
 pub mod clients;
 #[cfg(feature = "compliance-pack")]

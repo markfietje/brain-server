@@ -7100,6 +7100,10 @@ Final paragraph after the rule.";
             )),
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
+                "/src/server/router/chat.rs"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
                 "/src/server/router/compliance.rs"
             )),
             include_str!(concat!(
@@ -7343,6 +7347,10 @@ Final paragraph after the rule.";
                             "delivery" => include_str!(concat!(
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/delivery.rs"
+                            )),
+                            "chat" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/chat.rs"
                             )),
                             m => panic!("no source mapping for handlers module {m}"),
                         }

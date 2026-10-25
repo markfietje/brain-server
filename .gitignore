@@ -124,6 +124,12 @@ audit-chain.key
 # removed it from the index.
 .zcodeignore
 
+# The ZCode tool's Scratch directory — plan scratch and session state for the
+# local tool. The tool's own session plan is local work the same way
+# .zcodeignore is (R76): local tool state is never published, and the
+# implementation plans themselves live in the private repo.
+.zcode/
+
 # NOTE: `evals/` is deliberately NOT ignored. Its JSON overlay names a private
 # repository's gold pack, but `tests/dd_adjudication_pins.rs` `include_str!`s it
 # and `tests/drift_census_pins.rs` reads `R57_DRIFT_BASELINE.json` at runtime —

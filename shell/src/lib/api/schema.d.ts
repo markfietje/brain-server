@@ -779,6 +779,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/chat/turns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** One memory-grounded chat turn (the chat spine, v1.29.32). Recall grounds the turn through the same deterministic core as /recall (submodularly packed, every hit wrapped in the untrusted fence) and the AFM bridge streams the answer. SSE event sequence: `grounding` (citations), `delta`* (incremental text; `replace` marks a wholesale revision), then exactly one terminal `final` or `error`. Errors are named codes — chat_bridge_unavailable (503, before the stream), locale_not_supported (400), and the bridge's own conversation_does_not_fit / generation_failed on the stream. */
+        post: operations["chatTurn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/recall": {
         parameters: {
             query?: never;
@@ -7228,6 +7245,53 @@ export interface operations {
             };
             /** @description A legal hold is active on the chunk; the erasure is refused and the hold is named. */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    chatTurn: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The user's turn (≤ 2000 bytes, /recall's own bound). */
+                    message: string;
+                    /** @description Conversation id — a single token ≤ 64 bytes. Absent = "default" (Round 1 ships one conversation; the sidebar's session ids arrive with Round 2). */
+                    session?: string;
+                    /** @description Generation locale (primary BCP-47 tag). Fail-closed against the model's MEASURED supported languages. */
+                    locale?: string;
+                    /** @description Bounded 16..=1024; default 512. */
+                    max_response_tokens?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description The turn as a text/event-stream. Event payloads are JSON objects on the data line. A disconnect cancels the TURN, not the session. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            /** @description chat_message_empty · chat_message_too_long · chat_session_invalid · chat_request_invalid · locale_not_supported */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description chat_bridge_unavailable — no brain-afm binary beside the kernel (every other surface unaffected) */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

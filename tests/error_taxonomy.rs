@@ -29,6 +29,12 @@ use std::path::{Path, PathBuf};
 /// (hashes/keys/vectors), `service` (operator workflows), `workflow`
 /// (governed lanes), `http` (the wire envelope).
 const KNOWN_ERRORS: &[(&str, &str, &str, &str)] = &[
+    (
+        "BridgeError",
+        "agentloop/bridge_afm.rs",
+        "provider",
+        "display",
+    ),
     ("LoadError", "auth/jwks.rs", "auth", "display"),
     ("AuthError", "auth/jwt.rs", "auth", "display"),
     ("RefreshError", "auth/revocation.rs", "auth", "gap"),

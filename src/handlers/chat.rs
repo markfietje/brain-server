@@ -43,8 +43,8 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::State;
-use axum::response::{IntoResponse, Response};
 use axum::response::sse::{Event, Sse};
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
 use tokio_stream::Stream;
@@ -52,9 +52,9 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::AppState;
 use crate::agentloop::bridge_afm::{self, BridgeEvent, BridgeTurn};
-use crate::handlers::auth::OptPrincipal;
-use crate::handlers::recall::{run_recall, RecallRequest};
 use crate::handlers::HandlerError;
+use crate::handlers::auth::OptPrincipal;
+use crate::handlers::recall::{RecallRequest, run_recall};
 
 /// The system instructions for a chat session. Grounded-answer posture: the
 /// fence's own words are the contract — recalled memory is evidence, never
@@ -105,24 +105,26 @@ pub async fn chat_turn(
     if message.len() > MAX_MESSAGE_BYTES {
         return HandlerError::bad_request(
             "chat_message_too_long",
-            format!("the message is {} bytes; the ceiling is {MAX_MESSAGE_BYTES}", message.len()),
+            format!(
+                "the message is {} bytes; the ceiling is {MAX_MESSAGE_BYTES}",
+                message.len()
+            ),
         )
         .into_response();
     }
     let session = match bounded_session_label(req.session.as_deref()) {
         Ok(session) => session,
-        Err(message) => return HandlerError::bad_request("chat_session_invalid", message).into_response(),
+        Err(message) => {
+            return HandlerError::bad_request("chat_session_invalid", message).into_response();
+        }
     };
     let max_response_tokens = req
         .max_response_tokens
         .unwrap_or(512)
         .clamp(16, MAX_RESPONSE_TOKENS);
-    if let Err(e) = crate::handlers::authorize(
-        &principal.0,
-        crate::auth::Action::Read,
-        "",
-        "global",
-    ) {
+    if let Err(e) =
+        crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", "global")
+    {
         return e.into_response();
     }
 
@@ -148,10 +150,9 @@ pub async fn chat_turn(
     // secret, but the refusal only needs the count to be actionable).
     let locale = req.locale.unwrap_or_else(|| "en".to_owned()).to_lowercase();
     let primary = locale.split('-').next().unwrap_or("").to_owned();
-    let supported = caps
-        .languages
-        .iter()
-        .any(|lang| lang == &locale || lang == &primary || lang.starts_with(&format!("{primary}-")));
+    let supported = caps.languages.iter().any(|lang| {
+        lang == &locale || lang == &primary || lang.starts_with(&format!("{primary}-"))
+    });
     if !supported {
         return HandlerError::bad_request(
             "locale_not_supported",
@@ -179,11 +180,8 @@ pub async fn chat_turn(
     })) {
         Ok(request) => request,
         Err(e) => {
-            return HandlerError::bad_request(
-                "chat_request_invalid",
-                format!("{e}"),
-            )
-            .into_response();
+            return HandlerError::bad_request("chat_request_invalid", format!("{e}"))
+                .into_response();
         }
     };
     let grounding = run_recall(
@@ -274,7 +272,14 @@ pub async fn chat_turn(
                 Err(_) => false,
             }
         };
-        if !send(Event::default().event("grounding").json_data(grounding_event).unwrap_or_default()).await {
+        if !send(
+            Event::default()
+                .event("grounding")
+                .json_data(grounding_event)
+                .unwrap_or_default(),
+        )
+        .await
+        {
             bridge.cancel(&bridge_id);
             return;
         }
@@ -287,7 +292,13 @@ pub async fn chat_turn(
                     .event("delta")
                     .json_data(json!({ "text": text, "replace": replace }))
                     .unwrap_or_default(),
-                BridgeEvent::Final { text, tier, turn, input_tokens, output_tokens } => Event::default()
+                BridgeEvent::Final {
+                    text,
+                    tier,
+                    turn,
+                    input_tokens,
+                    output_tokens,
+                } => Event::default()
                     .event("final")
                     .json_data(json!({
                         "text": text,
@@ -297,7 +308,11 @@ pub async fn chat_turn(
                         "outputTokens": output_tokens,
                     }))
                     .unwrap_or_default(),
-                BridgeEvent::Failed { code, message, shortfall_tokens } => Event::default()
+                BridgeEvent::Failed {
+                    code,
+                    message,
+                    shortfall_tokens,
+                } => Event::default()
                     .event("error")
                     .json_data(json!({
                         "code": code,
@@ -316,22 +331,29 @@ pub async fn chat_turn(
         }
         // The bridge died mid-turn: name it rather than hang (the router's
         // timeout would end the stream, but a named end is the caller's).
-        let _ = tx.send(Ok(Event::default()
-            .event("error")
-            .json_data(json!({"code": "bridge_exited", "message": "the AFM bridge closed mid-turn"}))
-            .unwrap_or_default()))
+        let _ = tx
+            .send(Ok(Event::default()
+                .event("error")
+                .json_data(
+                    json!({"code": "bridge_exited", "message": "the AFM bridge closed mid-turn"}),
+                )
+                .unwrap_or_default()))
             .await;
     });
 
     let stream: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
         Box::pin(ReceiverStream::new(rx_out));
-    Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()).into_response()
+    Sse::new(stream)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response()
 }
 
 /// A session label takes a domain label's shape: one whitespace-free token
 /// within the byte ceiling. `None` → "default" (the Round-1 conversation).
 fn bounded_session_label(raw: Option<&str>) -> Result<String, String> {
-    let Some(raw) = raw else { return Ok("default".to_owned()) };
+    let Some(raw) = raw else {
+        return Ok("default".to_owned());
+    };
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok("default".to_owned());
@@ -383,7 +405,10 @@ mod tests {
         assert!(matches("EN"));
         assert!(matches("en-GB"));
         assert!(matches("fr"));
-        assert!(!matches("de"), "a locale the roster lacks is refused, fail-closed");
+        assert!(
+            !matches("de"),
+            "a locale the roster lacks is refused, fail-closed"
+        );
         assert!(!matches("zz"));
     }
 

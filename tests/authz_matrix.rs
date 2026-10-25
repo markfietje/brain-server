@@ -220,6 +220,7 @@ fn registered_methods() -> std::collections::HashMap<&'static str, Vec<(&'static
         include_str!("../src/server/router/core.rs"),
         include_str!("../src/server/router/memory.rs"),
         include_str!("../src/server/router/ump.rs"),
+        include_str!("../src/server/router/chat.rs"),
         include_str!("../src/server/router/compliance.rs"),
         include_str!("../src/server/router/workflow.rs"),
         include_str!("../src/server/router/auth.rs"),
@@ -329,6 +330,12 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
             "/ingest/markdown" => ("POST", r#"{"content":"matrix"}"#),
             "/multi-get" => ("POST", r#"{"ids":[1]}"#),
             "/recall" => ("POST", r#"{"query":"matrix"}"#),
+            // the chat turn's typed extractor demands `message` pre-gate;
+            // with it, denied cells hit the Read gate (403) and pass cells
+            // reach the bridge posture (503 in this fixture — a pass-cell
+            // status, and the honest one: the matrix proves the GATE, not
+            // the model).
+            "/chat/turns" => ("POST", r#"{"message":"matrix"}"#),
             "/domains/move" => ("POST", r#"{"ids":[1],"to":"global"}"#),
             "/profiles/{name}" => ("POST", "{}"),
             "/roles/{name}" => ("POST", r#"{"scopes":["read"],"can":["read"]}"#),

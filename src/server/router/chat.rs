@@ -12,10 +12,6 @@ use axum::routing::post;
 
 use crate::AppState;
 
-
 pub fn router() -> Router<Arc<AppState>> {
-    Router::new().route(
-        "/chat/turns",
-        post(crate::handlers::chat::chat_turn),
-    )
+    Router::new().route("/chat/turns", post(crate::handlers::chat::chat_turn))
 }

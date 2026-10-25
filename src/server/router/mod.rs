@@ -6,9 +6,9 @@
 //! composition, not with these definitions.
 
 pub mod auth;
+pub mod chat;
 pub(crate) mod compliance;
 pub mod core;
-pub mod chat;
 pub mod memory;
 pub(crate) mod ump;
 pub(crate) mod workflow;

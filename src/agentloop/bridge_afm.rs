@@ -182,15 +182,16 @@ impl AfmBridge {
             let mut pending = self.pending.lock().expect("bridge pending lock");
             pending.insert(id.clone(), tx);
         }
-        self.write_line(
-            &json!({ "id": id, "op": "capabilities" }),
-        )?;
+        self.write_line(&json!({ "id": id, "op": "capabilities" }))?;
         // Deltas never precede a capabilities reply, but the reader speaks
         // one event type; treat Final-ish payloads generically below.
         while let Some(event) = rx.recv().await {
             match event {
                 BridgeEvent::Failed { code, message, .. } => {
-                    self.pending.lock().expect("bridge pending lock").remove(&id);
+                    self.pending
+                        .lock()
+                        .expect("bridge pending lock")
+                        .remove(&id);
                     return Err(BridgeError::Protocol(format!(
                         "capabilities failed: {code} {message:?}"
                     )));
@@ -201,7 +202,10 @@ impl AfmBridge {
                         .map_err(|e| BridgeError::Protocol(format!("capabilities body: {e}")))?;
                     let caps = Arc::new(caps);
                     let _ = self.capabilities.set(Arc::clone(&caps));
-                    self.pending.lock().expect("bridge pending lock").remove(&id);
+                    self.pending
+                        .lock()
+                        .expect("bridge pending lock")
+                        .remove(&id);
                     return Ok(caps);
                 }
             }
@@ -219,7 +223,10 @@ impl AfmBridge {
     ) -> Result<(String, mpsc::Receiver<BridgeEvent>), BridgeError> {
         let id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = mpsc::channel::<BridgeEvent>(64);
-        self.pending.lock().expect("bridge pending lock").insert(id.clone(), tx);
+        self.pending
+            .lock()
+            .expect("bridge pending lock")
+            .insert(id.clone(), tx);
         let mut body = json!({
             "id": id,
             "op": "turn",
@@ -233,7 +240,10 @@ impl AfmBridge {
             body["maxResponseTokens"] = json!(cap);
         }
         if self.write_line(&body).is_err() {
-            self.pending.lock().expect("bridge pending lock").remove(&id);
+            self.pending
+                .lock()
+                .expect("bridge pending lock")
+                .remove(&id);
             return Err(BridgeError::Unavailable(
                 "writing to the bridge failed — the child is likely dead".into(),
             ));
@@ -253,19 +263,18 @@ impl AfmBridge {
 
     fn write_line(&self, value: &serde_json::Value) -> Result<(), BridgeError> {
         let mut stdin = self.stdin.lock().expect("bridge stdin lock");
-        let write = serde_json::to_writer(&mut *stdin, value)
+        serde_json::to_writer(&mut *stdin, value)
             .map_err(|e| BridgeError::Unavailable(format!("bridge stdin: {e}")))
             .and_then(|()| {
-                stdin.write_all(b"\n").map_err(|e| {
-                    BridgeError::Unavailable(format!("bridge stdin: {e}"))
-                })
+                stdin
+                    .write_all(b"\n")
+                    .map_err(|e| BridgeError::Unavailable(format!("bridge stdin: {e}")))
             })
             .and_then(|()| {
-                stdin.flush().map_err(|e| {
-                    BridgeError::Unavailable(format!("bridge stdin: {e}"))
-                })
-            });
-        write
+                stdin
+                    .flush()
+                    .map_err(|e| BridgeError::Unavailable(format!("bridge stdin: {e}")))
+            })
     }
 
     /// Whether the child is still alive (best-effort; the reader's
@@ -360,7 +369,11 @@ fn route_line(
     }
 }
 
-fn fail_all_pending(pending: &Arc<Mutex<HashMap<String, mpsc::Sender<BridgeEvent>>>>, code: &str, message: &str) {
+fn fail_all_pending(
+    pending: &Arc<Mutex<HashMap<String, mpsc::Sender<BridgeEvent>>>>,
+    code: &str,
+    message: &str,
+) {
     let mut pending = pending.lock().expect("bridge pending lock");
     for (_, tx) in pending.drain() {
         let _ = tx.try_send(BridgeEvent::Failed {
@@ -381,14 +394,14 @@ pub fn chat_bridge() -> Option<Arc<AfmBridge>> {
         .get_or_init(|| match crate::config::afm_bridge_path() {
             Some(path) if path.is_file() => AfmBridge::spawn(&path)
                 .map_err(|e| {
-                    tracing::warn!("chat bridge spawn failed ({e}); chat turns will refuse by name");
+                    tracing::warn!(
+                        "chat bridge spawn failed ({e}); chat turns will refuse by name"
+                    );
                     e
                 })
                 .ok(),
             _ => {
-                tracing::info!(
-                    "no AFM bridge binary; chat turns answer chat_bridge_unavailable"
-                );
+                tracing::info!("no AFM bridge binary; chat turns answer chat_bridge_unavailable");
                 None
             }
         })
@@ -411,12 +424,17 @@ mod tests {
             repo_root.join("shell-macos/.build/arm64-apple-darwin/debug/brain-afm"),
         ];
         let Some(binary) = candidates.iter().find(|p| p.is_file()) else {
-            eprintln!("brain-afm not built; run `swift build` in shell-macos — SKIPPING (owned by the Swift suite)");
+            eprintln!(
+                "brain-afm not built; run `swift build` in shell-macos — SKIPPING (owned by the Swift suite)"
+            );
             return;
         };
         let bridge = AfmBridge::spawn(binary).expect("spawn the real bridge");
         let caps = bridge.capabilities().await.expect("capabilities");
-        assert_eq!(caps.window, 4096, "the on-device window is the measured 4096");
+        assert_eq!(
+            caps.window, 4096,
+            "the on-device window is the measured 4096"
+        );
         assert_eq!(
             caps.pcc_window,
             Some(32768),

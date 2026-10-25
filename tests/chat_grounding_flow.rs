@@ -87,8 +87,7 @@ async fn the_green_tea_chat_turn_is_grounded_fenced_and_streamed() {
     let db_path = dir.path().join("brain.db");
     brain_server::register_sqlite_vec::register_sqlite_vec();
     let mgr = SqliteConnectionManager::file(&db_path);
-    let pool: brain_server::Pool =
-        r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
+    let pool: brain_server::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
     brain_server::migration::run_migration(
         &mut pool.get().expect("conn"),
         brain_server::config::DB_MMAP_SIZE_MIB,
@@ -111,11 +110,7 @@ async fn the_green_tea_chat_turn_is_grounded_fenced_and_streamed() {
         durability: Default::default(),
         loom: Default::default(),
         model,
-        registry: brain_server::domain_registry::DomainRegistry::new(
-            pool.clone(),
-            &db_path,
-            false,
-        ),
+        registry: brain_server::domain_registry::DomainRegistry::new(pool.clone(), &db_path, false),
         pool,
         db_path,
         connection_tracker: Arc::new(brain_server::http_limit::ConnectionTracker::new()),
@@ -124,20 +119,12 @@ async fn the_green_tea_chat_turn_is_grounded_fenced_and_streamed() {
         audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
         auth_mode: brain_server::auth::AuthMode::Opaque,
         key_store: brain_server::auth::jwks::KeyStore::default(),
-        revocation_cache: Arc::new(
-            brain_server::auth::revocation::RevocationCache::new(),
-        ),
+        revocation_cache: Arc::new(brain_server::auth::revocation::RevocationCache::new()),
         jwt_issuer: String::new(),
         jwt_audience: String::new(),
         oidc_config: brain_server::handlers::well_known::OidcConfig::unconfigured(),
-        ump_events: tokio::sync::broadcast::channel(
-            brain_server::config::UMP_EVENT_BUFFER,
-        )
-        .0,
-        alert_events: tokio::sync::broadcast::channel(
-            brain_server::config::ALERT_EVENT_BUFFER,
-        )
-        .0,
+        ump_events: tokio::sync::broadcast::channel(brain_server::config::UMP_EVENT_BUFFER).0,
+        alert_events: tokio::sync::broadcast::channel(brain_server::config::ALERT_EVENT_BUFFER).0,
         alert_seq: std::sync::atomic::AtomicU64::new(0),
         chain_watch: brain_server::alert::ChainWatchState::default(),
         concurrency: &brain_server::concurrency::CONCURRENCY,
@@ -184,8 +171,7 @@ async fn the_green_tea_chat_turn_is_grounded_fenced_and_streamed() {
     assert_eq!(grounding_name, "grounding");
     let hits = grounding["hits"].as_array().expect("grounding hits");
     assert!(
-        !hits.is_empty()
-            && hits.iter().all(|hit| hit["id"].as_i64().is_some()),
+        !hits.is_empty() && hits.iter().all(|hit| hit["id"].as_i64().is_some()),
         "the green-tea memory grounded the turn (hits carry ids): {grounding}"
     );
 
@@ -213,10 +199,7 @@ async fn the_green_tea_chat_turn_is_grounded_fenced_and_streamed() {
     );
 
     // 3. THE STREAM: deltas precede the final (streaming, not one blob).
-    let delta_count = events
-        .iter()
-        .filter(|(name, _)| name == "delta")
-        .count();
+    let delta_count = events.iter().filter(|(name, _)| name == "delta").count();
     assert!(delta_count > 0, "the turn streamed deltas before the final");
 
     // 4. No error event ever rode the stream.
