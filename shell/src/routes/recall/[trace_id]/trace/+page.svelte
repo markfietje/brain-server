@@ -59,7 +59,9 @@
 			rawText = null;
 			rawJson = null;
 			try {
-				captureNextRawText((text) => {
+				// The capture is bound to THIS read's path: the frame's own reads
+				// share the client and may answer first.
+				captureNextRawText(`/recall/${id}/trace`, (text) => {
 					rawText = text;
 				});
 				const { data, error, response } = await client.GET('/recall/{trace_id}/trace', {

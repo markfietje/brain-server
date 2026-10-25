@@ -65,6 +65,19 @@
 > LAND before teardown), and openapi-fetch hands the stub a `Request`, so a
 > POST body is read off the request, not `init`.
 >
+> **AND THE FRAME'S OWN REGRESSION, caught by the shell lane's e2e and
+> fixed where it belongs.** The R25 trace export binds the downloaded
+> evidence to the EXACT `GET /recall/{trace_id}/trace` bytes, through a
+> capture middleware armed for "the NEXT response on this client" — and the
+> frame reads the kernel at its glance moments on the SAME client, so the
+> facts read could answer first and hand the export its bytes
+> (`export bytes === GET response bytes` failed on the lane's trace
+> replay). The capture is bound to the NAMED PATH now (both call sites —
+> the trace replay and the decision-run detail), and a new pin holds it:
+> another read answers first, the capture stays armed, and the captured
+> bytes are the named path's own — red-proved by removing the binding
+> (the pin took `/health`'s bytes, exactly the lane's miss).
+>
 > **THE RELEASE LANE'S RED, fixed on the way.** v1.29.32's CI run was red in
 > every feature lane on ONE test: the release-notes drill arm re-embedded
 > the WHOLE changelog section after a fresh `### Release notes` line, and
@@ -78,9 +91,12 @@
 > **OWED, named:** the dsh session list (the frame has the region; sessions
 > arrive with their listing endpoints), "Import…" (the markdown import is a
 > Write with no proposal path — not wired rather than wired around the
-> gate), `/audit/export` (compliance-pack only), the streaming composer on
-> the chat spine (the chat still rides `/recall`; the spine's consumer is
-> its own round), and the e2e's first run against the new chrome.
+> gate), `/audit/export` (compliance-pack only), and the streaming composer
+> on the chat spine (the chat still rides `/recall`; the spine's consumer is
+> its own round). The e2e ran against the new chrome on the lane: the
+> palette spec green on the one-nav law, the trace replay red once for the
+> capture race above and green after it, locally on Chromium against a real
+> loopback kernel.
 >
 > **ponytail:** one frame store, four api modules, one chrome rewrite, two
 > routes, one page restyle, one page rewrite, 94 keys × 5 catalogs; no new

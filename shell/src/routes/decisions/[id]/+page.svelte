@@ -313,7 +313,9 @@
 		rawText = null;
 		rawOmitted = false;
 		try {
-			captureNextRawText((text) => {
+			// The capture is bound to THIS read's path: the frame's own reads
+			// share the client and may answer first.
+			captureNextRawText(`/workflow/decision-runs/${id}`, (text) => {
 				if (!requestGuard.isCurrent(generation)) return;
 				if (rawCaptureWithinLimit(text)) {
 					rawText = text;

@@ -130,27 +130,31 @@ const wireFaultMiddleware: Middleware = {
  * the downloaded evidence to the EXACT `GET /recall/{trace_id}/trace`
  * response bytes — not a re-serialization. The typed wire stays the ONLY
  * wire (D5): this middleware rides it, cloning the undisturbed response
- * to capture the raw text of the NEXT response only (opt-in per call
- * site). Capture is best-effort: if it cannot run, the caller falls back
- * to the typed parse's own stringify (disclosed) — never an error surface.
+ * to capture the raw text of the next response TO THE NAMED PATH (opt-in
+ * per call site). Bound to the path, not to "the next response": the frame
+ * reads the kernel at its own glance moments, and a capture that took
+ * whatever answered next handed the export another read's bytes when that
+ * landed first — measured on the lane's trace replay. Capture is
+ * best-effort: if it cannot run, the caller falls back to the typed parse's
+ * own stringify (disclosed) — never an error surface.
  */
-let rawTextSink: ((text: string) => void) | null = null;
+let rawTextCapture: { readonly path: string; readonly sink: (text: string) => void } | null = null;
 
-/** Arms the raw-text capture for the next response on this client. */
-export function captureNextRawText(sink: (text: string) => void): void {
-	rawTextSink = sink;
+/** Arms the raw-text capture for the next response to `path` on this client. */
+export function captureNextRawText(path: string, sink: (text: string) => void): void {
+	rawTextCapture = { path, sink };
 }
 
 const rawCaptureMiddleware: Middleware = {
-	async onResponse({ response }) {
-		const sink = rawTextSink;
-		rawTextSink = null;
-		if (sink) {
-			try {
-				sink(await response.clone().text());
-			} catch {
-				// capture unavailable → the caller's disclosed fallback stands
-			}
+	async onResponse({ request, response }) {
+		const capture = rawTextCapture;
+		if (capture === null) return response;
+		if (new URL(request.url).pathname !== capture.path) return response;
+		rawTextCapture = null;
+		try {
+			capture.sink(await response.clone().text());
+		} catch {
+			// capture unavailable → the caller's disclosed fallback stands
 		}
 		return response;
 	}

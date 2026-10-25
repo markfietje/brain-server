@@ -199,3 +199,42 @@ test('trace_404_renders_the_honest_state', async () => {
 	expect(screen.queryByTestId('trace-export')).toBeNull();
 	expect(screen.queryByTestId('trace-json')).toBeNull();
 });
+
+/**
+ * The capture is bound to the PATH it was armed for. The frame reads the
+ * kernel at its own glance moments on the same client, and a capture that
+ * took "whatever answered next" handed the export another read's bytes when
+ * that read landed first — the shell lane's trace replay measured exactly
+ * that (export bytes ≠ GET response bytes) the day the frame landed. Here
+ * another response lands BEFORE the trace's, and the captured bytes must
+ * still be the trace's own.
+ */
+test('the_raw_capture_is_bound_to_its_path_not_to_whatever_answers_next', async () => {
+	const { client, captureNextRawText } = await import('../src/lib/api/client.js');
+	const TRACE_BYTES = '{"trace_id":4242,"decision":"ok"}';
+	const OTHER_BYTES = '{"status":"ok","version":"1.29.32"}';
+	const headers = { 'content-type': 'application/json' };
+	responder = async (url) => {
+		const path = new URL(url).pathname;
+		if (path === '/health') return new Response(OTHER_BYTES, { status: 200, headers });
+		if (path === '/recall/4242/trace') return new Response(TRACE_BYTES, { status: 200, headers });
+		return new Response('not found', { status: 404 });
+	};
+
+	let captured: string | null = null;
+	captureNextRawText('/recall/4242/trace', (text) => {
+		captured = text;
+	});
+
+	// Another read answers FIRST — and is NOT what the capture takes.
+	await client.GET('/health');
+	expect(captured, 'a response to another path must leave the capture armed').toBeNull();
+
+	await client.GET('/recall/{trace_id}/trace', { params: { path: { trace_id: 4242 } } });
+	expect(captured, 'the captured bytes are the named path\'s own').toBe(TRACE_BYTES);
+
+	// And the capture is spent: a second trace read is not captured again.
+	captured = null;
+	await client.GET('/recall/{trace_id}/trace', { params: { path: { trace_id: 4242 } } });
+	expect(captured).toBeNull();
+});
