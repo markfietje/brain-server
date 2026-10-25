@@ -266,12 +266,7 @@ pub async fn chat_turn(
     // the TURN is cancelled — the session survives in the bridge.
     let (tx, rx_out) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(64);
     tokio::spawn(async move {
-        let send = |event: Event| async {
-            match tx.send(Ok(event)).await {
-                Ok(()) => true,
-                Err(_) => false,
-            }
-        };
+        let send = |event: Event| async { tx.send(Ok(event)).await.is_ok() };
         if !send(
             Event::default()
                 .event("grounding")

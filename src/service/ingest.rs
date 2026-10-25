@@ -657,15 +657,14 @@ pub fn verify_governance(conn: &rusqlite::Connection) -> rusqlite::Result<Govern
     let mut scan = GovernanceScan::default();
     for row in rows {
         let (id, owner, access_scope, domain, stored) = row?;
-        match stored {
-            None => scan.legacy_unhashed += 1,
-            Some(stored) => {
-                if stored == governance_hash(owner.as_deref(), &access_scope, &domain) {
-                    scan.ok += 1;
-                } else {
-                    scan.tampered.push(id);
-                }
+        if let Some(stored) = stored {
+            if stored == governance_hash(owner.as_deref(), &access_scope, &domain) {
+                scan.ok += 1;
+            } else {
+                scan.tampered.push(id);
             }
+        } else {
+            scan.legacy_unhashed += 1;
         }
     }
     Ok(scan)
