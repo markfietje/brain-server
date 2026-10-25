@@ -33,6 +33,16 @@ const keychain = vi.hoisted(() => ({
 vi.mock('#lib/queue/client.js', () => ({
 	fetchPendingQueue: vi.fn(async () => ({ kind: 'ok', rows: [] }))
 }));
+// The sidebar frame's two other mount-time reads, mocked the same way.
+vi.mock('#lib/api/kernel-facts.js', () => ({
+	fetchKernelFacts: vi.fn(async () => ({
+		kind: 'ok',
+		facts: { version: null, count: null, model: null }
+	}))
+}));
+vi.mock('#lib/api/audit.js', () => ({
+	verifyAuditChain: vi.fn(async () => ({ kind: 'refused', status: 403, fault: 'unknown' }))
+}));
 
 vi.mock('@tauri-apps/api/core', () => ({
 	invoke: vi.fn(async (command: string, args?: { token?: string }) => {

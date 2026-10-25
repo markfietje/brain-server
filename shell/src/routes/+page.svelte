@@ -52,6 +52,8 @@
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Textarea } from '#lib/components/ui/textarea/index.js';
+	import ArrowUpIcon from '@lucide/svelte/icons/arrow-up';
+	import { currentConversationEpoch } from '#lib/shell/frame.svelte.js';
 
 	interface Turn {
 		id: number;
@@ -207,6 +209,23 @@
 	// which compiled and then failed every render with `effect_orphan`.
 	let composerEl = $state<HTMLTextAreaElement | null>(null);
 	$effect(() => {
+		composerEl?.focus();
+	});
+
+	// "New chat" in the sidebar bumps the conversation epoch; this surface
+	// answers by dropping its transcript and every per-citation state with
+	// it, then handing focus back to the composer. The first run only
+	// records the epoch it mounted under — a mount is not a reset.
+	let seenEpoch = currentConversationEpoch();
+	$effect(() => {
+		const epoch = currentConversationEpoch();
+		if (epoch === seenEpoch) return;
+		seenEpoch = epoch;
+		turns = [];
+		actions = {};
+		verifying = null;
+		claimDrafts = {};
+		evidenceOpen = {};
 		composerEl?.focus();
 	});
 
@@ -379,7 +398,7 @@
 	}
 </script>
 
-<div class="mx-auto grid w-full max-w-2xl gap-4" data-testid="chat-surface">
+<div class="flex min-h-full flex-1 flex-col gap-4" data-testid="chat-surface">
 	<h1 class="sr-only">{m['chat.title']()}</h1>
 
 	<!-- M3-b — the empty state IS the first paint (plan 21 §1/§3.8): a
@@ -387,11 +406,13 @@
 	     onboarding — each does the thing it names, none explains a page —
 	     and the first turn replaces them, because a transcript with chips
 	     below it is clutter. The composer keeps its mount focus: the chips
-	     render beside it, they never take focus for themselves. -->
+	     render beside it, they never take focus for themselves. It sits in
+	     the column's middle, the way an empty conversation does, with the
+	     composer waiting below. -->
 	{#if turns.length === 0}
-		<div class="grid gap-3 pt-6" data-testid="chat-empty">
-			<p class="text-base font-medium">{m['chat.empty.greeting']()}</p>
-			<div class="flex flex-wrap gap-2">
+		<div class="my-auto grid gap-4 py-10 text-center" data-testid="chat-empty">
+			<p class="text-xl font-semibold tracking-tight">{m['chat.empty.greeting']()}</p>
+			<div class="flex flex-wrap justify-center gap-2">
 				<Button
 					type="button"
 					variant="outline"
@@ -431,9 +452,12 @@
 	{/if}
 
 	<!-- The transcript. `aria-live="polite"` so a streaming or slow turn
-	     announces without interrupting (Plan 02 §5). -->
+	     announces without interrupting (Plan 02 §5). Each turn is the
+	     person's line as a bubble on the right and the answer as prose on
+	     the left; a refusal and an abstention keep a bordered card, because
+	     those two are the states a reader must not glide past. -->
 	<div
-		class="grid gap-4"
+		class="flex flex-col gap-6"
 		role="log"
 		aria-live="polite"
 		aria-label={m['chat.transcript']()}
@@ -443,15 +467,22 @@
 			<article
 				data-rendering={renderingToken(turn.rendering)}
 				data-testid="chat-turn"
-				class="grid gap-2 rounded-lg border p-4
-					{turn.rendering.kind === 'refused'
-					? 'border-destructive/60'
-					: turn.rendering.kind === 'abstained'
-						? 'border-brand/50'
-						: 'border-border'}"
+				class="flex flex-col gap-3"
 			>
-				<p class="text-sm text-muted-foreground">{turn.rendering.query}</p>
+				<p
+					class="max-w-[85%] self-end rounded-2xl rounded-br-md bg-surface-2 px-4 py-2.5 text-sm whitespace-pre-wrap"
+				>
+					{turn.rendering.query}
+				</p>
 
+				<div
+					class="grid max-w-[92%] gap-2 self-start
+						{turn.rendering.kind === 'refused'
+						? 'rounded-xl border border-destructive/60 p-4'
+						: turn.rendering.kind === 'abstained'
+							? 'rounded-xl border border-brand/50 p-4'
+							: ''}"
+				>
 				{#if turn.rendering.kind === 'pending'}
 					<p aria-busy="true" class="text-sm">{m['chat.working']()}</p>
 				{:else if turn.rendering.kind === 'answered'}
@@ -676,6 +707,7 @@
 						{m['chat.violation.body']({ detail: turn.rendering.detail })}
 					</p>
 				{/if}
+				</div>
 			</article>
 		{/each}
 	</div>
@@ -709,29 +741,41 @@
 		</div>
 	{/if}
 
-	<!-- The composer. Focused on mount, so the app opens ready to type. -->
+	<!-- The composer. Focused on mount, so the app opens ready to type. It
+	     sticks to the bottom of the column while the transcript scrolls
+	     above it — the one control that is always within reach. -->
 	<form
-		class="grid gap-2"
+		class="sticky bottom-0 mt-auto grid gap-2 bg-background pt-3"
 		onsubmit={(event) => {
 			event.preventDefault();
 			void send();
 		}}
 	>
 		<label class="sr-only" for="chat-composer">{m['chat.composer.label']()}</label>
-		<Textarea
-			id="chat-composer"
-			ref={composerEl}
-			bind:value={composer}
-			onkeydown={onKeydown}
-			placeholder={m['chat.composer.placeholder']()}
-			rows={2}
-			data-testid="chat-composer"
-		/>
-		<div class="flex items-center justify-between gap-2">
-			<p class="text-xs text-muted-foreground">{m['chat.composer.hint']()}</p>
-			<Button type="submit" disabled={busy || composer.trim().length === 0} data-testid="chat-send">
-				{m['chat.send']()}
+		<div
+			class="flex items-end gap-2 rounded-2xl border border-border bg-surface p-2 shadow-xs focus-within:border-ring"
+		>
+			<Textarea
+				id="chat-composer"
+				ref={composerEl}
+				bind:value={composer}
+				onkeydown={onKeydown}
+				placeholder={m['chat.composer.placeholder']()}
+				rows={2}
+				class="min-h-0 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
+				data-testid="chat-composer"
+			/>
+			<Button
+				type="submit"
+				size="icon-sm"
+				class="shrink-0 rounded-full"
+				disabled={busy || composer.trim().length === 0}
+				aria-label={m['chat.send']()}
+				data-testid="chat-send"
+			>
+				<ArrowUpIcon aria-hidden="true" />
 			</Button>
 		</div>
+		<p class="px-2 text-xs text-muted-foreground">{m['chat.composer.hint']()}</p>
 	</form>
 </div>

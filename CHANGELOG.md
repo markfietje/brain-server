@@ -121,6 +121,15 @@ exactly that mismatch once.
   install health check now VERSION-MATCHES `/health` against the installed
   binary — a foreign kernel already on 8765 cannot satisfy it. First-boot
   waits grew to cover the row-hashing migration (8,745 rows hashed live).
+- The desktop app's frame: a sidebar lists the surfaces — Chat first, then
+  Memory, Review (carrying the waiting count only while something waits),
+  Audit, Governance and Settings — beside the conversation, with the kernel's
+  version, row count and chain verdict READ from the kernel and never
+  guessed, and a status bar naming the wire's health and the model. Memory
+  renders recall hits as cards carrying the kernel's own facts (score band,
+  kind and origin, validity window, untrusted and quarantine marks) and files
+  a new memory as a review PROPOSAL, never a memory; Audit displays the hash
+  chain's verdict and events; Governance shows domains, roles and retention.
 
 **Security fixes**
 

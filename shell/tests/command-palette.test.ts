@@ -16,8 +16,19 @@ vi.mock('$app/state', () => ({
 // `fetch` before any stub could land — the queue read is mocked at the
 // module boundary instead, answering an EMPTY queue: this file's subject is
 // the palette/token flows, and an absent badge is the neutral chrome state.
+// The sidebar frame added two more mount-time reads (the kernel facts and
+// the chain verdict); both are mocked the same way, answering nothing.
 vi.mock('#lib/queue/client.js', () => ({
 	fetchPendingQueue: vi.fn(async () => ({ kind: 'ok', rows: [] }))
+}));
+vi.mock('#lib/api/kernel-facts.js', () => ({
+	fetchKernelFacts: vi.fn(async () => ({
+		kind: 'ok',
+		facts: { version: null, count: null, model: null }
+	}))
+}));
+vi.mock('#lib/api/audit.js', () => ({
+	verifyAuditChain: vi.fn(async () => ({ kind: 'refused', status: 403, fault: 'unknown' }))
 }));
 import { goto } from '$app/navigation';
 import AppShellHost from './AppShellHost.svelte';
@@ -49,18 +60,18 @@ test('command_palette_opens_and_navigates', async () => {
 	const input = screen.getByPlaceholderText(PALETTE_PLACEHOLDER);
 	expect(input).toBeTruthy();
 
-	// Selecting the Recall item navigates (goto over resolve) and closes
-	// the palette. M3-a: there is no nav bar — the palette is the only place
-	// the label is spoken, so the query runs over the whole screen.
-	await user.type(input, 'Recall');
-	await user.click(within(dialog as HTMLElement).getByText('Recall'));
+	// Selecting the Memory item navigates (goto over resolve) and closes
+	// the palette. The sidebar speaks the same label, so the query is
+	// scoped to the dialog.
+	await user.type(input, 'Memory');
+	await user.click(within(dialog as HTMLElement).getByText('Memory'));
 	await waitFor(() => expect(vi.mocked(goto)).toHaveBeenCalledWith('/recall'));
 	await waitFor(() =>
 		expect(screen.queryByPlaceholderText(PALETTE_PLACEHOLDER)).toBeNull()
 	);
 
 	// ⌘K reopens the palette; the Settings entry opens the settings panel
-	// (no navigation). The top bar's settings BUTTON shares the accessible
+	// (no navigation). The sidebar's settings BUTTON shares the accessible
 	// name — the palette item is the one inside the dialog.
 	await user.keyboard('{Meta>}{k}{/Meta}');
 	const reopened = await screen.findByRole('dialog');

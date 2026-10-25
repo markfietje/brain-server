@@ -1,5 +1,93 @@
 # Agent Execution Log — brain-server
 
+> **R141 "Frame" (2026-10-25): the desktop app's chrome moved from plan 21's
+> "almost no chrome" bar to a sidebar frame shaped after the DeepSeek harness
+> (`dsh`, measured from its `AppFrame`/`SidebarRoot`: a sidebar column with
+> brand + build, a "New session" primary act, the panel list, the session
+> region and a settings foot, beside a centre conversation column), and the
+> move is a NAMED act, not a drift.** The operator's design: Chat first, then
+> Memory, Review (count by exception), Audit, Governance, Settings; the
+> store's facts in the sidebar's foot; a one-line status bar under the
+> surface. Plan 21 §1's "zero permanent nav" law is reversed on purpose and
+> the chrome pin was REWRITTEN to the new law (one `<nav>` landmark with the
+> surface list in order, one `<main>`, the count-by-exception kept, the
+> facts read-never-guessed, New chat bumping the conversation epoch, the
+> collapsed rail keeping every name). What survived plan 21 unchanged: the
+> conversation IS the home, composer focused on launch, the empty state's
+> three acting chips, evidence collapsed by default, the fault banner as the
+> one interrupt, the palette in-page with no OS shortcut, Settings a dialog.
+>
+> **THE FACTS ARE READ, NEVER GUESSED, and the pin holds each one.** The
+> sidebar's "{rows} rows · integrity verified" is `GET /stats` (Read) and
+> `GET /audit/verify` (Admin): a refused verify says "integrity not
+> verified" — never "verified" on a guess — and `ok:false` says BROKEN; a
+> refused `/stats` leaves the count OUT rather than printing "0 rows" over a
+> refusal; the kernel version is the public `/health`. `/health/db` was
+> considered for the footer and REFUSED by the census: it is role-gated
+> in-handler and sits in no `AUTHZ_GATES` row, so the shell cannot state its
+> scope. The status bar's "Retrieval healthy" is the wire-status module's
+> resting state (the fault sentence otherwise), its middle slot is the
+> surface's own sentence ("3 memories"), and its model is the one `/stats`
+> reported.
+>
+> **THREE SURFACES, TWO OF THEM NEW ROUTES, and the census grew as a named
+> act (6 → 8, mix {2,3,1} → {2,4,2}).** `/recall` is the frame's "Memory":
+> the same POST /recall wire rendered as cards carrying the kernel's own
+> hit facts (score + band, `memory_kind · origin`, the validity summary via
+> the chat's `validityOf`, the untrusted mark for model/agent/imported
+> origins, the quarantine mark), a kind filter that is CLIENT-SIDE over the
+> last answer (the QueryDoc carries NO memory-kind filter — measured; its
+> `source`/`sources` filter the INGEST kind — so the chips never pretend to
+> have asked for less), and "Add memory" filing a PROPOSAL to
+> `/ingest/proposal` — the review queue is the only door into the store, and
+> the Write-exhaustive list grew by that one path with its `mutates` act
+> named. `/audit` (renamed → the Dioxus `/audit?:since&:principal`, a
+> query-shape difference) reads the chain verdict and one page of events
+> with offset paging — hashes only, prefixes on screen. `/governance`
+> (no_counterpart; nearest `/system`, which carries the domains) renders
+> domains, roles and retention EACH on its own answer, so a Read bearer sees
+> two live sections beside a named Admin refusal. `/audit/export` was
+> considered and DEFERRED: it is a compliance-pack-only route in no gate
+> row. Settings stayed a dialog (the owed Advanced relocation is unchanged).
+>
+> **THE PINS, and the drills they ran.** Three new pin files (audit,
+> governance, memory surfaces — live/empty/offline/refused/malformed, the
+> client-side filter never re-asking, the proposal's request body read off
+> the wire, the status context clearing on the way out, no write verb in
+> the read-only surfaces), the chrome pin rewritten (six arms), the census
+> and parity rows, two a11y recipes, the palette and keychain pins gaining
+> the frame's two new mount-time reads mocked at the module boundary (the
+> static host import captures the real `fetch`), and the loanword lists
+> extended with the surfaces' genuine cognates ("Audit", "Governance",
+> "Status", "Steward"…), each with its reason. Two harness defects found by
+> the pins' own red: the module-level frame store leaks a scenario's
+> in-flight read into the next (every scenario now waits for its reads to
+> LAND before teardown), and openapi-fetch hands the stub a `Request`, so a
+> POST body is read off the request, not `init`.
+>
+> **THE RELEASE LANE'S RED, fixed on the way.** v1.29.32's CI run was red in
+> every feature lane on ONE test: the release-notes drill arm re-embedded
+> the WHOLE changelog section after a fresh `### Release notes` line, and
+> this release's section carried an engineering-record h3 before its notes
+> block — the gate met that h3 first and refused for "no bullets", the right
+> verdict for the wrong reason. The arm now slices the NOTES BLOCK (from
+> `### Release notes` to the section's end) so it tests the ID rule rather
+> than the section's shape; the parallel fix folded the h3 into intro prose.
+> Both hold.
+>
+> **OWED, named:** the dsh session list (the frame has the region; sessions
+> arrive with their listing endpoints), "Import…" (the markdown import is a
+> Write with no proposal path — not wired rather than wired around the
+> gate), `/audit/export` (compliance-pack only), the streaming composer on
+> the chat spine (the chat still rides `/recall`; the spine's consumer is
+> its own round), and the e2e's first run against the new chrome.
+>
+> **ponytail:** one frame store, four api modules, one chrome rewrite, two
+> routes, one page restyle, one page rewrite, 94 keys × 5 catalogs; no new
+> dependency, no new capability, no kernel change, no wire change, no
+> `dangerous*` flag, no OS shortcut, and no fact on screen the kernel did
+> not state.
+
 > **R140 "Recut" (2026-10-25): the release lane was the FIRST machine to
 > compile brain-afm from a clean tree, and it is red — because the bundle
 > job stayed on an image whose SDK cannot see the macOS 27 FoundationModels

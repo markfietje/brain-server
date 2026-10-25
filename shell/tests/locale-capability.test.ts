@@ -49,7 +49,16 @@ const GERMAN_LOANWORDS = new Set([
 	'decisions.detail.model_version',
 	'decisions.detail.limit',
 	'decisions.detail.leg',
-	'decisions.detail.kernel'
+	'decisions.detail.kernel',
+	// The sidebar frame's surfaces (2026-10-25): "Audit" and "Governance"
+	// are the German technical terms, "Status" is a German word, and
+	// "Steward" is the product name — a proper noun in every locale.
+	'nav.audit',
+	'nav.governance',
+	'shell.brand',
+	'audit.title',
+	'audit.col.status',
+	'governance.title'
 ]);
 // (M3-a: the overview.*/models.* entries retired with their keys — a
 // loanword entry for a key no catalog carries would be dead cover.)
@@ -74,7 +83,16 @@ const FRENCH_LOANWORDS = new Set([
 	'decisions.detail.leg',
 	'chat.title',
 	'review.row.scores',
-	'review.row.salience'
+	'review.row.salience',
+	// The sidebar frame (2026-10-25): "Audit", "Surfaces", "score" and
+	// "relations" are French words of identical spelling; "Steward" is the
+	// product name.
+	'nav.audit',
+	'shell.brand',
+	'shell.nav',
+	'memory.badge.score',
+	'audit.title',
+	'governance.domain.relations'
 ]);
 
 const SPANISH_LOANWORDS = new Set([
@@ -84,7 +102,12 @@ const SPANISH_LOANWORDS = new Set([
 	'recall.trace.fields.actor',
 	'decisions.list.pipeline',
 	'decisions.detail.rrf_k',
-	'decisions.detail.kernel'
+	'decisions.detail.kernel',
+	// The sidebar frame (2026-10-25): "Actor" and "Roles" are Spanish words
+	// of identical spelling; "Steward" is the product name.
+	'shell.brand',
+	'audit.col.actor',
+	'governance.roles'
 ]);
 
 const DUTCH_LOANWORDS = new Set([
@@ -98,7 +121,22 @@ const DUTCH_LOANWORDS = new Set([
 	'decisions.detail.model_id',
 	'decisions.detail.kernel',
 	'review.row.scores',
-	'review.row.conflict'
+	'review.row.conflict',
+	// The sidebar frame (2026-10-25): "Audit", "Governance", "Status",
+	// "Actor", "model", "score", "Procedure"/"Procedures" are Dutch words or
+	// established loanwords of identical spelling; "Steward" is the product
+	// name.
+	'nav.audit',
+	'nav.governance',
+	'shell.brand',
+	'shell.status.model',
+	'memory.filter.procedures',
+	'memory.badge.score',
+	'memory.add.kind.procedure',
+	'audit.title',
+	'audit.col.actor',
+	'audit.col.status',
+	'governance.title'
 ]);
 
 const LOANWORD_LISTS: Readonly<Record<string, ReadonlySet<string>>> = {

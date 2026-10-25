@@ -6,43 +6,54 @@ import userEvent from '@testing-library/user-event';
 import { goto } from '$app/navigation';
 import { m } from '$paraglide/messages.js';
 import { shellRoot } from './fixtures';
+import { currentConversationEpoch, recordKernelFacts } from '../src/lib/shell/frame.svelte.js';
 
 /**
- * M3-a / M3-b — the chat-first IA's STRUCTURAL pins (plan `21_CHAT_FIRST_IA`
- * §1): the chrome earns its place by exception, and the retirement is a fact
- * about the tree.
+ * The frame's STRUCTURAL pins — the sidebar chrome that replaced plan 21's
+ * "almost no chrome" bar on 2026-10-25, shaped after the harness it
+ * borrows from: a sidebar listing the surfaces beside a main column with a
+ * one-line status bar. The law moved as a NAMED act, and this file is the
+ * new law.
  *
- * Three claims, three kinds:
+ * Five claims, five kinds:
  *
- * 1. **The chrome (amended in M3-b).** AppShell renders NO `<nav>` landmark,
- *    EXACTLY two PERMANENT header controls — the ⌘K palette button and the
- *    settings gear — and at most ONE exception control: the review badge,
- *    which must be ABSENT when the queue read is empty. The amendment is the
- *    badge's law, not its permission: without the absent-when-empty half, a
- *    permanent third button could wear the "exception" name forever.
- * 2. **The badge (M3-b).** The review badge renders ONLY while the pending
- *    queue holds rows, carries a state token and an accessible name, and
- *    navigates to `/review`. Its wire is the queue read itself
- *    (`fetchPendingQueue` — no polling, no SSE; plan 22 R4's corrected
- *    finding: the proposal path publishes NO event).
- * 3. **The retirement (M3-a).** No file under `shell/src` imports
- *    `lib/wizard`, and no dropped route directory survives. The build
- *    already refuses a wizard import (the module is gone); this pin makes
- *    the retirement VISIBLE in the gate lane — a source scan in the II-6
- *    pattern — instead of leaving it to be rediscovered by a resolver error.
+ * 1. **The frame.** AppShell renders EXACTLY ONE `<nav>` landmark carrying
+ *    the surface list in order — Chat, Memory, Review, Audit, Governance as
+ *    links, then Settings as a dialog button — ONE `<main>`, and a status
+ *    bar that reads healthy at rest. The conversation is the FIRST entry
+ *    and the current one at `/`.
+ * 2. **The count by exception.** The review count rides the Review entry
+ *    ONLY while the queue read returned rows, carries a state token and an
+ *    accessible name, and is ABSENT — no node — when the queue is empty or
+ *    the read failed. Chrome-by-exception survived the redesign: an empty
+ *    queue still costs the UI nothing.
+ * 3. **The facts are read, never guessed.** The sidebar's integrity line
+ *    says "verified" only when `/audit/verify` answered `ok: true`; a
+ *    refused verify says "not verified", a false verdict says "BROKEN". The
+ *    row count appears only when `/stats` answered; the kernel version only
+ *    when `/health` did.
+ * 4. **New chat.** The sidebar's primary act bumps the conversation epoch
+ *    (the chat surface drops its transcript on it) and navigates home.
+ * 5. **The retirement (M3-a).** No file under `shell/src` imports
+ *    `lib/wizard`, and no dropped route directory survives.
  */
 
 vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
 vi.mock('$app/paths', () => ({ resolve: (p: string) => p }));
+vi.mock('$app/state', () => ({ page: { url: new URL('http://127.0.0.1/'), params: {} } }));
 
-// The badge reads the queue on mount, so AppShell now touches the wire. The
-// construction-order law (chat-surface.test.ts) applies: the typed client
-// holds the `fetch` it was created with, and the host import below is DYNAMIC
-// — the stub must be installed at module top, before any component module
-// loads. One identity-stable mock; per-test responders swap underneath it.
-type Responder = (url: string) => Promise<Response>;
-const emptyQueue: Responder = async () => new Response('[]', { status: 200 });
-let responder: Responder = emptyQueue;
+// The frame reads the wire at mount (the queue, the facts, the chain), so
+// the construction-order law (chat-surface.test.ts) applies: the typed
+// client holds the `fetch` it was created with, and the host import below
+// is DYNAMIC — the stub must be installed at module top, before any
+// component module loads. One identity-stable mock; per-test responders
+// swap underneath it.
+type Responder = (path: string) => Promise<Response>;
+const json = (body: unknown, status = 200): Response =>
+	new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+const quiet: Responder = async (path) =>
+	path === '/proposals' ? json([]) : new Response('not found', { status: 404 });
+let responder: Responder = quiet;
 vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
 	// A Request object's String() is "[object Request]" — the URL is `.url`.
 	const url = input instanceof Request ? input.url : String(input);
@@ -76,120 +87,232 @@ function proposalRow(id: number): Record<string, unknown> {
 	};
 }
 
-function serveQueue(rows: Record<string, unknown>[] | 'fail'): void {
-	responder =
-		rows === 'fail'
-			? async () => new Response('no wire', { status: 599 })
-			: async (path) =>
-					path === '/proposals'
-						? new Response(JSON.stringify(rows), { status: 200 })
-						: new Response('not found', { status: 404 });
+/** A responder serving a body per path; anything else is a 404. */
+function serve(bodies: Readonly<Record<string, unknown | (() => Response)>>): void {
+	responder = async (path) => {
+		if (!Object.prototype.hasOwnProperty.call(bodies, path)) {
+			return new Response('not found', { status: 404 });
+		}
+		const body = bodies[path];
+		return typeof body === 'function' ? (body as () => Response)() : json(body);
+	};
 }
 
 async function renderHost(): Promise<void> {
-	responder = emptyQueue;
 	const host = (await import('./AppShellHost.svelte')).default;
 	render(host);
+	await waitFor(() => expect(screen.getByTestId('host-content')).toBeTruthy());
 }
 
-/** The header's control labels, the badge EXCLUDED — the permanent chrome. */
-function permanentControls(): string[] {
-	return [...document.querySelectorAll('header button')]
-		.filter((button) => button.getAttribute('data-testid') !== 'review-badge')
-		.map((button) => button.getAttribute('aria-label') ?? '');
+/** The nav's entries in DOM order: testid → accessible name. */
+function navEntries(): Array<{ testid: string; name: string; tag: string }> {
+	return [...document.querySelectorAll('nav li > a, nav li > button')].map((el) => ({
+		testid: el.getAttribute('data-testid') ?? '',
+		name: (el.getAttribute('aria-label') ?? el.textContent ?? '').trim(),
+		tag: el.tagName.toLowerCase()
+	}));
 }
 
-test('the_app_shell_carries_no_nav_landmark_two_permanent_controls_and_at_most_one_exception_control', async () => {
+test('the_frame_renders_one_nav_with_the_surface_list_in_order_one_main_and_a_healthy_status_bar', async () => {
+	responder = quiet;
 	await renderHost();
 
-	// NO nav — not an empty one, not a hidden one: none. A `<nav>` that
-	// renders nothing would still be a landmark a screen reader announces.
-	expect(
-		document.querySelector('nav'),
-		'the shell renders a <nav> landmark — chat-first IA (plan 21 §1) removed the nav bar; ' +
-			'chrome appears by exception, never by default'
-	).toBeNull();
+	// EXACTLY ONE nav landmark — not zero (the old law), not two.
+	const navs = document.querySelectorAll('nav');
+	expect(navs.length, 'the frame carries exactly one <nav> landmark: the sidebar\'s surface list').toBe(1);
+	expect(navs[0]!.getAttribute('aria-label'), 'the nav is named for a screen reader').toBe(m['shell.nav']());
 
-	// The permanent header controls: EXACTLY TWO, and both NAMED. The review
-	// badge is the ONE allowed exception control (M3-b), and it is filtered
-	// out by its own testid — a badge that renamed its testid to hide here
-	// would fail the badge pin's absent-when-empty half instead. A third
-	// PERMANENT control reds here with its own name; an unnamed control reds
-	// with the emptiness it would hand a screen reader. What the two DO is
-	// command-palette.test.ts's subject — this pin is the chrome's SHAPE.
-	const controls = permanentControls();
-	expect(
-		controls,
-		`the header carries ${controls.length} permanent controls (${controls.join(', ')}) — the whole ` +
-			'permanent chrome is the ⌘K palette button and the settings gear (plan 21 §1)'
-	).toHaveLength(2);
-	for (const label of controls) {
-		expect(label.length, `a permanent header control carries no accessible name`).toBeGreaterThan(0);
+	// The surface list, in order. The conversation is FIRST; Settings is a
+	// BUTTON (it opens the dialog), the rest are LINKS with hrefs.
+	const entries = navEntries();
+	expect(entries.map((e) => e.testid)).toEqual([
+		'nav-chat',
+		'nav-memory',
+		'nav-review',
+		'nav-audit',
+		'nav-governance',
+		'nav-settings'
+	]);
+	expect(entries.map((e) => e.tag)).toEqual(['a', 'a', 'a', 'a', 'a', 'button']);
+	for (const entry of entries) {
+		expect(entry.name.length, `${entry.testid} carries no accessible name`).toBeGreaterThan(0);
 	}
+	expect(screen.getByTestId('nav-chat').getAttribute('href')).toBe('/');
+	expect(screen.getByTestId('nav-memory').getAttribute('href')).toBe('/recall');
+	expect(screen.getByTestId('nav-review').getAttribute('href')).toBe('/review');
+	expect(screen.getByTestId('nav-audit').getAttribute('href')).toBe('/audit');
+	expect(screen.getByTestId('nav-governance').getAttribute('href')).toBe('/governance');
 
-	// The exception half's TEETH: with the queue read empty there is NO
-	// badge node at all — not a hidden one, an absent one. This is the arm
-	// that keeps "exception" from decaying into "permanent".
+	// At `/` the conversation is the CURRENT entry, and nothing else is.
+	const current = [...document.querySelectorAll('nav [aria-current="page"]')];
+	expect(current.map((el) => el.getAttribute('data-testid'))).toEqual(['nav-chat']);
+
+	// ONE main landmark, holding the surface.
+	expect(document.querySelectorAll('main').length).toBe(1);
+	expect(document.querySelector('main')?.contains(screen.getByTestId('host-content'))).toBe(true);
+
+	// The status bar reads healthy at rest: no wire fault was classified.
+	const status = screen.getByTestId('shell-status');
+	expect(status.getAttribute('data-wire')).toBe('healthy');
+	expect(status.textContent).toContain(m['shell.status.healthy']());
+
+	// The brand and the ⌘K control are present; the settings control is the
+	// nav's own entry, so no second settings button hides elsewhere.
+	expect(screen.getByTestId('shell-brand').textContent).toContain(m['shell.brand']());
+	expect(screen.getByTestId('shell-palette').getAttribute('aria-label')).toBe(m['palette.open']());
 	expect(
-		document.querySelector('[data-testid="review-badge"]'),
-		'the review badge rendered while the queue read is empty — chrome-by-exception means ' +
-			'absent when there is nothing to review (plan 21 §1)'
-	).toBeNull();
-	expect(
-		document.querySelectorAll('header button').length,
-		'the header holds more than the two permanent controls while the queue is empty'
-	).toBe(2);
+		[...document.querySelectorAll('[aria-label="' + m['nav.settings']() + '"]')].length,
+		'exactly one control carries the Settings name'
+	).toBe(1);
 });
 
-test('the_review_badge_renders_only_while_the_queue_is_nonempty', async () => {
+test('the_review_count_rides_the_entry_only_while_the_queue_is_nonempty', async () => {
 	// ── present: the queue read returned rows ──
-	serveQueue([proposalRow(42)]);
-	const host = (await import('./AppShellHost.svelte')).default;
-	render(host);
+	serve({ '/proposals': [proposalRow(42)] });
+	await renderHost();
 
 	const badge = await screen.findByTestId('review-badge');
 	expect(badge.getAttribute('data-queue')).toBe('nonempty');
 	expect(
 		badge.getAttribute('aria-label'),
-		'the badge is named for a screen reader, carrying the count the read returned'
+		'the count is named for a screen reader, carrying the count the read returned'
 	).toBe(m['review.badge']({ count: 1 }));
-
-	// The header's WHOLE population with the exception live: two permanent
-	// + the badge, and no fourth control smuggled in beside it.
-	expect(document.querySelectorAll('header button').length).toBe(3);
-
-	// Keyboard-reachable, and it navigates to the operator's surface.
-	badge.focus();
-	expect(document.activeElement).toBe(badge);
-	await userEvent.click(badge);
-	await waitFor(() => expect(vi.mocked(goto)).toHaveBeenCalledWith('/review'));
+	// It lives INSIDE the Review entry — the entry is the control, the count
+	// is its decoration — so the keyboard path is the link itself.
+	expect(screen.getByTestId('nav-review').contains(badge)).toBe(true);
 
 	cleanup();
 
 	// ── absent: the queue read answered EMPTY (a fact, not a fault) ──
+	responder = quiet;
 	await renderHost();
-	await waitFor(() => expect(screen.getByTestId('host-content')).toBeTruthy());
 	await waitFor(() => {
 		expect(
 			document.querySelector('[data-testid="review-badge"]'),
-			'an empty queue must cost the UI nothing — no badge node'
+			'an empty queue must cost the UI nothing — no count node'
 		).toBeNull();
 	});
 
 	cleanup();
 
 	// ── absent: the queue read itself FAILED (offline/refused) ──
-	// An unreadable queue is not a non-empty queue: the badge is chrome, not
+	// An unreadable queue is not a non-empty queue: the count is chrome, not
 	// a fault surface, and a failed read renders NOTHING rather than a guess.
 	responder = async () => new Response('no wire', { status: 599 });
-	render(host);
-	await waitFor(() => expect(screen.getByTestId('host-content')).toBeTruthy());
+	await renderHost();
 	await waitFor(() => {
 		expect(
 			document.querySelector('[data-testid="review-badge"]'),
-			'a failed queue read must not render the badge on a guess'
+			'a failed queue read must not render the count on a guess'
 		).toBeNull();
 	});
+});
+
+test('the_sidebar_facts_are_read_from_the_kernel_and_never_guessed', async () => {
+	// ── everything answered: version, rows, and a verified chain ──
+	serve({
+		'/proposals': [],
+		'/health': { status: 'ok', version: '1.29.32' },
+		'/stats': { count: 8745, embeddings: 8745, entities: 1, relationships: 0, model: 'test-model', version: '1.29.32' },
+		'/audit/verify': { ok: true, domains: { global: true } }
+	});
+	await renderHost();
+	await waitFor(() => {
+		expect(screen.getByTestId('shell-facts').getAttribute('data-integrity')).toBe('verified');
+		expect(screen.getByTestId('shell-facts').textContent).toContain(
+			m['shell.facts.rows']({ count: 8745 })
+		);
+	});
+	const facts = screen.getByTestId('shell-facts');
+	expect(facts.textContent).toContain(m['shell.facts.integrity.verified']());
+	expect(screen.getByTestId('shell-kernel').textContent).toContain(
+		m['shell.kernel']({ version: '1.29.32' })
+	);
+	expect(screen.getByTestId('shell-status-model').textContent).toContain(
+		m['shell.status.model']({ model: 'test-model' })
+	);
+
+	cleanup();
+	// The frame store is module-level: the next scenario must not inherit
+	// this one's reading.
+	recordKernelFacts(null);
+
+	// ── the chain read REFUSED (a Read bearer): "not verified", never "verified" ──
+	serve({
+		'/proposals': [],
+		'/health': { status: 'ok', version: '1.29.32' },
+		'/stats': { count: 8745, model: 'test-model' },
+		'/audit/verify': () => json({ error: 'forbidden' }, 403)
+	});
+	await renderHost();
+	// Both reads land BEFORE the teardown: an in-flight read that resolves
+	// after cleanup would write its answer into the module store and leak
+	// into the next scenario.
+	await waitFor(() => {
+		expect(screen.getByTestId('shell-facts').getAttribute('data-integrity')).toBe('unverified');
+		expect(screen.getByTestId('shell-facts').textContent).toContain(
+			m['shell.facts.rows']({ count: 8745 })
+		);
+	});
+	expect(screen.getByTestId('shell-facts').textContent).toContain(
+		m['shell.facts.integrity.unverified']()
+	);
+	expect(screen.getByTestId('shell-facts').textContent).not.toContain(
+		m['shell.facts.integrity.verified']()
+	);
+
+	cleanup();
+	recordKernelFacts(null);
+
+	// ── the chain read answered FALSE: "BROKEN", named as such ──
+	serve({
+		'/proposals': [],
+		'/health': { status: 'ok', version: '1.29.32' },
+		'/stats': () => json({ error: 'forbidden' }, 403),
+		'/audit/verify': { ok: false, domains: { global: false } }
+	});
+	await renderHost();
+	await waitFor(() => {
+		expect(screen.getByTestId('shell-facts').getAttribute('data-integrity')).toBe('broken');
+		// The facts read landed too: the version is on screen.
+		expect(screen.getByTestId('shell-kernel').textContent).toContain('1.29.32');
+	});
+	expect(screen.getByTestId('shell-facts').textContent).toContain(
+		m['shell.facts.integrity.broken']()
+	);
+	// A refused /stats leaves the count OUT — never "0 rows" over a refusal —
+	// and the model line is absent, not blank.
+	expect(screen.getByTestId('shell-facts').textContent).not.toMatch(/\b0 rows\b/);
+	expect(screen.queryByTestId('shell-status-model')).toBeNull();
+});
+
+test('new_chat_bumps_the_conversation_epoch_and_navigates_home', async () => {
+	responder = quiet;
+	await renderHost();
+	const before = currentConversationEpoch();
+	await userEvent.click(screen.getByTestId('shell-new-chat'));
+	expect(currentConversationEpoch()).toBe(before + 1);
+	await waitFor(() => expect(vi.mocked(goto)).toHaveBeenCalledWith('/'));
+});
+
+test('the_collapsed_rail_keeps_every_entry_named', async () => {
+	responder = quiet;
+	await renderHost();
+	const shell = document.querySelector('[data-slot="app-shell"]');
+	expect(shell?.getAttribute('data-sidebar')).toBe('open');
+
+	const toggle = screen.getByTestId('shell-sidebar-toggle');
+	expect(toggle.getAttribute('aria-expanded')).toBe('true');
+	await userEvent.click(toggle);
+	expect(shell?.getAttribute('data-sidebar')).toBe('collapsed');
+	expect(toggle.getAttribute('aria-expanded')).toBe('false');
+
+	// Collapsed hides the labels VISUALLY only: every entry still resolves an
+	// accessible name, so the rail is navigable by a screen reader.
+	for (const entry of navEntries()) {
+		expect(entry.name.length, `${entry.testid} lost its name when collapsed`).toBeGreaterThan(0);
+	}
+	expect(screen.getByTestId('nav-chat').textContent?.trim()).toBe(m['nav.chat']());
 });
 
 test('the_shell_tree_holds_no_wizard_import_and_no_dropped_route_directory', () => {
@@ -221,6 +344,6 @@ test('the_shell_tree_holds_no_wizard_import_and_no_dropped_route_directory', () 
 	expect(
 		dropped,
 		`dropped route directories still present under src/routes (${dropped.join(', ')}) — the ` +
-			'census is the six-route set, and a surviving directory is a route the walk would find'
+			'census is the eight-route set, and a surviving directory is a route the walk would find'
 	).toEqual([]);
 });

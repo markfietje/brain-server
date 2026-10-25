@@ -18,20 +18,28 @@
  * exact-set assertion and the sweep's coverage assertion until both artifacts
  * are given the route — growth is fail-closed on both.
  */
-export const ROUTE_FLOOR = 6;
+export const ROUTE_FLOOR = 8;
 
 /**
- * The measured census, re-measured by M3-a (2026-10-22, plan
- * `21_CHAT_FIRST_IA`): the chat is the app. `/chat` is PROMOTED to `/` and
- * the wizard that served `/` is dropped with its lib; `/search`, `/overview`
- * and `/models` retire as routes (a chat turn IS the recall; overview folds
- * into the chat home state; models is an ops concern behind Settings).
- * Six routes: the conversation and the surfaces a conversation cites.
+ * The measured census. M3-a (2026-10-22, plan `21_CHAT_FIRST_IA`) made the
+ * chat the app: `/chat` was PROMOTED to `/`, the wizard that served `/` was
+ * dropped with its lib, and `/search`, `/overview` and `/models` retired as
+ * routes (a chat turn IS the recall; overview folds into the chat home
+ * state; models is an ops concern behind Settings).
+ *
+ * The sidebar frame (2026-10-25) added two surfaces the frame lists beside
+ * the conversation: `/audit` (the hash chain, displayed) and `/governance`
+ * (domains, roles, retention — what the kernel enforces). `/recall` is the
+ * frame's "Memory" entry; the route name stayed because the Dioxus
+ * counterpart carries the same path and the trace detail nests under it.
+ * Eight routes: the conversation and the surfaces a conversation cites.
  */
 export const CENSUS_ROUTES = [
 	'/',
+	'/audit',
 	'/decisions',
 	'/decisions/[id]',
+	'/governance',
 	'/recall',
 	'/recall/[trace_id]/trace',
 	'/review'

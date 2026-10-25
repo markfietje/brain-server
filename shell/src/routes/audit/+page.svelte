@@ -1,0 +1,198 @@
+<script lang="ts">
+	// The audit surface: the kernel's hash chain, read and DISPLAYED.
+	//
+	// Two reads, both Admin in the kernel's own table. The chain verdict is
+	// the kernel recomputing every domain's chain; the events are one page of
+	// rows, newest first, with `Load more` paging further back. Rows carry
+	// hashes only (the kernel's contract), so a target is shown as a prefix
+	// and never as content.
+	//
+	// The states are DISTINCT and never share a rendering: live, empty (the
+	// kernel said so), offline (the wire failed), refused (the kernel said
+	// no, with its reason), malformed (an answer this surface cannot prove).
+	// The chain line is the same discipline in one phrase: "verified" only
+	// when the kernel answered `ok: true`; a read that did not happen says
+	// "not verified", never "verified" on a guess.
+	import { onMount } from 'svelte';
+	import { m } from '$paraglide/messages.js';
+	import type { WireFault } from '#lib/api/client.js';
+	import {
+		AUDIT_PAGE,
+		fetchAuditEvents,
+		verifyAuditChain,
+		type AuditEvent,
+		type ChainRead
+	} from '#lib/api/audit.js';
+	import { Alert } from '#lib/components/ui/alert/index.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+
+	type View =
+		| { kind: 'loading' }
+		| { kind: 'live'; events: readonly AuditEvent[]; exhausted: boolean }
+		| { kind: 'empty' }
+		| { kind: 'offline' }
+		| { kind: 'refused'; status: number | null; fault: WireFault }
+		| { kind: 'malformed' };
+
+	let view = $state<View>({ kind: 'loading' });
+	let chain = $state<ChainRead | null>(null);
+	let loadingMore = $state(false);
+	let generation = 0;
+
+	function refusalMessage(status: number | null, fault: WireFault): string {
+		if (status === 401 || fault === 'unauthorized' || fault === 'no_credential') {
+			return m['audit.refused.unauthorized']();
+		}
+		if (status === 403) return m['audit.refused.forbidden']();
+		return m['audit.refused.other']({ status: status ?? '—' });
+	}
+
+	async function load(): Promise<void> {
+		const mine = ++generation;
+		view = { kind: 'loading' };
+		const [events, verdict] = await Promise.all([fetchAuditEvents(0), verifyAuditChain()]);
+		if (mine !== generation) return;
+		chain = verdict;
+		if (events.kind === 'ok') {
+			view =
+				events.events.length === 0
+					? { kind: 'empty' }
+					: { kind: 'live', events: events.events, exhausted: events.events.length < AUDIT_PAGE };
+		} else if (events.kind === 'offline') {
+			view = { kind: 'offline' };
+		} else if (events.kind === 'refused') {
+			view = { kind: 'refused', status: events.status, fault: events.fault };
+		} else {
+			view = { kind: 'malformed' };
+		}
+	}
+
+	async function loadMore(): Promise<void> {
+		if (view.kind !== 'live' || loadingMore) return;
+		loadingMore = true;
+		const before = view.events;
+		try {
+			const page = await fetchAuditEvents(before.length);
+			if (view.kind !== 'live') return;
+			if (page.kind === 'ok') {
+				view = {
+					kind: 'live',
+					events: [...before, ...page.events],
+					exhausted: page.events.length < AUDIT_PAGE
+				};
+			}
+			// A failed further page leaves what is on screen on screen; the
+			// next click asks again. The first page's state owns the surface.
+		} finally {
+			loadingMore = false;
+		}
+	}
+
+	onMount(() => {
+		void load();
+	});
+
+	function timeLabel(ts: string): string {
+		const parsed = Date.parse(ts);
+		if (Number.isNaN(parsed)) return ts;
+		return new Date(parsed).toLocaleString();
+	}
+
+	/** A hash prefix a reader can match by eye; the full hash is in the title. */
+	function hashPrefix(hash: string): string {
+		return hash.length > 10 ? `${hash.slice(0, 4)}…${hash.slice(-2)}` : hash;
+	}
+</script>
+
+<div class="grid gap-5" data-testid="audit-surface">
+	<div>
+		<h1 class="mb-1">{m['audit.title']()}</h1>
+		<p class="text-muted-foreground">{m['audit.subtitle']()}</p>
+	</div>
+
+	<div class="flex flex-wrap items-center gap-3 text-sm" data-testid="audit-chain" data-chain={chain === null ? 'unread' : chain.kind === 'ok' ? (chain.verified ? 'verified' : 'broken') : 'unverified'}>
+		{#if chain !== null && chain.kind === 'ok' && chain.verified}
+			<Badge variant="outline" class="rounded-full border-brand/60 px-2.5 py-1 text-brand">
+				{m['audit.chain.verified']()} ✓
+			</Badge>
+		{:else if chain !== null && chain.kind === 'ok'}
+			<Badge variant="destructive" class="rounded-full px-2.5 py-1">{m['audit.chain.broken']()}</Badge>
+		{:else}
+			<Badge variant="outline" class="rounded-full px-2.5 py-1">{m['audit.chain.unverified']()}</Badge>
+		{/if}
+		<span class="font-mono text-xs text-muted-foreground">{m['audit.chain.detail']()}</span>
+		{#if view.kind === 'live'}
+			<span class="text-xs text-muted-foreground" data-testid="audit-count">
+				{m['audit.events.loaded']({ count: view.events.length })}
+			</span>
+		{/if}
+		{#if chain !== null && chain.kind === 'refused'}
+			<span class="text-xs text-muted-foreground">{m['audit.chain.refused']()}</span>
+		{/if}
+	</div>
+
+	{#if view.kind === 'loading'}
+		<p aria-busy="true" data-testid="audit-loading">{m['audit.loading']()}</p>
+	{:else if view.kind === 'refused'}
+		<Alert variant="destructive" role="alert" data-testid="audit-refused">
+			<p class="font-semibold">{m['audit.refused.title']()}</p>
+			<p data-testid="audit-refused-reason">{refusalMessage(view.status, view.fault)}</p>
+			<Button variant="outline" size="sm" class="mt-2" onclick={() => void load()} data-testid="audit-retry">
+				{m['audit.retry']()}
+			</Button>
+		</Alert>
+	{:else if view.kind === 'malformed'}
+		<Alert variant="destructive" role="alert" data-testid="audit-malformed">
+			<p>{m['audit.malformed']()}</p>
+			<Button variant="outline" size="sm" class="mt-2" onclick={() => void load()} data-testid="audit-retry">
+				{m['audit.retry']()}
+			</Button>
+		</Alert>
+	{:else if view.kind === 'offline'}
+		<Alert role="status" data-testid="audit-offline">
+			<p>{m['audit.offline']()}</p>
+			<Button variant="outline" size="sm" class="mt-2" onclick={() => void load()} data-testid="audit-retry">
+				{m['audit.retry']()}
+			</Button>
+		</Alert>
+	{:else if view.kind === 'empty'}
+		<p role="status" data-testid="audit-empty">{m['audit.empty']()}</p>
+	{:else}
+		<div class="overflow-x-auto rounded-xl border border-border">
+			<table class="w-full text-sm" data-testid="audit-table">
+				<thead class="bg-surface-2 text-left text-xs text-muted-foreground">
+					<tr>
+						<th scope="col" class="px-3 py-2 font-medium">{m['audit.col.time']()}</th>
+						<th scope="col" class="px-3 py-2 font-medium">{m['audit.col.kind']()}</th>
+						<th scope="col" class="px-3 py-2 font-medium">{m['audit.col.actor']()}</th>
+						<th scope="col" class="px-3 py-2 font-medium">{m['audit.col.status']()}</th>
+						<th scope="col" class="px-3 py-2 font-medium">{m['audit.col.target']()}</th>
+						<th scope="col" class="px-3 py-2 font-medium">{m['audit.col.domain']()}</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each view.events as event (`${event.domain}:${event.id}`)}
+						<tr class="border-t border-border" data-testid="audit-row" data-status={event.status}>
+							<td class="px-3 py-2 whitespace-nowrap font-mono text-xs tabular-nums">{timeLabel(event.ts)}</td>
+							<td class="px-3 py-2 font-mono text-xs">{event.kind}</td>
+							<td class="max-w-40 truncate px-3 py-2 text-xs">{event.actor}</td>
+							<td class="px-3 py-2 text-xs">
+								<span class={event.status === 'ok' ? 'text-brand' : 'text-destructive'}>{event.status}</span>
+							</td>
+							<td class="px-3 py-2 font-mono text-xs" title={event.targetHash}>{hashPrefix(event.targetHash)}</td>
+							<td class="px-3 py-2 font-mono text-xs">{event.domain}</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+		{#if !view.exhausted}
+			<div>
+				<Button variant="outline" size="sm" disabled={loadingMore} onclick={() => void loadMore()} data-testid="audit-load-more">
+					{m['audit.load_more']()}
+				</Button>
+			</div>
+		{/if}
+	{/if}
+</div>

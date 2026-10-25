@@ -69,6 +69,14 @@
 	--color-focus: var(--focus);
 	--color-input-border: var(--input-border);
 	--color-input-border-hover: var(--input-border-hover);
+	/* the frame's sidebar column: its own fill and its own row states */
+	--color-sidebar: var(--sidebar);
+	--color-sidebar-active: var(--sidebar-active);
+	--color-sidebar-hover: var(--sidebar-hover);
+	--color-sidebar-border: var(--sidebar-border);
+	/* the status dots' "green" — one token, so healthy reads the same
+	   everywhere it is drawn */
+	--color-ok: var(--ok);
 	/* radii track the platform layer's single --radius */
 	--radius-sm: calc(var(--radius) - 4px);
 	--radius-md: calc(var(--radius) - 2px);
@@ -85,11 +93,11 @@
 	--text: #1a1a2e;
 	--text-muted: #4b5563;
 	--border: #c6cad3;
-	--accent: #2e6f40;
+	--accent: #1f7f6c;
 	--warn-bg: #fff8e1;
 	--warn-border: #b58a00;
-	--focus: #2e6f40;
-	--ring: rgba(46, 111, 64, 0.35);
+	--focus: #1f7f6c;
+	--ring: rgba(31, 127, 108, 0.35);
 	--input-border: #d5d9e0;
 	--input-border-hover: #b9bfc9;
 	--shadow-xs: 0 1px 2px rgba(10, 14, 26, 0.06);
@@ -97,6 +105,16 @@
 	--radius-lg: 12px;
 	--control-min-height: 36px;
 	--error: #b4232a;
+	/* the sidebar column sits one step darker than the page, with its own
+	   active/hover fills; the titlebar inset is 0 except under the macOS
+	   overlay titlebar, where the sidebar's top strip clears the traffic
+	   lights (set below, keyed on data-platform + data-tauri). */
+	--sidebar: #eef1f5;
+	--sidebar-active: #dfe5ec;
+	--sidebar-hover: #e6eaf0;
+	--sidebar-border: #d6dbe3;
+	--titlebar-inset: 0px;
+	--ok: #2f9e6e;
 
 	color-scheme: light dark;
 	font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -139,20 +157,22 @@
 	--bg: rgba(246, 247, 250, 0.55);
 	--surface: rgba(255, 255, 255, 0.6);
 	--surface-2: rgba(0, 0, 0, 0.05);
+	--sidebar: rgba(0, 0, 0, 0.04);
 	--glass-blur: blur(24px) saturate(1.4);
 }
 
-:root[data-platform='macos'][data-tauri='true'] [data-slot='app-shell'] {
-	/* Overlay titlebar: keep the header (the drag region) clear of the
+:root[data-platform='macos'][data-tauri='true'] {
+	/* Overlay titlebar: the sidebar's top strip (the drag region) clears the
 	   traffic lights. */
-	padding-top: 3rem;
+	--titlebar-inset: 2.75rem;
 }
 
 @media (prefers-color-scheme: dark) {
 	:root[data-platform='macos'] {
-		--bg: rgba(16, 19, 24, 0.55);
-		--surface: rgba(26, 31, 39, 0.6);
+		--bg: rgba(18, 23, 30, 0.55);
+		--surface: rgba(27, 34, 43, 0.6);
 		--surface-2: rgba(255, 255, 255, 0.06);
+		--sidebar: rgba(0, 0, 0, 0.22);
 	}
 }
 
@@ -162,13 +182,15 @@
 	:root[data-platform='macos'] {
 		--bg: #f7f8fa;
 		--surface: #ffffff;
+		--sidebar: #eef1f5;
 		--glass-blur: none;
 	}
 
 	@media (prefers-color-scheme: dark) {
 		:root[data-platform='macos'] {
-			--bg: #101318;
-			--surface: #1a1f27;
+			--bg: #141a21;
+			--surface: #1b222b;
+			--sidebar: #10151b;
 		}
 	}
 }
@@ -191,19 +213,30 @@
 
 @media (prefers-color-scheme: dark) {
 	:root {
-		--bg: #101318;
-		--surface: #1a1f27;
-		--surface-2: #242b36;
-		--text: #e8eaf0;
-		--text-muted: #a8b0bd;
-		--border: #3a4250;
-		--accent: #5cab74;
+		--bg: #141a21;
+		--surface: #1b222b;
+		--surface-2: #252e39;
+		--text: #e6ebf0;
+		--text-muted: #9aa5b2;
+		--border: #303a46;
+		--accent: #5fc1a8;
 		--warn-bg: #2b230c;
 		--warn-border: #d9a514;
-		--focus: #5cab74;
+		--focus: #5fc1a8;
+		--ring: rgba(95, 193, 168, 0.4);
+		--input-border: #303a46;
+		--input-border-hover: #40506a;
 		/* the shadcn aliases need NO dark overrides — each points at a
-		   token above, so they flip with the platform blocks here. */
+		   token above, so they flip with the platform blocks here. The one
+		   exception is the primary button's text: teal on navy wants dark
+		   ink, white would wash out. */
+		--primary-foreground: #0d1a17;
 		--error: #ff8f93;
+		--sidebar: #10151b;
+		--sidebar-active: #1f2a34;
+		--sidebar-hover: #182028;
+		--sidebar-border: #1f2730;
+		--ok: #4fc08d;
 	}
 
 	:root[data-platform='windows'] {

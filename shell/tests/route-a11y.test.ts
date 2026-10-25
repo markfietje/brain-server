@@ -21,7 +21,8 @@ import { CENSUS_ROUTES, type CensusRoute } from './route-census';
  * M3-a (plan `21_CHAT_FIRST_IA`): the census is six routes — the chat was
  * promoted to `/`, and the wizard, `/search`, `/overview` and `/models`
  * retired, recipes and all. The home recipe waits for the CHAT render proof
- * (the composer), never a wizard render.
+ * (the composer), never a wizard render. The sidebar frame (2026-10-25)
+ * added `/audit` and `/governance`, each with its own recipe and proof.
  *
  * ## The anti-vacuity law (TRAP 5)
  *
@@ -266,6 +267,57 @@ const RECIPES: Partial<Record<CensusRoute, RouteRecipe>> = {
 		},
 		load: () => import('../src/routes/review/+page.svelte'),
 		proof: { kind: 'testid', value: 'review-list-row' }
+	},
+	// The audit surface: one page of events and the chain verdict, both
+	// served, so the sweep sees the table and the verified badge.
+	'/audit': {
+		prepare: () => {
+			serveJsonByPath({
+				'/audit': {
+					events: [
+						{
+							id: 7,
+							ts: '2026-10-25T13:41:07Z',
+							kind: 'recall',
+							actor: 'operator',
+							target_hash: 'a91f'.padEnd(64, '0'),
+							status: 'ok',
+							detail_hash: 'b'.repeat(64),
+							tenant_id: 'global',
+							domain: 'global'
+						}
+					]
+				},
+				'/audit/verify': { ok: true, domains: { global: true } }
+			});
+		},
+		load: () => import('../src/routes/audit/+page.svelte'),
+		proof: { kind: 'testid', value: 'audit-row' }
+	},
+	// The governance surface: domains, roles and retention all served, so
+	// every section renders its live arm.
+	'/governance': {
+		prepare: () => {
+			serveJsonByPath({
+				'/domains': {
+					domains: [{ name: 'global', entries: 8745, entities: 120, relations: 48, multi_db: false }]
+				},
+				'/roles': {
+					roles: [
+						{
+							name: 'operator',
+							description: 'the one who runs this kernel',
+							scopes: ['private', 'domain'],
+							owner_filter: 'all',
+							can: ['read', 'write', 'approve']
+						}
+					]
+				},
+				'/retention': { enabled: true, policy: { chunk: 30, procedure: 180 } }
+			});
+		},
+		load: () => import('../src/routes/governance/+page.svelte'),
+		proof: { kind: 'testid', value: 'governance-domain-row' }
 	}
 };
 

@@ -198,13 +198,17 @@ interface RouteParity {
  *
  * M3-a (plan `21_CHAT_FIRST_IA`): the chat is the app. The wizard that served
  * `/` is dropped, `/chat` is PROMOTED to `/`, and `/overview`, `/search` and
- * `/models` retire as routes — so the table is six rows, and `/` carries
- * `no_counterpart`: the Dioxus `/` is a connect-first landing, and chat has
- * no counterpart on either side. That is Plan 09 §1's original "missing on
- * both" finding for the conversation surface, true by design now that the
- * surface IS the shell's home route. A false `renamed` reads as coverage
- * (the III-6 lesson, twice recorded) — no counterpart is invented to make
- * the home row prettier.
+ * `/models` retire as routes — so `/` carries `no_counterpart`: the Dioxus
+ * `/` is a connect-first landing, and chat has no counterpart on either
+ * side. That is Plan 09 §1's original "missing on both" finding for the
+ * conversation surface, true by design now that the surface IS the shell's
+ * home route. A false `renamed` reads as coverage (the III-6 lesson, twice
+ * recorded) — no counterpart is invented to make the home row prettier.
+ *
+ * The sidebar frame (2026-10-25) grew the table to eight rows: `/audit`
+ * (renamed — the Dioxus route string carries its filters) and
+ * `/governance` (no counterpart — the nearest Dioxus surface is named, not
+ * promoted).
  */
 const ROUTE_PARITY: readonly RouteParity[] = [
 	{
@@ -232,9 +236,55 @@ const ROUTE_PARITY: readonly RouteParity[] = [
 		route: '/recall',
 		verdict: 'exact',
 		dioxus: '/recall',
-		because: 'the same path on both sides',
+		because:
+			'the same path on both sides. The sidebar frame lists it as "Memory": the same POST /recall ' +
+			'wire rendered as memory cards, with the store\'s count beside the empty state and an ' +
+			'"Add memory" that files a PROPOSAL into the review queue — never a memory.',
 		authz: {
-			kernel: { '/recall': 'Read' },
+			// The page's own POST /recall, plus the two api symbols it imports:
+			// `fetchKernelFacts` (the public /health probe and the Read-scoped
+			// /stats count) and `proposeMemory` (the Write-scoped proposal).
+			kernel: {
+				'/health': 'public',
+				'/ingest/proposal': 'Write',
+				'/recall': 'Read',
+				'/stats': 'Read'
+			},
+			mutates: {
+				path: '/ingest/proposal',
+				act: 'files a CANDIDATE memory into the human review queue — the kernel creates no knowledge row and never auto-promotes; nothing enters the store until an operator approves it on /review'
+			}
+		}
+	},
+	{
+		route: '/audit',
+		verdict: 'renamed',
+		dioxus: '/audit?:since&:principal',
+		because:
+			'the same surface at a different route SHAPE: the Dioxus audit panel carries its filters ' +
+			'(since/principal) as URL segments in the route string; the shell\'s /audit reads the same ' +
+			'chain newest-first with limit/offset paging and shows the chain verdict beside it. A ' +
+			'query-shape difference, not a different surface.',
+		authz: {
+			// Both reads are operator reads in the kernel's own table: the
+			// event list and the chain recomputation are Admin.
+			kernel: { '/audit': 'Admin', '/audit/verify': 'Admin' },
+			mutates: null
+		}
+	},
+	{
+		route: '/governance',
+		verdict: 'no_counterpart',
+		nearest: '/system',
+		because:
+			'no Dioxus route serves "what the kernel enforces" as one surface: domains live under the ' +
+			'Dioxus /system console group, retention under /data, and roles have no Dioxus surface at ' +
+			'all. The nearest is /system (it carries the domains), recorded as a fact about the tree and ' +
+			'not promoted to a counterpart.',
+		authz: {
+			// Domains and roles are Read; retention is Admin — three reads with
+			// two scopes, each section rendering its own answer.
+			kernel: { '/domains': 'Read', '/retention': 'Admin', '/roles': 'Read' },
 			mutates: null
 		}
 	},
@@ -472,16 +522,19 @@ test('every_user_reachable_shell_route_carries_a_parity_verdict', () => {
 	// two FALSE `renamed` rows were corrected rather than added around. M3-a:
 	// the wizard `/` (an `exact` row over the packs read) retired WITH the
 	// wizard, and the promoted chat `/` arrived `no_counterpart` — the mix
-	// moved from {3, 4, 3} to {2, 3, 1}.
+	// moved from {3, 4, 3} to {2, 3, 1}. The sidebar frame: `/audit` arrived
+	// `renamed` (the Dioxus route string carries its filters) and
+	// `/governance` arrived `no_counterpart` (no Dioxus route gathers domains,
+	// roles and retention) — {2, 4, 2}.
 	const mix = ROUTE_PARITY.reduce<Record<ParityVerdict, number>>(
 		(acc, row) => ({ ...acc, [row.verdict]: (acc[row.verdict] ?? 0) + 1 }),
 		{} as Record<ParityVerdict, number>
 	);
-	expect(mix).toEqual({ exact: 2, renamed: 3, no_counterpart: 1 });
+	expect(mix).toEqual({ exact: 2, renamed: 4, no_counterpart: 2 });
 	expect(
 		mix.no_counterpart,
 		'gate 1 cannot go green while any route has no counterpart — recorded, not reconciled'
-	).toBe(1);
+	).toBe(2);
 });
 
 test('this_census_reads_the_SHELL_not_the_kernel_route_tables', () => {
@@ -506,9 +559,11 @@ test('this_census_reads_the_SHELL_not_the_kernel_route_tables', () => {
 	// a kernel-table census would MISS, so if someone swapped the walk for the
 	// kernel table, this set would collapse and the equality below would fail.
 	// (M3-a retired `/overview`, `/models` and `/chat` as route paths; the
-	// remaining shell-only set is the two decision surfaces and /review — the
-	// `/` and `/recall` routes share their names with kernel paths.)
-	const shellOnly = ['/decisions', '/decisions/[id]', '/review'];
+	// sidebar frame added `/governance`, a shell-only name — `/audit` shares
+	// its name with the kernel path it reads. The shell-only set is the two
+	// decision surfaces, /review and /governance; `/`, `/recall` and `/audit`
+	// share their names with kernel paths.)
+	const shellOnly = ['/decisions', '/decisions/[id]', '/governance', '/review'];
 	for (const route of shellOnly) {
 		expect(shellRoutes, `the census must find ${route}`).toContain(route);
 		expect(
@@ -867,14 +922,15 @@ test('every_user_reachable_shell_route_carries_its_kernels_own_authz_verdict', (
 		}
 		derivedTotal += derived.length;
 	}
-	// M3-a re-measure: 9 paths across the six routes — / (recall, verify,
-	// ump/forget), /recall, the trace, /decisions, /decisions/[id] (two),
-	// /review. It was 12+ over the ten-route table; /overview's three public
-	// probes and /models' registry reads retired with their routes.
+	// Re-measured with the sidebar frame: 17 paths across the eight routes —
+	// / (recall, verify, ump/forget), /audit (two), /decisions,
+	// /decisions/[id] (two), /governance (three), /recall (its own recall
+	// plus health, stats and the proposal), the trace, /review. It was 9
+	// over the six-route table.
 	expect(
 		derivedTotal,
-		'the whole table derived fewer than the measured nine kernel paths — the derivation is not reading the wire'
-	).toBeGreaterThanOrEqual(9);
+		'the whole table derived fewer than the measured seventeen kernel paths — the derivation is not reading the wire'
+	).toBeGreaterThanOrEqual(17);
 });
 
 test('the_authz_table_is_derived_from_the_wire_the_routes_call', () => {
@@ -1008,7 +1064,7 @@ test('every_mutating_reach_is_enumerated_and_the_forget_affordance_is_soft_only_
 		[...writePaths].sort(),
 		'the Write-scoped paths the shell can reach are an EXHAUSTIVE fact: a new one fails here, where it ' +
 			'must be classified, rather than drifting in unlabelled'
-	).toEqual(['/ump/forget', '/workflow/decision-runs/{id}/replay-diff']);
+	).toEqual(['/ingest/proposal', '/ump/forget', '/workflow/decision-runs/{id}/replay-diff']);
 
 	const mutatingRows = ROUTE_PARITY.filter((row) => row.authz.mutates !== null);
 	const namedPaths = new Set(mutatingRows.map((row) => row.authz.mutates!.path));
@@ -1033,15 +1089,33 @@ test('every_mutating_reach_is_enumerated_and_the_forget_affordance_is_soft_only_
 		).toContain(row.authz.mutates!.path);
 	}
 
-	// The routes that can change stored state, exactly. Five of six reach
-	// NONE — and one of the two Write-scoped paths is not on this list,
+	// The routes that can change stored state, exactly. Six of eight reach
+	// NONE — and one of the three Write-scoped paths is not on this list,
 	// which is the point of `mutates` being its own claim rather than a
 	// restatement of scope. (M3-a: `/models` — the proposal queue — retired
-	// with its route; `/ingest/proposal` left the reachable set with it.)
+	// with its route and `/ingest/proposal` left the reachable set; the
+	// sidebar frame's Memory surface brought the proposal back as its
+	// "Add memory" — a candidate for Review, never a memory.)
 	expect(
 		mutatingRows.map((r) => r.route).sort(),
-		'the set of mutating routes is exhaustive: `/` via the tombstone, and nothing else'
-	).toEqual(['/']);
+		'the set of mutating routes is exhaustive: `/` via the tombstone, `/recall` via the proposal, and nothing else'
+	).toEqual(['/', '/recall']);
+
+	// ---- AND the [add memory] reach is a PROPOSAL at the route level ----
+	//
+	// The memory surface's one write is read here at its REAL call site: it
+	// must still be `proposeMemory(content, kind)` through the api module,
+	// never a direct `/add` or `/ingest/memory` post that would put a
+	// memory in the store without the human gate.
+	const memorySource = readFileSync(join(routesDir, 'recall', '+page.svelte'), 'utf8');
+	expect(
+		/\bproposeMemory\(/.test(memorySource),
+		'the /recall route must still call proposeMemory — this arm reads the real call site, so it reds when the call moves'
+	).toBe(true);
+	expect(
+		memorySource,
+		'the memory surface must not post a memory directly: /add and /ingest/memory bypass the review queue'
+	).not.toMatch(/'\/add'|'\/ingest\/memory'/);
 
 	// ---- AND the [forget] reach is SOFT at the route level ----
 	//
