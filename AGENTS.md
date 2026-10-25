@@ -74,6 +74,18 @@
 > runner pre-fix (recorded in the shell-macos run), green post-fix 28/28
 > locally — the lane's next runner execution is the proof.
 >
+> **AND THE ROUND'S OWN PROSE HIT TWO OF THE TREE'S LAWS, which is the
+> process working.** (1) Inside a version section, `###` is RESERVED for the
+> Release notes block: the lane-notes paragraph arrived as a `###` heading,
+> the notes-gate pin embeds the real section into its fixture, and the plant
+> therefore broke the shape it was testing — the refusal came out as
+> "produced no bullets" where the pin demanded the ID-rule text. The
+> paragraph is prose now, and the gate's three pins are green against the
+> real CHANGELOG. (2) The shell lane's ci-gates pin hardcoded
+> `runs-on: macos-latest` for the bundle job — a pin encoding the exact law
+> this round fixed; it now demands the `xcode-27` label with the reason
+> inline, so the next runner-label change is a named act too.
+>
 > **THE TAG MOVED, AND NOTHING COULD OBSERVE IT:** the failed run's
 > `Assemble release + notes` job was skipped, so v1.29.32 had published
 > NOTHING — the tag was force-moved to the fix commit and the lane re-ran on

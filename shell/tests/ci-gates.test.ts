@@ -100,7 +100,11 @@ test('shell_ci_contract_is_fail_closed_clean_runner_and_e2e_gated', () => {
  */
 test('the_macos_bundle_lane_stages_builds_and_walks', () => {
 	expect(workflow).toContain('bundle-macos:');
-	expect(workflow).toContain('runs-on: macos-latest');
+	// The lane stages the sidecar, and staging builds brain-afm — a macOS 27
+	// FoundationModels surface. The xcode-27 label is the same one the Swift
+	// package's own lane gates on; macos-latest's newest Xcode cannot compile
+	// the stage step.
+	expect(workflow).toContain('runs-on: xcode-27');
 	expect(workflow).toContain('node shell/scripts/sidecar.mjs stage');
 	expect(workflow).toContain(
 		'pnpm tauri build --bundles app --target universal-apple-darwin'
