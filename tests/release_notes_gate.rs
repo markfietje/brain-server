@@ -122,6 +122,16 @@ fn the_gate_refuses_an_empty_notes_block_and_audit_ids() {
     let version = cargo_version(&root);
     let real = std::fs::read_to_string(root.join("CHANGELOG.md")).expect("read CHANGELOG.md");
     let section = section_body(&real, &version).expect("the version's section exists");
+    // Both plants below rebuild a scratch section around the NOTES BLOCK
+    // alone — the text from `### Release notes` to the end of the section.
+    // The real section may carry engineering-record h3 headings BEFORE the
+    // notes block (this release does), and the gate's extractor ends a notes
+    // block at the first h3 it meets. A plant that re-embedded the whole
+    // section after a fresh `### Release notes` line handed the gate that
+    // earlier h3 first, and the gate refused for "no bullets" — the right
+    // verdict for the wrong reason, and an arm testing the section's shape
+    // instead of the rule it exists for.
+    let block = notes_block(&section).expect("the section carries a `### Release notes` block");
 
     // Defect 1 — the category headings are h3, so the extractor stops at the
     // first one and the block publishes nothing.
@@ -133,9 +143,9 @@ fn the_gate_refuses_an_empty_notes_block_and_audit_ids() {
     // accepted it, and the test failed while testing nothing. A guard that
     // disarms itself when the changelog's heading order changes is worse than
     // no guard, because it still looks like one.
-    let as_h3 = demote_every_category_heading(&section);
+    let as_h3 = demote_every_category_heading(block);
     assert_ne!(
-        as_h3, section,
+        as_h3, block,
         "the section no longer uses a bold category heading"
     );
     // The assertion is about CATEGORY headings, not about "**" anywhere — the
@@ -153,7 +163,7 @@ fn the_gate_refuses_an_empty_notes_block_and_audit_ids() {
     let dir = scratch(
         "h3",
         &format!(
-            "# Changelog\n\n## [{version}] — test\n\nIntro prose line.\n\n### Release notes\n\n{as_h3}\n\n- a bullet\n"
+            "# Changelog\n\n## [{version}] — test\n\nIntro prose line.\n\n{as_h3}\n\n- a bullet\n"
         ),
     );
     let out = run_gate(&dir, &version);
@@ -181,21 +191,19 @@ fn the_gate_refuses_an_empty_notes_block_and_audit_ids() {
     let anchor = CATEGORY_NAMES
         .iter()
         .map(|n| format!("**{n}**"))
-        .find(|h| section.contains(h))
+        .find(|h| block.contains(h))
         .expect(
             "the section carries no bold category heading at all — the h3 plant \
              above already asserts this, so the two disagree",
         );
-    let with_id = section.replace(
+    let with_id = block.replace(
         &anchor,
         &format!("{anchor}\n- the fork lane (K4-05) refuses upstream sources"),
     );
-    assert_ne!(with_id, section, "could not plant the ID probe");
+    assert_ne!(with_id, block, "could not plant the ID probe");
     let dir = scratch(
         "ids",
-        &format!(
-            "# Changelog\n\n## [{version}] — test\n\nIntro prose line.\n\n### Release notes\n\n{with_id}\n"
-        ),
+        &format!("# Changelog\n\n## [{version}] — test\n\nIntro prose line.\n\n{with_id}\n"),
     );
     let out = run_gate(&dir, &version);
     assert!(
@@ -264,4 +272,12 @@ fn section_body(changelog: &str, version: &str) -> Option<String> {
         }
     }
     if out.is_empty() { None } else { Some(out) }
+}
+
+/// The notes block of one section: from its `### Release notes` line to the
+/// section's end. Everything before it — the intro prose and any
+/// engineering-record h3 the section carries — is not the block.
+fn notes_block(section: &str) -> Option<&str> {
+    let at = section.find("### Release notes")?;
+    Some(&section[at..])
 }
