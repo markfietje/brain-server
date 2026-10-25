@@ -10,9 +10,12 @@
  * One module, builtins only, two subcommands:
  *
  *   stage   Build the kernel for both Apple silicon and Intel, lipo a
- *           universal binary, stage all THREE files Tauri requires, and
- *           write SIDECAR_PROVENANCE.json. Refuses a dirty tree: a build
- *           record names a commit, and a dirty tree has no truthful one.
+ *           universal binary, stage every file Tauri requires — per binary:
+ *           the two thin slices each compile step resolves plus the
+ *           universal the bundle copy takes (brain-afm thinned from ITS
+ *           verified universal) — and write SIDECAR_PROVENANCE.json.
+ *           Refuses a dirty tree: a build record names a commit, and a
+ *           dirty tree has no truthful one.
  *
  *   verify  Walk a real bundle, FIND every Mach-O by PATH (never by the
  *           line count `file` emits — a fat binary prints one line per
@@ -655,6 +658,32 @@ function stage() {
 	copyFileSync(afmSource, afmPath);
 	chmodSync(afmPath, 0o755);
 	artifacts.push({ name: afmName, target: UNIVERSAL_TRIPLE, path: afmPath });
+
+	// The same three-file law the kernel's staging obeys (see the header
+	// note): each arch's compile step resolves externalBin against its OWN
+	// triple, and only the bundle copy step takes the universal name — only
+	// the universal file present fails with `resource path ... doesn't exist`.
+	// The thin slices are THINNED out of the verified universal rather than
+	// copied, so a fat binary can never sit under a thin name, and each is
+	// arch-checked before it earns a record entry.
+	for (const target of TARGETS) {
+		const thinName = `brain-afm-${target.triple}`;
+		const thinPath = join(STAGED_DIR, thinName);
+		const thin = run('lipo', ['-thin', target.arch, afmPath, '-output', thinPath]);
+		if (thin.status !== 0) {
+			console.error(`[stage] lipo -thin ${target.arch} failed for brain-afm: ${output(thin)}`);
+			process.exit(1);
+		}
+		chmodSync(thinPath, 0o755);
+		const thinArchs = machoArchs(thinPath);
+		if (thinArchs.length !== 1 || thinArchs[0] !== target.arch) {
+			console.error(
+				`[stage] ${thinPath} carries [${thinArchs.join(' ')}], expected exactly [${target.arch}]`
+			);
+			process.exit(1);
+		}
+		artifacts.push({ name: thinName, target: target.triple, path: thinPath });
+	}
 
 	// The record is written LAST, after every artifact exists. A reader that
 	// finds a record can therefore trust every entry it names.

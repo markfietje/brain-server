@@ -265,7 +265,15 @@ jobs:
     # verifies. Everything this job builds is ad-hoc-signed, which is
     # STRUCTURE, not shippability (D5).
     name: Build the macOS app bundle (proof; never signed here)
-    runs-on: macos-latest
+    # This job STAGES the sidecar, and staging builds brain-afm, whose
+    # FoundationModels surface (variant/capabilities vocabulary and the PCC
+    # model) exists only in the macOS 27 SDK. The macos-latest image's newest
+    # Xcode is a 26.x toolchain with the 26.x SDK — the stage step fails to
+    # compile there, and the bundle is the one asset this workflow exists to
+    # prove. The xcode-27 image carries the 27.0 SDK and is the same label
+    # shell-macos.yml already gates the Swift package on, so the two lanes
+    # cannot drift onto different SDK generations.
+    runs-on: xcode-27
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

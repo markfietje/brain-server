@@ -163,6 +163,20 @@ done
 if [[ -z "$SRC_APP" ]]; then
     log "no .app in $APP_BUNDLE_DIR -> desktop app install skipped (build the shell first: cd shell && pnpm tauri build)"
 else
+    # The app's gate refuses at launch unless the kernel it finds on the port
+    # reports the version inside the bundle's sealed provenance, so installing
+    # a bundle staged against an older kernel ships a broken surface behind a
+    # green install log. Read the seal out of the STAGED bundle before touching
+    # the install dir: a stale bundle is refused here, naming both versions
+    # and the re-stage that fixes it, and /Applications keeps the previous
+    # (working) app.
+    SRC_PROV="$SRC_APP/Contents/Resources/binaries/SIDECAR_PROVENANCE.json"
+    [[ -f "$SRC_PROV" ]] || die "staged app carries no sealed provenance ($SRC_PROV) — stage the sidecar first: node shell/scripts/sidecar.mjs stage"
+    SRC_KERNEL="$(plutil -extract kernel_version raw "$SRC_PROV" 2>/dev/null || true)"
+    [[ -n "$SRC_KERNEL" ]] || die "staged app's provenance names no kernel_version: $SRC_PROV"
+    NEW_KERNEL="$("$SRC_BIN" --version 2>/dev/null | awk '{print $NF}' || true)"
+    [[ -n "$NEW_KERNEL" ]] || die "cannot read the new kernel's version from $SRC_BIN --version"
+    [[ "$SRC_KERNEL" == "$NEW_KERNEL" ]] || die "staged app ships kernel $SRC_KERNEL but this install runs kernel $NEW_KERNEL — the app's version gate would refuse it at launch. Re-stage the bundle: node shell/scripts/sidecar.mjs stage && (cd shell && pnpm tauri build --bundles app --target universal-apple-darwin)"
     DEST_APP="$APP_INSTALL_DIR/$(basename "$SRC_APP")"
     # Never replace a RUNNING app: the live instance would keep executing a
     # half-replaced bundle while its resources shift underneath it.
@@ -188,12 +202,9 @@ else
         || die "installed app failed codesign verification: $DEST_APP"
     ok "installed $DEST_APP"
     # Echo the kernel the installed app carries (and attaches to) — the sealed
-    # provenance, the same record the gate enforces at launch.
-    PROV_JSON="$DEST_APP/Contents/Resources/binaries/SIDECAR_PROVENANCE.json"
-    if [[ -f "$PROV_JSON" ]]; then
-        PROV_KERNEL="$(plutil -extract kernel_version raw "$PROV_JSON" 2>/dev/null || true)"
-        ok "installed app ships kernel ${PROV_KERNEL:-unknown} (sealed provenance)"
-    fi
+    # provenance, the same record the gate enforces at launch. Version-checked
+    # above, so the echo is a fact, not a hope.
+    ok "installed app ships kernel $SRC_KERNEL (sealed provenance)"
 fi
 
 # 2b. Ensure the auth token is read from a 0600 secret file, not the plist env.

@@ -1,5 +1,60 @@
 # Agent Execution Log — brain-server
 
+> **R140 "Recut" (2026-10-25): the release lane was the FIRST machine to
+> compile brain-afm from a clean tree, and it is red — because the bundle
+> job stayed on an image whose SDK cannot see the macOS 27 FoundationModels
+> surface.** The v1.29.32 tag push failed `build-app-macos` at the stage
+> step: `LanguageModelCapabilities`, `SystemLanguageModel.variant/.capabilities`
+> and `PrivateCloudComputeLanguageModel` do not exist in the 26.x SDK the
+> `macos-latest` image's newest Xcode carries (measured off the run log:
+> Xcode 26.6, SDK 26.5). `shell-macos.yml` already gates the Swift package on
+> the `xcode-27` image; the bundle job — which now stages brain-afm beside
+> the kernel — was left behind. The job now runs `xcode-27`, the same label,
+> so the two lanes cannot drift onto different SDK generations. The
+> last green `shell-macos.yml` run PREDATES the brain-afm target, so the
+> re-run is brain-afm's first CI execution anywhere; watched, not assumed.
+>
+> **THE LOCAL-BUILD SHORTCUT WAS CONSIDERED AND REFUSED, and the reason is
+> the lane's own contract.** Building brain-afm on the operator's machine and
+> handing the binary to the lane would keep the queue short and the SDK
+> modern — and would make the bundle job's green a statement about PACKING
+> rather than about the tagged source. The bundle is the proof that the tag
+> builds; a prebuilt artefact pasted in is the hand-made-archive class the
+> updater round recorded, plus a supply-chain seam into the shipped app.
+>
+> **THE INSTALLER'S OWN OK WAS THE SECOND HALF OF THE BUG.** With the release
+> lane red and the operator installing from main, `install-service.sh`
+> printed `OK installed app ships kernel 1.29.31 (sealed provenance)` beside
+> a 1.29.32 service — reading the mismatch aloud and calling it green, and
+> the app's version gate then refused exactly as designed (expected 1.29.31,
+> reported 1.29.32). The script now reads the STAGED bundle's seal BEFORE
+> touching /Applications and refuses a stale bundle naming both versions and
+> the re-stage command; a bundle without a seal is refused too. The drill
+> ran on the REAL stale bundle that caused the screenshot — `staged app
+> ships kernel 1.29.31 but this install runs kernel 1.29.32 — the app's
+> version gate would refuse it at launch`, exit 1, /Applications untouched,
+> service not restarted. **Owed, named:** a behavioral pin driving the
+> refusal against fixture bundles (the installer has no test harness —
+> recorded, not hidden).
+>
+> **AND THE RE-STAGE EXPOSED A THIRD DEFECT, the staging law's own twin.**
+> brain-afm was staged ONLY as `brain-afm-universal-apple-darwin`, while the
+> macOS overlay's `externalBin` needs the kernel's documented three-file
+> shape per binary — the two thin slices each compile step resolves plus the
+> universal the bundle copy takes — and the FIRST app-bundle build since
+> that entry landed failed on it: `resource path
+> binaries/brain-afm-aarch64-apple-darwin doesn't exist`. The law was
+> already written in `sidecar.mjs`'s own header, measured when the KERNEL
+> hit the identical failure; the bridge's staging simply didn't obey it. The
+> thin slices are now THINNED out of the verified universal (`lipo -thin` —
+> a copy would put fat bytes under a thin name), arch-checked, and sealed
+> into the provenance record like every other artifact.
+>
+> **THE TAG MOVED, AND NOTHING COULD OBSERVE IT:** the failed run's
+> `Assemble release + notes` job was skipped, so v1.29.32 had published
+> NOTHING — the tag was force-moved to the fix commit and the lane re-ran on
+> it, the green-gate re-verifying every publication workflow on the new SHA.
+
 > **R139 "Grounded" (the chat spine, 2026-10-25): one chat turn became
 > recall-as-evidence plus streamed on-device generation, and NOTHING is
 > mocked anywhere in the verification chain.** The wire shipped first, per
