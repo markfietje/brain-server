@@ -743,9 +743,12 @@
 
 	<!-- The composer. Focused on mount, so the app opens ready to type. It
 	     sticks to the bottom of the column while the transcript scrolls
-	     above it — the one control that is always within reach. -->
+	     above it — the one control that is always within reach. Its bar
+	     blurs what scrolls beneath it: the window background is translucent
+	     glass on macOS, and a see-through composer read the transcript's
+	     lines through the input (measured on the built app). -->
 	<form
-		class="sticky bottom-0 mt-auto grid gap-2 bg-background pt-3"
+		class="sticky bottom-0 mt-auto grid gap-2 bg-background/90 pt-3 backdrop-blur-xl"
 		onsubmit={(event) => {
 			event.preventDefault();
 			void send();
