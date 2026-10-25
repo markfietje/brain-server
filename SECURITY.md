@@ -205,6 +205,7 @@ mint a JWT with the same jti as a legitimate one, causing a collision."
 | Signed JWTs (JWS) with key rotation | JWKS endpoint | ✅ v1.2 |
 | Tamper-evident audit (hash chain) | `audit_events.prev_hash` | ✅ v1.1 M2.3 |
 | Content integrity via XXH3-64 hash | `knowledge.content_hash` | ✅ |
+| Governance-state integrity via SHA-256 row hash + `brain verify-governance` scan (tamper-evident at row level, NOT tamper-proof: an attacker with local DB write access can recompute the hash too — the same ceiling class as the wipe-everything case; the migration backfill launders pre-migration tampering; recall does not check per row — the scan is the detection surface) | `knowledge.governance_hash` over `(owner, access_scope, domain)`, computed at every write path | ✅ v1.29.32 |
 | Source revision hashing | `source_revisions.revision` | ✅ |
 | Webhook HMAC verification | `webhook.rs` | ✅ |
 | HITL approval binds to displayed bytes | `approve_proposal` verifies `content_digest` (SHA-256 of the read-canonical form) inside the tx; stale digest → `409` | ✅ v1.27.12 |

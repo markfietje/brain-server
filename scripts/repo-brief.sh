@@ -53,9 +53,12 @@ while read -r pat; do
   [ "${hits:-0}" != "0" ] && { echo "  STALE MARKER '$pat' in $hits file(s)"; stale=1; }
 done <<'MARKERS'
 BRAIN_PORT
-CHECKPOINT_EVERY
 TLS_ENABLED
 no erase command
+# CHECKPOINT_EVERY was removed from this list 2026-10-25: the term is LIVE
+# (BRAIN_CHECKPOINT_EVERY, tools/steward-harness/src/main.rs; default 25,
+# clamp 1..=100 — resolve_checkpoint_every) and docs/steward-harness.md
+# documents it accurately, so the marker false-positived on a living doc.
 MARKERS
 [ "$stale" = "0" ] && echo "  clean (no known stale markers in living docs)"
 echo "== end brief =="
