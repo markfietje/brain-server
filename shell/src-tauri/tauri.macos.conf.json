@@ -10,15 +10,22 @@
 				"titleBarStyle": "Overlay",
 				"transparent": true,
 				"windowEffects": {
-					"effects": ["sidebar"],
+					"effects": [
+						"sidebar"
+					],
 					"state": "followsWindowActiveState"
 				}
 			}
 		]
 	},
 	"bundle": {
-		"externalBin": ["binaries/brain-server"],
-		"resources": ["binaries/SIDECAR_PROVENANCE.json"],
+		"externalBin": [
+			"binaries/brain-server",
+			"binaries/brain-afm"
+		],
+		"resources": [
+			"binaries/SIDECAR_PROVENANCE.json"
+		],
 		"macOS": {
 			"minimumSystemVersion": "15.0",
 			"hardenedRuntime": true,

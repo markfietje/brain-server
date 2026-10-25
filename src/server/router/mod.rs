@@ -8,6 +8,7 @@
 pub mod auth;
 pub(crate) mod compliance;
 pub mod core;
+pub mod chat;
 pub mod memory;
 pub(crate) mod ump;
 pub(crate) mod workflow;
@@ -199,6 +200,7 @@ pub fn app(state: Arc<AppState>) -> Router {
             axum::http::HeaderName::from_static("deprecation"),
             axum::http::HeaderValue::from_static("version=\"0.9.5\""),
         ))
+        .merge(chat::router())
         .merge(memory::router())
         .merge(ump::router())
         .merge(workflow::router())

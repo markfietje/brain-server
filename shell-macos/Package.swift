@@ -19,11 +19,23 @@ let package = Package(
     name: "BrainShellAppleFM",
     platforms: [.macOS(.v15)],
     products: [
-        .library(name: "AppleFMProbe", targets: ["AppleFMProbe"])
+        .library(name: "AppleFMProbe", targets: ["AppleFMProbe"]),
+        .executable(name: "brain-afm", targets: ["brain-afm"])
     ],
     targets: [
         .target(
             name: "AppleFMProbe",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        // The bridge executable (the chat spine, Round 1): JSONL over stdio,
+        // one request per line in, one event per line out. It holds the
+        // stateful `LanguageModelSession`s (the framework has no seed-history
+        // API, so conversation continuity lives HERE, behind the kernel's
+        // audit copy), reuses ChatModelLayer's router/trimmer/planner as-is,
+        // and reaches no network except Apple's own framework (PCC).
+        .executableTarget(
+            name: "brain-afm",
+            dependencies: ["AppleFMProbe"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(

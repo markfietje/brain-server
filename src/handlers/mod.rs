@@ -17,6 +17,7 @@
 //!    bodies are deliberately minimal so they can be filled in without
 //!    changing the contract.
 
+pub mod chat;
 pub mod accounts;
 pub mod agreement;
 pub mod auth;

@@ -2155,6 +2155,7 @@ mod tests {
                 .or_else(|_| std::fs::read_to_string(format!("src/{name}")))
                 .or_else(|_| std::fs::read_to_string(format!("src/agentloop/{name}")))
                 .or_else(|_| std::fs::read_to_string(format!("src/bin/{name}")))
+                .or_else(|_| std::fs::read_to_string(format!("src/handlers/{name}")))
                 .unwrap_or_else(|_| panic!("could not re-read {name}"));
             // Strip the test module: a test asserting on row counts may
             // legitimately read the table unfiltered, and a production reader

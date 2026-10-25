@@ -467,7 +467,12 @@ test('the_sidecar_is_wired_macos_only_and_its_artifacts_are_ignored', () => {
 			macOS: { minimumSystemVersion: string; hardenedRuntime: boolean; signingIdentity: string };
 		};
 	};
-	expect(overlay.bundle.externalBin).toEqual(['binaries/brain-server']);
+	// brain-afm joins the overlay's externalBin (the chat spine, v1.29.32):
+	// the AFM bridge ships beside the kernel; the base config stays clean.
+	expect(overlay.bundle.externalBin).toEqual([
+		'binaries/brain-server',
+		'binaries/brain-afm'
+	]);
 	expect(overlay.bundle.resources).toEqual(['binaries/SIDECAR_PROVENANCE.json']);
 	expect(overlay.bundle.macOS).toEqual({
 		minimumSystemVersion: '15.0',

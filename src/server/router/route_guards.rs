@@ -461,6 +461,7 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/graph/relations", "Read"),
     ("/graph/traverse", "Read"),
     ("/graph/relationships/{id}/history", "Admin"),
+    ("/chat/turns", "Read"),
     ("/recall", "Read"),
     ("/ingest", "Write"),
     ("/memory/{id}", "Admin"),

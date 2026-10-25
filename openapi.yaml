@@ -1507,6 +1507,57 @@ paths:
           description: >-
             A legal hold is active on the chunk; the erasure is refused and the
             hold is named.
+  /chat/turns:
+    post:
+      summary: >
+        One memory-grounded chat turn (the chat spine, v1.29.32). Recall
+        grounds the turn through the same deterministic core as /recall
+        (submodularly packed, every hit wrapped in the untrusted fence) and
+        the AFM bridge streams the answer. SSE event sequence: `grounding`
+        (citations), `delta`* (incremental text; `replace` marks a wholesale
+        revision), then exactly one terminal `final` or `error`. Errors are
+        named codes — chat_bridge_unavailable (503, before the stream),
+        locale_not_supported (400), and the bridge's own
+        conversation_does_not_fit / generation_failed on the stream.
+      operationId: chatTurn
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: string
+                  description: The user's turn (≤ 2000 bytes, /recall's own bound).
+                session:
+                  type: string
+                  description: >
+                    Conversation id — a single token ≤ 64 bytes. Absent =
+                    "default" (Round 1 ships one conversation; the sidebar's
+                    session ids arrive with Round 2).
+                locale:
+                  type: string
+                  description: >
+                    Generation locale (primary BCP-47 tag). Fail-closed
+                    against the model's MEASURED supported languages.
+                max_response_tokens:
+                  type: integer
+                  description: "Bounded 16..=1024; default 512."
+      responses:
+        "200":
+          description: >
+            The turn as a text/event-stream. Event payloads are JSON objects
+            on the data line. A disconnect cancels the TURN, not the session.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          description: chat_message_empty · chat_message_too_long · chat_session_invalid · chat_request_invalid · locale_not_supported
+        "503":
+          description: chat_bridge_unavailable — no brain-afm binary beside the kernel (every other surface unaffected)
   /recall:
     post:
       summary: Deterministic end-to-end recall (v0.9.5 structured QueryDoc)

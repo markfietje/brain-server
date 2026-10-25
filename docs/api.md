@@ -26,6 +26,7 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 | POST | `/ingest` | Structured ingest (explicit entities/relations). Since v1.28.74 accepts optional `origin_context: "owner"\|"channel"` — absent = owner (byte-compat); `channel` stores the row with origin `channel-capture` (recall labels it; the plugin can exclude); any other value is `400` |
 | POST | `/sources/reconcile` · DELETE `/sources/{id}` | Sweep deleted sources / retire a source |
 | POST | `/recall` | Structured recall — the primary endpoint |
+| POST | `/chat/turns` | One memory-grounded chat turn (SSE: `grounding`, `delta`*, `final`\|`error`) — recall as fenced evidence + on-device AFM generation via the `brain-afm` bridge; fail-closed postures `chat_bridge_unavailable` (503) and `locale_not_supported` (400). v1.29.32 |
 | GET | `/search` | Semantic search *(deprecated; use `/recall`)* |
 | GET | `/get/{id}` · POST `/multi-get` | Fetch chunk(s) by id |
 | GET | `/recall/{trace_id}/trace` | Recall-trace replay (decision-path evidence) |

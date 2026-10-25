@@ -154,6 +154,10 @@ fn debt_ledger_rules_hold_on_synthetic_cases() {
 ///               (counts are visible in this file's diffs).
 const ALLOWED_DUPES: &[(&str, &str)] = &[
     ("main", "[bin] every binary entrypoint"),
+    (
+        "router",
+        "server/router/* per-module router() constructors — the axum merge          pattern (chat joins memory; each wire ships in its own module)",
+    ),
     ("run", "[bin] brain_migrate_rehearse + bench entry loops"),
     ("usage", "[bin] per-binary help printers"),
     ("run_eval", "[bin] brain.rs + bench eval harness entry"),

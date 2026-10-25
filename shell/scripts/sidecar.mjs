@@ -609,6 +609,53 @@ function stage() {
 	}
 	artifacts.push({ name: universalName, target: UNIVERSAL_TRIPLE, path: universalPath });
 
+	// brain-afm — the AFM bridge executable (the chat spine). Built by
+	// SwiftPM in shell-macos as a UNIVERSAL binary, staged under the same
+	// triple convention so the bundler's externalBin places it beside the
+	// kernel in Contents/MacOS (the kernel resolves it as
+	// current_exe().parent()/brain-afm). The provenance record below covers
+	// it like every other artifact: a reader that finds the record can trust
+	// every entry it names. No --version round-trip guard here: the bridge
+	// speaks JSONL, not flags, and a capabilities round-trip would boot the
+	// model; the arch check + the sealed sha256 + the kernel's own live
+	// protocol pin carry the integrity story.
+	const afmDir = join(REPO_ROOT, 'shell-macos');
+	console.log('[stage] swift build -c release --arch arm64 --arch x86_64 (brain-afm)');
+	const afmBuild = run(
+		'swift',
+		['build', '-c', 'release', '--arch', 'arm64', '--arch', 'x86_64'],
+		{ cwd: afmDir }
+	);
+	if (afmBuild.status !== 0) {
+		console.error(`[stage] swift build failed for brain-afm: ${output(afmBuild)}`);
+		process.exit(1);
+	}
+	// SwiftPM's universal builds land under .build/apple/...; single-arch
+	// under .build/out/... — probe both so a toolchain layout change fails
+	// loudly here rather than silently skipping the bridge.
+	const afmCandidates = [
+		join(afmDir, '.build', 'apple', 'Products', 'Release', 'brain-afm'),
+		join(afmDir, '.build', 'out', 'Products', 'Release', 'brain-afm'),
+		join(afmDir, '.build', 'release', 'brain-afm')
+	];
+	const afmSource = afmCandidates.find((candidate) => existsSync(candidate));
+	if (!afmSource) {
+		console.error(`[stage] brain-afm build output absent — probed:\n  ${afmCandidates.join('\n  ')}`);
+		process.exit(1);
+	}
+	const afmArchs = machoArchs(afmSource);
+	if (!sameArchSet(afmArchs, expectedArchs)) {
+		console.error(
+			`[stage] brain-afm carries [${afmArchs.join(' ')}], expected the universal [${expectedArchs.join(' ')}]`
+		);
+		process.exit(1);
+	}
+	const afmName = `brain-afm-${UNIVERSAL_TRIPLE}`;
+	const afmPath = join(STAGED_DIR, afmName);
+	copyFileSync(afmSource, afmPath);
+	chmodSync(afmPath, 0o755);
+	artifacts.push({ name: afmName, target: UNIVERSAL_TRIPLE, path: afmPath });
+
 	// The record is written LAST, after every artifact exists. A reader that
 	// finds a record can therefore trust every entry it names.
 	const record = provenanceFor({ root: REPO_ROOT, artifacts });

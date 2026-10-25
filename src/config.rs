@@ -1989,6 +1989,23 @@ pub fn model_profile() -> &'static str {
     }
 }
 
+/// Resolve the AFM bridge executable (`brain-afm`, the Apple-FoundationModels
+/// child that serves chat turns). Default: the binary beside the RUNNING
+/// kernel — in the shipped bundle both live in `Contents/MacOS/`, and in a
+/// dev tree `BRAIN_AFM_BRIDGE` names it explicitly. `None` (absent file)
+/// is a POSTURE, not an error: the chat route answers with a named refusal
+/// and every other surface of the server is unaffected.
+pub fn afm_bridge_path() -> Option<std::path::PathBuf> {
+    if let Ok(explicit) = std::env::var("BRAIN_AFM_BRIDGE") {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            return Some(std::path::PathBuf::from(trimmed));
+        }
+    }
+    let exe = std::env::current_exe().ok()?;
+    exe.parent().map(|dir| dir.join("brain-afm"))
+}
+
 /// Resolve the embedding model id for the active profile. `compact` (formerly
 /// `multilingual` — an English model, mislabeled) swaps in the smallest static
 /// model; `enterprise`/`desktop` select the neural tiers (feature-gated — they
