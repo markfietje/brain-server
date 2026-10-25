@@ -334,6 +334,24 @@
 		tokenConfigured = await refreshBearer();
 	}
 
+	// A credential change is the one moment the frame's facts can go from
+	// refused to answered (or back), and it happens HERE, in the panel — so
+	// the three glance reads re-run on it rather than waiting for the next
+	// launch. Measured: a token saved over a stale one left the sidebar
+	// reading "integrity not verified" until the app was relaunched.
+	$effect(() => {
+		if (
+			tokenState === 'saved' ||
+			tokenState === 'rotated' ||
+			tokenState === 'pending' ||
+			tokenState === 'cleared'
+		) {
+			void refreshQueue();
+			void refreshFacts();
+			void refreshChain();
+		}
+	});
+
 	async function saveToken(): Promise<void> {
 		const token = tokenInput;
 		if (!token.trim()) {
@@ -595,7 +613,7 @@
 					aria-hidden="true"
 				></span>
 				<span class={collapsed ? 'sr-only' : 'leading-snug'}>
-					{#if rowsLabel !== null}{rowsLabel} · {/if}{integrityLabel}
+					{#if rowsLabel !== null}{`${rowsLabel} · `}{/if}{integrityLabel}
 				</span>
 			</p>
 		</div>

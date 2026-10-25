@@ -305,7 +305,7 @@
 							{sanitizeTemplateText(hit.title ?? `${hit.id}`)}
 						</h2>
 						<span class="shrink-0 font-mono text-xs text-muted-foreground">
-							#{hit.id}{#if hit.domain} · {sanitizeTemplateText(hit.domain)}{/if}
+							{`#${hit.id}${hit.domain ? ` · ${sanitizeTemplateText(hit.domain)}` : ''}`}
 						</span>
 					</div>
 					{#if hit.snippet}

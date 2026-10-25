@@ -158,6 +158,14 @@ test('the_settings_saves_to_the_keychain_and_clears_it', async () => {
 	const input = (await screen.findByLabelText('Kernel token')) as HTMLInputElement;
 	expect(screen.getByText(/No token configured/)).toBeTruthy();
 
+	// The frame's glance reads ran once at mount; a credential change must
+	// run them again, because it is the one moment a refused fact can
+	// become an answered one (measured: a stale sidebar until relaunch).
+	const { fetchKernelFacts } = await import('#lib/api/kernel-facts.js');
+	const { verifyAuditChain } = await import('#lib/api/audit.js');
+	const factsBefore = vi.mocked(fetchKernelFacts).mock.calls.length;
+	const chainBefore = vi.mocked(verifyAuditChain).mock.calls.length;
+
 	await user.type(input, SENTINEL);
 	await user.click(screen.getByRole('button', { name: 'Save token' }));
 
@@ -167,11 +175,18 @@ test('the_settings_saves_to_the_keychain_and_clears_it', async () => {
 	await waitFor(() => expect(keychain.stored).toBe(SENTINEL));
 	expect(input.value).toBe('');
 	expect(await screen.findByText('A kernel token is configured.')).toBeTruthy();
+	await waitFor(() => {
+		expect(vi.mocked(fetchKernelFacts).mock.calls.length, 'the facts re-read after a save').toBe(factsBefore + 1);
+		expect(vi.mocked(verifyAuditChain).mock.calls.length, 'the chain re-read after a save').toBe(chainBefore + 1);
+	});
 
 	await user.click(screen.getByRole('button', { name: 'Clear saved token' }));
 	await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith('clear_kernel_token'));
 	await waitFor(() => expect(keychain.stored).toBeNull());
 	expect(await screen.findByText(/No token configured/)).toBeTruthy();
+	await waitFor(() => {
+		expect(vi.mocked(fetchKernelFacts).mock.calls.length, 'the facts re-read after a clear').toBe(factsBefore + 2);
+	});
 });
 
 /**
