@@ -90,6 +90,22 @@ entitled build exists, the same startup probe flips and the 32K tier lights
 up with zero code changes. The green-tea e2e drives the whole path over the
 composed app with REAL on-device generation and nothing mocked.
 
+### The release lane, fixed while shipping
+
+The tag's first lane run was the FIRST machine ever to compile `brain-afm`
+from a clean tree, and it failed three ways, all fixed in the same release:
+the bundle jobs (release + shell lanes) ran on an Xcode whose SDK predates
+the macOS 27 FoundationModels surface and now run the `xcode-27` image the
+Swift package's own lane gates on; `sidecar.mjs stage` staged brain-afm
+without the per-arch thin slices the bundler's `externalBin` resolves (they
+are thinned from the verified universal and sealed like every artifact); and
+the bridge answered `model_unavailable` where the contract demands
+`instructions_locked` — the session's identity and instructions lock now
+live in the registry from the id's first use, so the refusal's order does
+not depend on the machine's posture. The installer refuses a staged app
+whose sealed kernel version differs from the binary it is installing, after
+printing an OK line over exactly that mismatch once.
+
 ### Release notes
 
 **New**

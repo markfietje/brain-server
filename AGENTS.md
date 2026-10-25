@@ -50,6 +50,30 @@
 > a copy would put fat bytes under a thin name), arch-checked, and sealed
 > into the provenance record like every other artifact.
 >
+> **THE SECOND WAVE WAS THE SAME LESSON TWICE MORE, found by the round's own
+> push.** The bundle job's move to `xcode-27` was GREEN — brain-afm's first
+> CI compile — and the assemble job then refused at the green gate, which is
+> where the tag's own double force-push had left a CANCELLED ci.yml run for
+> the gate to read (the gate refusing a cancelled run is its law working;
+> the cancelled run was this round's own mess). And the fix's push to main
+> executed two more lanes that had never seen brain-afm: (1) `shell.yml`'s
+> `bundle-macos` job — whose own comment said "FIRST RUN IS OWED: it
+> executes on the next mirror push that carries a shell/** change" — ran and
+> hit the IDENTICAL Xcode 26.6 wall; it now runs `xcode-27` like the release
+> job. (2) `shell-macos.yml` (already on `xcode-27`) ran brain-afm's 28
+> protocol pins on a machine WITHOUT the model, and the one red is gold:
+> `changed instructions on a live session are refused` expected
+> `instructions_locked` and got `model_unavailable` — the lock lived AFTER
+> the budget measurement and inside the model-backed session, so on a
+> model-less machine turn 1 died before the session existed and turn 2's
+> lock had nothing to lock against. **A refusal whose order depends on the
+> machine's posture is not a contract.** The registry now carries the
+> session's identity (instructions + gate) from the id's first use; the
+> lock is a registry decision decided with no model at all, and
+> `materialize` is the only model-dependent step. The pin is red on the
+> runner pre-fix (recorded in the shell-macos run), green post-fix 28/28
+> locally — the lane's next runner execution is the proof.
+>
 > **THE TAG MOVED, AND NOTHING COULD OBSERVE IT:** the failed run's
 > `Assemble release + notes` job was skipped, so v1.29.32 had published
 > NOTHING — the tag was force-moved to the fix commit and the lane re-ran on

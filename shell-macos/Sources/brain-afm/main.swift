@@ -328,34 +328,54 @@ final class BridgeSession: @unchecked Sendable {
 /// trust its caller with its own state.
 @available(macOS 26.0, *)
 final class Sessions: @unchecked Sendable {
-    private let lock = NSLock()
-    private var sessions: [String: BridgeSession] = [:]
-    private var gates: [String: TurnGate] = [:]
+    /// A session's PROTOCOL identity, distinct from its model-backed half:
+    /// the instructions and the turn gate exist the moment the id is first
+    /// used, whether or not a `BridgeSession` can be built on this machine.
+    /// The instructions law lives on the slot, so the lock refuses a changed
+    /// instruction even where no model can ever answer.
+    final class Slot {
+        let instructions: String?
+        let gate = TurnGate()
+        var bridge: BridgeSession?
+        init(instructions: String?) { self.instructions = instructions }
+    }
 
-    /// The one place a session is created. `instructions` is accepted only
-    /// HERE: changing instructions later invalidates the entire cached prefix
-    /// (Apple's own contract), so a later instruction is REFUSED, not merged.
-    func session(
-        id: String, instructions: String?, budget: Int, escalationPermitted: Bool
-    ) throws -> (BridgeSession, TurnGate) {
+    private let lock = NSLock()
+    private var slots: [String: Slot] = [:]
+
+    /// The one place a session id is created, and the one place the
+    /// instructions law is decided: changing instructions later invalidates
+    /// the entire cached prefix (Apple's own contract), so a later
+    /// instruction is REFUSED, not merged. Pure registry work — no model,
+    /// no budget — so a refusal's ORDER does not depend on the machine.
+    func resolve(id: String, instructions: String?) throws -> Slot {
         try lock.withLock {
-            if let existing = sessions[id] {
-                if let wanted = instructions, wanted != existing.instructions {
+            if let slot = slots[id] {
+                if let wanted = instructions, wanted != slot.instructions {
                     throw BridgeError.instructionsLocked
                 }
-                guard let gate = gates[id] else {
-                    throw BridgeError.badRequest("session gate missing")
-                }
-                return (existing, gate)
+                return slot
             }
+            let slot = Slot(instructions: instructions)
+            slots[id] = slot
+            return slot
+        }
+    }
+
+    /// The model-backed half, built once per slot. This is the step that
+    /// may answer `model_unavailable`; the slot it attaches to already
+    /// carries the session's identity and its instructions lock.
+    func materialize(
+        _ slot: Slot, budget: Int, escalationPermitted: Bool
+    ) throws -> BridgeSession {
+        try lock.withLock {
+            if let bridge = slot.bridge { return bridge }
             let fresh = try BridgeSession(
-                instructions: instructions, budget: budget,
+                instructions: slot.instructions, budget: budget,
                 escalationPermitted: escalationPermitted
             )
-            sessions[id] = fresh
-            let gate = TurnGate()
-            gates[id] = gate
-            return (fresh, gate)
+            slot.bridge = fresh
+            return fresh
         }
     }
 }
@@ -446,17 +466,27 @@ struct BrainAfmBridge {
                                 "capabilities must be requested before the first turn"
                             )
                         }
+                        // The lock is a PROTOCOL decision, so it is resolved
+                        // FIRST — before the budget measurement and the model
+                        // itself, either of which answers `model_unavailable`
+                        // on a machine without the model. A refusal whose
+                        // ORDER depends on the machine's posture is not a
+                        // contract; resolve() decides the instructions law
+                        // against the registry alone, and materialize() is
+                        // the only step that needs the model.
+                        let slot = try sessions.resolve(
+                            id: session, instructions: instructions
+                        )
                         guard let budget = await BudgetCache.shared.measured() else {
                             throw BridgeError.modelUnavailable(
                                 "the on-device budget could not be measured"
                             )
                         }
-                        let (bridgeSession, gate) = try sessions.session(
-                            id: session, instructions: instructions,
-                            budget: budget,
+                        let bridgeSession = try sessions.materialize(
+                            slot, budget: budget,
                             escalationPermitted: caps.escalationPermitted
                         )
-                        try await gate.run {
+                        try await slot.gate.run {
                             let turnNo = bridgeSession.nextTurn()
                             try await Self.runTurn(
                                 id: id, prompt: prompt, turnNo: turnNo,

@@ -208,7 +208,13 @@ jobs:
   # FIRST RUN IS OWED: it executes on the next mirror push that carries a
   # `shell/**` change. Do not claim it green before a runner has run it.
   bundle-macos:
-    runs-on: macos-latest
+    # This job STAGES the sidecar, and staging builds brain-afm, whose
+    # FoundationModels surface exists only in the macOS 27 SDK — the same
+    # law the release workflow's bundle job obeys. The macos-latest image's
+    # newest Xcode is a 26.x toolchain, where the stage step cannot compile;
+    # the xcode-27 label keeps this lane on the same SDK generation the
+    # Swift package's own lane gates on.
+    runs-on: xcode-27
     timeout-minutes: 60
     steps:
       - name: Checkout
