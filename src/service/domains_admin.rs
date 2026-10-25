@@ -530,21 +530,53 @@ pub(crate) fn relabel_chunks(
     }
 
     // One tx: relabel only rows currently in a different domain.
-    let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(ids.len() + 1);
-    params_vec.push(Box::new(to.to_string()));
-    for id in ids {
-        params_vec.push(Box::new(*id));
-    }
-    let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
     let tx = conn
         .transaction()
         .map_err(|e| DomainAdminError::Database(format!("tx begin failed: {e}")))?;
-    let changed = tx
-        .execute(
-            &format!("UPDATE knowledge SET domain = ?1 WHERE id IN ({ph}) AND domain != ?1"),
-            param_refs.as_slice(),
-        )
-        .map_err(|e| DomainAdminError::Database(format!("relabel failed: {e}")))?;
+    // Moving a row between domains is a GOVERNANCE act: the governance
+    // tuple (owner, access_scope, domain) changes, so its hash must be
+    // recomputed IN THIS TX — a relabel that changes `domain` without
+    // recomputing is exactly the bug class `governance_tampering`-family
+    // pins catch. Rust computes (Architecture Law); the affected rows are
+    // read under the same tx the update runs in, so the hash matches the
+    // row state it commits with.
+    let affected: Vec<(i64, Option<String>, String)> = {
+        let mut stmt = tx
+            .prepare(&format!(
+                "SELECT id, owner, access_scope FROM knowledge \
+                 WHERE id IN ({ph}) AND domain != ?{}",
+                ids.len() + 1
+            ))
+            .map_err(|e| DomainAdminError::Database(format!("relabel read failed: {e}")))?;
+        let mut read_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(ids.len() + 1);
+        for id in ids {
+            read_params.push(Box::new(*id));
+        }
+        read_params.push(Box::new(to.to_string()));
+        let read_refs: Vec<&dyn rusqlite::ToSql> = read_params.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt
+            .query_map(read_refs.as_slice(), |r| {
+                Ok((r.get::<_, i64>(0)?, r.get(1)?, r.get(2)?))
+            })
+            .map_err(|e| DomainAdminError::Database(format!("relabel read failed: {e}")))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(DomainAdminError::from)?
+    };
+    let mut changed = 0usize;
+    {
+        let mut stmt = tx
+            .prepare("UPDATE knowledge SET domain = ?1, governance_hash = ?2 WHERE id = ?3")
+            .map_err(|e| DomainAdminError::Database(format!("relabel failed: {e}")))?;
+        for (id, owner, access_scope) in &affected {
+            changed += stmt
+                .execute(rusqlite::params![
+                    to,
+                    crate::service::ingest::governance_hash(owner.as_deref(), access_scope, to),
+                    id,
+                ])
+                .map_err(|e| DomainAdminError::Database(format!("relabel failed: {e}")))?;
+        }
+    }
     tx.commit()
         .map_err(|e| DomainAdminError::Database(format!("tx commit failed: {e}")))?;
     Ok((changed, from_domains))

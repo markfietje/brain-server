@@ -197,6 +197,12 @@ const SUBCOMMANDS: &[Subcommand] = &[
         usage: "brain check-consistency",
     },
     Subcommand {
+        name: "verify-governance",
+        json: false,
+        run: cmd_verify_governance,
+        usage: "brain verify-governance [--db PATH]",
+    },
+    Subcommand {
         name: "source-delete",
         json: false,
         run: cmd_source_delete,
@@ -1614,6 +1620,66 @@ fn cmd_undo_resolve(args: &[String]) -> Result<(), String> {
 /// Calls `/consolidate/propose` and reports the `unresolved_contradictions`
 /// list (contradicts links with no paired supersedes). Never auto-fixes;
 /// operator uses `brain resolve <new> <old>` to act on each.
+/// `brain verify-governance [--db PATH]` — the row-level governance
+/// integrity scan: recounts every knowledge row's
+/// SHA-256 over its governance tuple (owner, access_scope, domain) and
+/// reports `ok` / `tampered` (per-row ids) / `legacy_unhashed`. Thin
+/// binary: the logic lives in `service::ingest::verify_governance`; this
+/// only wires, prints, and sets the exit code.
+///
+/// Fail-closed posture: a scan that cannot run is an ERROR, never a clean
+/// report. `legacy_unhashed` rows (predating the migration) are disclosed
+/// with a count and do NOT fail the scan — the migration's backfill
+/// removes the class, and the backfill itself launders pre-migration
+/// tampering (the legacy-disclosure shape). Tampered rows DO fail it.
+fn cmd_verify_governance(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args)?;
+    if !positionals.is_empty() {
+        return usage_err("usage: brain verify-governance [--db PATH]".to_string());
+    }
+    let db = flags
+        .get("db")
+        .and_then(|o| o.clone())
+        .map(PathBuf::from)
+        .unwrap_or_else(default_db_path);
+    if !db.exists() {
+        return Err(format!(
+            "no DB at {db:?} — pass --db PATH or set BRAIN_DB_PATH"
+        ));
+    }
+    let conn = rusqlite::Connection::open(&db).map_err(|e| format!("open {db:?}: {e}"))?;
+    let scan = brain_server::service::ingest::verify_governance(&conn)
+        .map_err(|e| format!("governance scan failed (never reported clean): {e}"))?;
+    println!(
+        "brain-server governance integrity report ({}):",
+        db.display()
+    );
+    println!("  ok               : {}", scan.ok);
+    println!(
+        "  legacy_unhashed  : {} (predates the migration; disclosed, not failed)",
+        scan.legacy_unhashed
+    );
+    if scan.is_clean() {
+        println!("  tampered         : 0");
+        println!("  ✓ every hashed row's governance tuple matches its stored hash");
+        Ok(())
+    } else {
+        println!(
+            "  tampered         : {} (ids: {:?})",
+            scan.tampered.len(),
+            scan.tampered
+        );
+        Err(format!(
+            "governance tampering detected: {} row(s) ({:?}) — the governance tuple \
+             (owner, access_scope, domain) no longer matches its stored hash. Out-of-band \
+             edits to these columns require local DB access (the wipe-everything attacker \
+             class); treat the rows and the host accordingly",
+            scan.tampered.len(),
+            scan.tampered
+        ))
+    }
+}
+
 fn cmd_check_consistency(_args: &[String]) -> Result<(), String> {
     let resp = post(
         &base_url(),

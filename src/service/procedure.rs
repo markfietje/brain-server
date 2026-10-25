@@ -80,9 +80,14 @@ pub(crate) fn store_procedure(
 ) -> Result<(i64, Vec<i64>), ProcedureError> {
     // Root chunk: memory_kind = 'procedure'.
     let content_hash = crate::audit::hash(&format!("{title}|{content}"));
+    // governance tuple as STORED: this insert writes no `owner` column (the
+    // owner rides the audit row only), and names no access_scope — so the
+    // row's tuple is (NULL, 'private', domain-or-'global').
+    let governance_hash =
+        crate::service::ingest::governance_hash(None, "private", domain.unwrap_or("global"));
     tx.execute(
-        "INSERT INTO knowledge (title, content, content_hash, source, domain, node_kind, origin, pii)
-         VALUES (?1, ?2, ?3, 'manual', ?4, 'procedure', ?5, ?6)",
+        "INSERT INTO knowledge (title, content, content_hash, source, domain, node_kind, origin, pii, governance_hash)
+         VALUES (?1, ?2, ?3, 'manual', ?4, 'procedure', ?5, ?6, ?7)",
         params![
             title,
             content,
@@ -90,6 +95,7 @@ pub(crate) fn store_procedure(
             domain.unwrap_or("global"),
             origin,
             crate::gate::pii_flag(title, content) as i64,
+            &governance_hash,
         ],
     )
     .map_err(|e| ProcedureError::Storage(format!("procedure insert failed: {e}")))?;
@@ -115,8 +121,8 @@ pub(crate) fn store_procedure(
         let hash = crate::audit::hash(&format!("{root_id}|{idx}|{step_title}|{step_content}"));
         let kind_str = step_kind.as_str();
         tx.execute(
-            "INSERT INTO knowledge (title, content, content_hash, source, domain, node_kind, parent_id, origin, pii)
-             VALUES (?1, ?2, ?3, 'manual', ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO knowledge (title, content, content_hash, source, domain, node_kind, parent_id, origin, pii, governance_hash)
+             VALUES (?1, ?2, ?3, 'manual', ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 step_title,
                 step_content,
@@ -126,6 +132,8 @@ pub(crate) fn store_procedure(
                 root_id,
                 origin,
                 crate::gate::pii_flag(step_title, step_content) as i64,
+                // same stored tuple as the root: no owner column, default scope.
+                &governance_hash,
             ],
         )
         .map_err(|e| ProcedureError::Storage(format!("step insert failed: {e}")))?;

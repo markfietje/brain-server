@@ -3362,6 +3362,76 @@ pub fn run_migration_with_store_dim(
          );",
     )?;
 
+    // ── v1.29.32 "Governed": row-level governance integrity ────────────
+    // arXiv:2610.30698 (PREPRINT, 2026-10-22): content-integrity does not
+    // cover governance-integrity — corrupting a memory row's owner/scope/
+    // domain while leaving its content intact left NOTHING on this table
+    // able to witness it (measured on pre-round main: audit delta 0,
+    // content_hash still matching). `knowledge.governance_hash` carries a
+    // SHA-256 over the governance tuple (owner, access_scope, domain),
+    // computed by `service::ingest::governance_hash` (Architecture Law:
+    // Rust computes, SQL never does). Additive + nullable; NULL = the row
+    // predates this migration, and `brain verify-governance` discloses
+    // such rows as `legacy_unhashed` with a count — never failed on.
+    //
+    // THE BACKFILL DISCLOSURE (the legacy-plaintext disclosure shape): hashing
+    // every pre-existing row necessarily launders tampering that happened
+    // BEFORE this migration ran — the first hash a row carries is computed
+    // from the state the row was FOUND in, whatever wrote it. The count is
+    // logged so an operator can reconcile it against expectation.
+    let has_governance_hash: bool = db
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('knowledge') WHERE name='governance_hash'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if !has_governance_hash {
+        // One transaction: the column and the backfilled hashes land
+        // together or not at all. IMMEDIATE (the write-discipline needle):
+        // this is a read-modify-write seam — the rows are read, hashed in
+        // Rust, and rewritten — so the write lock is taken up front.
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute("ALTER TABLE knowledge ADD COLUMN governance_hash TEXT", [])?;
+        let rows: Vec<(i64, Option<String>, String, String)> = {
+            let mut s =
+                tx.prepare("SELECT id, owner, access_scope, domain FROM knowledge ORDER BY id")?;
+            s.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut backfilled = 0usize;
+        {
+            let mut stmt = tx.prepare("UPDATE knowledge SET governance_hash = ?1 WHERE id = ?2")?;
+            for (id, owner, access_scope, domain) in rows {
+                stmt.execute(rusqlite::params![
+                    crate::service::ingest::governance_hash(
+                        owner.as_deref(),
+                        &access_scope,
+                        &domain
+                    ),
+                    id
+                ])?;
+                backfilled += 1;
+            }
+        }
+        tx.commit()?;
+        if backfilled > 0 {
+            info!(
+                "governance backfill: hashed the governance tuple of {backfilled} \
+                 pre-existing knowledge rows — the backfill launders any tampering \
+                 that predates it (the R108 legacy disclosure); reconcile the count"
+            );
+        }
+    }
+
     // ── Parity check: assert vec0 absorbed all valid legacy vectors ──────
     // A silent partial backfill (e.g. skipped non-512-dim rows) would otherwise
     // leave the index incomplete with no signal. We log a warning for any

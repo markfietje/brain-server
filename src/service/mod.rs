@@ -412,93 +412,6 @@ mod pins {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let files = collect_src_rs_files();
 
-        // Every insert that targets `knowledge`, however it is spelled:
-        // optional `OR REPLACE/IGNORE/…`, schema qualification, quoted
-        // identifiers, and arbitrary whitespace between tokens. The scanner
-        // works on an ASCII-uppercased COPY (same byte length) and reports the
-        // byte offset so line numbers stay true.
-        fn knowledge_inserts(text: &str) -> Vec<(usize, String)> {
-            let mut up = Vec::with_capacity(text.len());
-            for b in text.bytes() {
-                up.push(if b.is_ascii_lowercase() { b - 32 } else { b });
-            }
-            let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
-            let skip_ws = |mut j: usize| {
-                while j < up.len() && up[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                j
-            };
-            let mut out = Vec::new();
-            let mut i = 0usize;
-            while let Some(rel) = up[i..].windows(6).position(|w| w == b"INSERT") {
-                let start = i + rel;
-                let mut j = skip_ws(start + 6);
-                // OR REPLACE / OR IGNORE / OR ABORT / OR FAIL / OR ROLLBACK
-                if up[j..].starts_with(b"OR ") {
-                    j = skip_ws(j + 3);
-                    while j < up.len() && is_ident(up[j]) {
-                        j += 1;
-                    }
-                    j = skip_ws(j);
-                }
-                if !up[j..].starts_with(b"INTO") {
-                    i = start + 6;
-                    continue;
-                }
-                j = skip_ws(j + 4);
-                // The first identifier is the TABLE unless it is followed by a
-                // dot, in which case it is the schema and the next identifier
-                // is the table (`main.knowledge`). Consuming it unconditionally
-                // made every plain `INSERT INTO knowledge` invisible.
-                let first_start = j;
-                while j < up.len() && is_ident(up[j]) {
-                    j += 1;
-                }
-                if up.get(j) == Some(&b'.') {
-                    j = skip_ws(j + 1);
-                } else {
-                    j = first_start;
-                }
-                // optional quoted table name
-                if matches!(up.get(j), Some(b'"') | Some(b'`') | Some(b'[')) {
-                    j += 1;
-                }
-                if !up[j..].starts_with(b"KNOWLEDGE") {
-                    i = start + 6;
-                    continue;
-                }
-                j += 9;
-                if matches!(up.get(j), Some(b'"') | Some(b'`') | Some(b']')) {
-                    j += 1;
-                }
-                let end = (j + 3000).min(up.len());
-                let seg = &up[j..end];
-                let paren = seg.iter().position(|&c| c == b'(');
-                let values = seg
-                    .windows(6)
-                    .position(|w| w == b"VALUES")
-                    .or_else(|| seg.windows(6).position(|w| w == b"SELECT"));
-                match (paren, values) {
-                    (Some(p), Some(v)) if p < v => {
-                        let close = seg[p..]
-                            .iter()
-                            .position(|&c| c == b')')
-                            .map(|c| p + c)
-                            .unwrap_or(seg.len());
-                        out.push((start, String::from_utf8_lossy(&seg[p..close]).into_owned()));
-                    }
-                    _ => {
-                        // No column list before the source (`INSERT INTO
-                        // knowledge SELECT …`): it cannot name `pii`.
-                        out.push((start, String::new()));
-                    }
-                }
-                i = start + 6;
-            }
-            out
-        }
-
         let mut violations: Vec<String> = Vec::new();
         let mut checked = 0usize;
         for f in &files {
@@ -542,6 +455,276 @@ mod pins {
              PII, add its path to EXEMPT with the reason — do not leave it silent:\n{}",
             violations.join("\n")
         );
+    }
+
+    /// R-GOV (v1.29.32) — the governance-hash anti-recurrence guard, the
+    /// sibling of the `pii` guard above and born of the same history: the
+    /// pii column was omitted by five of six production writers because an
+    /// INSERT that skips a column is silently valid — the schema default
+    /// IS a value. `governance_hash` has the same failure shape: a writer
+    /// that omits it stores NULL, and every row it writes lands in the
+    /// `legacy_unhashed` class forever (the scan discloses the count, but
+    /// disclosure is not integrity). So the invariant is structural:
+    /// every production `INSERT INTO knowledge` names `governance_hash`,
+    /// and every production `UPDATE knowledge SET owner|access_scope|
+    /// domain` sets `governance_hash` in the same statement — a field
+    /// update without the recompute is exactly the drift the behavioral
+    /// pin (`app_path_writes_keep_the_governance_hash_consistent`) catches
+    /// at the service layer; this guard holds the whole writer set,
+    /// including the pre-convergence router paths the behavioral pin
+    /// cannot reach.
+    #[test]
+    fn every_knowledge_write_names_the_governance_hash() {
+        // Same exemptions as the pii guard, for the same reasons: the DDL
+        // file (its ALTER/backfill is the column's CREATOR), the rehearsal
+        // fixture binary, and the whole-file test module.
+        const EXEMPT: &[(&str, &str)] = &[
+            (
+                "migration.rs",
+                "schema DDL + the governance_hash backfill itself",
+            ),
+            ("bin/brain_migrate_rehearse.rs", "rehearsal fixture binary"),
+            (
+                "search/tests.rs",
+                "whole-file test module included under cfg(test)",
+            ),
+        ];
+        let exempt: Vec<&str> = EXEMPT.iter().map(|(p, _)| *p).collect();
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let files = collect_src_rs_files();
+
+        let mut violations: Vec<String> = Vec::new();
+        let mut checked_inserts = 0usize;
+        let mut checked_updates = 0usize;
+        for f in &files {
+            let rel = f
+                .strip_prefix(&dir)
+                .unwrap_or(f)
+                .to_string_lossy()
+                .to_string();
+            if exempt.contains(&rel.as_str()) {
+                continue;
+            }
+            let text = crate::spire_inventory::blank_cfg_test_regions(
+                &std::fs::read_to_string(f).expect("source file must be readable"),
+            );
+            for (offset, cols) in knowledge_inserts(&text) {
+                checked_inserts += 1;
+                let has = cols
+                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .any(|w| w.eq_ignore_ascii_case("governance_hash"));
+                if has {
+                    continue;
+                }
+                let lineno = text[..offset].bytes().filter(|&b| b == b'\n').count() + 1;
+                violations.push(format!(
+                    "  src/{rel}:{lineno} INSERT INTO knowledge omits `governance_hash` \
+                     (columns: {}) — the row lands in the legacy_unhashed class forever",
+                    cols.trim()
+                ));
+            }
+            // UPDATE arms: a governance field assigned without the recompute
+            // in the SAME statement. (An update that reassigns the field via
+            // a parameter and recomputes in a sibling statement of the same
+            // tx also satisfies this scanner only if the sibling carries the
+            // hash — the relabel path updates domain and governance_hash in
+            // one statement; hold every future path to that shape.)
+            for (offset, field, has_hash) in governance_field_updates(&text) {
+                checked_updates += 1;
+                if has_hash {
+                    continue;
+                }
+                let lineno = text[..offset].bytes().filter(|&b| b == b'\n').count() + 1;
+                violations.push(format!(
+                    "  src/{rel}:{lineno} UPDATE knowledge sets a governance field {} \
+                     without `governance_hash` in the same statement",
+                    field
+                ));
+            }
+        }
+        assert!(
+            checked_inserts >= 8,
+            "sanity: the guard found only {checked_inserts} INSERT INTO knowledge statements — \
+             the known production writers alone are 8; a scan this small is looking at nothing"
+        );
+        assert!(
+            checked_updates >= 2,
+            "sanity: the guard found only {checked_updates} governance-field UPDATEs — the \
+             known set is 2 (the admin relabel + the markdown import's domain move); a scan \
+             this small is looking at nothing"
+        );
+        assert!(
+            violations.is_empty(),
+            "GOVERNANCE-HASH VIOLATION — every knowledge write must carry the row-level \
+             governance integrity: INSERTs name `governance_hash` (computed by \
+             `service::ingest::governance_hash` over the tuple the row STORES), and UPDATEs \
+             of owner/access_scope/domain recompute it in the SAME statement. A writer that \
+             skips it stores NULL and silently joins the legacy_unhashed class:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    /// The UPDATE-arm scanner behind the governance guard: finds
+    /// `UPDATE knowledge SET <owner|access_scope|domain> = …` and reports
+    /// whether the SET clause also assigns `governance_hash`. Returns
+    /// (byte-offset, field-name, has-hash) for EVERY governance-field
+    /// update — the sane count and the violation list both derive from the
+    /// same walk. Uppercased copy like the insert scanner, so offsets stay
+    /// true for line numbers.
+    #[cfg(test)]
+    fn governance_field_updates(text: &str) -> Vec<(usize, &'static str, bool)> {
+        let mut up = Vec::with_capacity(text.len());
+        for b in text.bytes() {
+            up.push(if b.is_ascii_lowercase() { b - 32 } else { b });
+        }
+        let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        let mut out = Vec::new();
+        let mut i = 0usize;
+        while let Some(rel) = up[i..].windows(6).position(|w| w == b"UPDATE") {
+            let start = i + rel;
+            let mut j = start + 6;
+            // skip whitespace
+            while j < up.len() && up[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if !up[j..].starts_with(b"KNOWLEDGE") {
+                i = start + 6;
+                continue;
+            }
+            j += 9;
+            while j < up.len() && up[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if !up[j..].starts_with(b"SET") {
+                i = start + 6;
+                continue;
+            }
+            j += 3;
+            // the SET clause runs to WHERE / end-of-statement-ish; 800 bytes
+            // is far beyond any real clause here and keeps the scan bounded
+            let end = (j + 800).min(up.len());
+            let clause = &up[j..end];
+            let cut = clause
+                .windows(5)
+                .position(|w| w == b"WHERE")
+                .unwrap_or(clause.len());
+            let clause = &clause[..cut];
+            let names = ["OWNER", "ACCESS_SCOPE", "DOMAIN"];
+            let mut hit: Option<&'static str> = None;
+            for (idx, name) in names.iter().enumerate() {
+                let mut k = 0usize;
+                while let Some(r) = clause[k..]
+                    .windows(name.len())
+                    .position(|w| w == name.as_bytes())
+                {
+                    let at = k + r;
+                    let left_ok = at == 0 || !is_ident(clause[at - 1]);
+                    let after = at + name.len();
+                    let right_ok = clause.get(after).is_some_and(|c| !is_ident(*c));
+                    if left_ok && right_ok {
+                        // an assignment target, not a comparison literal
+                        hit = Some(["owner", "access_scope", "domain"][idx]);
+                        break;
+                    }
+                    k = after;
+                }
+                if hit.is_some() {
+                    break;
+                }
+            }
+            if let Some(field) = hit {
+                let has_hash = clause.windows(15).any(|w| w == b"GOVERNANCE_HASH");
+                out.push((start, field, has_hash));
+            }
+            i = start + 6;
+        }
+        out
+    }
+
+    /// The shared INSERT-INTO-knowledge scanner (column list between the
+    /// paren and VALUES/SELECT), used by the `pii` and governance guards.
+    /// Uppercased copy (same byte length) so offsets stay true for line numbers.
+    #[cfg(test)]
+    fn knowledge_inserts(text: &str) -> Vec<(usize, String)> {
+        let mut up = Vec::with_capacity(text.len());
+        for b in text.bytes() {
+            up.push(if b.is_ascii_lowercase() { b - 32 } else { b });
+        }
+        let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        let skip_ws = |mut j: usize| {
+            while j < up.len() && up[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            j
+        };
+        let mut out = Vec::new();
+        let mut i = 0usize;
+        while let Some(rel) = up[i..].windows(6).position(|w| w == b"INSERT") {
+            let start = i + rel;
+            let mut j = skip_ws(start + 6);
+            // OR REPLACE / OR IGNORE / OR ABORT / OR FAIL / OR ROLLBACK
+            if up[j..].starts_with(b"OR ") {
+                j = skip_ws(j + 3);
+                while j < up.len() && is_ident(up[j]) {
+                    j += 1;
+                }
+                j = skip_ws(j);
+            }
+            if !up[j..].starts_with(b"INTO") {
+                i = start + 6;
+                continue;
+            }
+            j = skip_ws(j + 4);
+            // The first identifier is the TABLE unless it is followed by a
+            // dot, in which case it is the schema and the next identifier
+            // is the table (`main.knowledge`). Consuming it unconditionally
+            // made every plain `INSERT INTO knowledge` invisible.
+            let first_start = j;
+            while j < up.len() && is_ident(up[j]) {
+                j += 1;
+            }
+            if up.get(j) == Some(&b'.') {
+                j = skip_ws(j + 1);
+            } else {
+                j = first_start;
+            }
+            // optional quoted table name
+            if matches!(up.get(j), Some(b'"') | Some(b'`') | Some(b'[')) {
+                j += 1;
+            }
+            if !up[j..].starts_with(b"KNOWLEDGE") {
+                i = start + 6;
+                continue;
+            }
+            j += 9;
+            if matches!(up.get(j), Some(b'"') | Some(b'`') | Some(b']')) {
+                j += 1;
+            }
+            let end = (j + 3000).min(up.len());
+            let seg = &up[j..end];
+            let paren = seg.iter().position(|&c| c == b'(');
+            let values = seg
+                .windows(6)
+                .position(|w| w == b"VALUES")
+                .or_else(|| seg.windows(6).position(|w| w == b"SELECT"));
+            match (paren, values) {
+                (Some(p), Some(v)) if p < v => {
+                    let close = seg[p..]
+                        .iter()
+                        .position(|&c| c == b')')
+                        .map(|c| p + c)
+                        .unwrap_or(seg.len());
+                    out.push((start, String::from_utf8_lossy(&seg[p..close]).into_owned()));
+                }
+                _ => {
+                    // No column list before the source (`INSERT INTO
+                    // knowledge SELECT …`): it cannot name `pii`.
+                    out.push((start, String::new()));
+                }
+            }
+            i = start + 6;
+        }
+        out
     }
 
     /// Recursive `.rs` walk over `src/`, used by the `pii` guard above.

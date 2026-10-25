@@ -8090,13 +8090,13 @@ Final paragraph after the rule.";
             (
                 router_mem_src,
                 "add_chunk",
-                "INSERT INTO knowledge(content, title, source, content_hash, pii, owner, origin)",
+                "INSERT INTO knowledge(content, title, source, content_hash, pii, owner, origin, governance_hash)",
             ),
             // ingest_memory
             (
                 router_mem_src,
                 "ingest_memory",
-                "INSERT INTO knowledge(content, title, source, content_hash, pii, owner, origin)",
+                "INSERT INTO knowledge(content, title, source, content_hash, pii, owner, origin, governance_hash)",
             ),
             // /ingest (structured) — v1.17.3 M2: the INSERT moved into the
             // shared `ingest_one` core (the batch path reuses it), and the
@@ -8113,7 +8113,7 @@ Final paragraph after the rule.";
             (
                 router_mem_src,
                 "write_markdown_ingest",
-                "heading_path, line_start, line_end, source_path, pii, owner)",
+                "heading_path, line_start, line_end, source_path, pii, owner, governance_hash)",
             ),
         ];
         for (src, handler, sql) in sites {
@@ -8702,8 +8702,15 @@ Final paragraph after the rule.";
         // router into `service/quarantine.rs` (the audit's finding 6). A named
         // act, not drift — the service core now owns those statements and the
         // router only maps its error type.
+        // 49 -> 52: the governance-integrity round — the markdown import's
+        // post-commit domain move grew its own tx (a SELECT prepare + an
+        // UPDATE prepare, +query_map +execute inside it) because moving a row
+        // between domains is a governance act and the row's governance hash
+        // must be recomputed in the same tx as the move. A named act, not
+        // drift; the three new shapes live in write_markdown_ingest's move
+        // arm, not in new surfaces.
         assert_eq!(
-            count, 49,
+            count, 52,
             "the router's rusqlite call-shape census moved — F4-08's staged              migration requires the delta to be a named act (update this              census in the same commit as the SQL change)"
         );
     }

@@ -13,6 +13,56 @@ measured. Those records are kept as they were written (this file is
 append-only), and their heading says `Unreleased` because that is what they
 were when the round landed — not because the work is still unreleased.
 
+## [Unreleased] — R-GOV: the governance state learns to prove itself
+
+Row-level governance integrity (arXiv:2610.30698, PREPRINT 2026-10-22 —
+content-integrity does not cover governance-integrity). On pre-round main,
+an out-of-band edit of a memory row's `owner`/`access_scope`/`domain` broke
+NOTHING: audit delta 0, `content_hash` still matching, no consumer able to
+see it (measured before a line was written).
+
+- **`knowledge.governance_hash` (v1.29.32 "Governed" migration)** — SHA-256
+  over the governance tuple `(owner, access_scope, domain)`, fixed order,
+  presence-marked + length-prefixed, under a `brain-governance-v1` format
+  tag. Computed by Rust (`service::ingest::governance_hash`) at every write
+  path — ten of them maintained: the structured ingest, the KCS draft, the
+  proposal promotion, the procedure root+steps, `/add`, the memory capture,
+  the markdown import, and the two domain-move paths (admin relabel + the
+  import's move), which now recompute per-row in the SAME transaction.
+- **`brain verify-governance [--db PATH]`** — the detection surface,
+  mirroring `verify-chain` in shape: counts `ok`, lists tampered row ids,
+  counts `legacy_unhashed`; exit ≠ 0 on tampering; a scan that cannot
+  measure ERRORS, never reports clean (fail-closed). Recall does NOT check
+  the hash per row by design — the scan is where fail-closed lives.
+- **`legacy_unhashed` is disclosed, not failed on** — rows predating the
+  migration are counted and reported, never fatal. **The backfill
+  disclosure (the R108 shape): the migration's backfill necessarily
+  launders any tampering that happened BEFORE it ran** — the first hash a
+  row carries is computed from the state the row was found in; the count is
+  logged for operator reconciliation.
+- **Pins** (in the ingest core's existing test surface):
+  `governance_tampering_outside_the_app_is_detected` (the Phase 0 probe's
+  exact statement, its observed main-side silence carried verbatim in the
+  pin's failure text), `app_path_writes_keep_the_governance_hash_consistent`
+  (all service-core paths + the same-tx domain-move recompute),
+  `legacy_rows_are_counted_and_disclosed_not_failed`,
+  `content_tampering_stays_with_content_hash_not_the_governance_scan`
+  (isolation, both directions), `the_migration_backfill_hashes_pre_existing_rows`
+  (drop-column + re-migrate over a known 3-row mix). Plus the structural
+  sibling `every_knowledge_write_names_the_governance_hash` (the pii
+  anti-recurrence guard's scanner, extracted shared): every production
+  INSERT names the column; every governance-field UPDATE recomputes in the
+  same statement.
+- **The honest boundary, verbatim:** out-of-band tampering with these
+  columns requires local DB access, which is the same attacker class as the
+  stated wipe-everything ceiling. This is NOT a remote-attacker fix; it
+  makes the product's "governed" guarantee self-verifying at row level
+  (tamper-evident, not tamper-proof). THREAT_MODEL carries the row; the
+  gate-law register carries both guard rows with all four drills' observed
+  texts.
+- **Deferred, named:** the `/health/db` `governance_rows_tampered` field
+  (CLI-only this round — the wire change is its own additive round).
+
 ## [1.29.31] — 2026-10-25 — the chat is the app: the chat-first IA lands, and the chrome earns its place by exception
 
 Two rounds, one operator decision (2026-10-22, plan `21_CHAT_FIRST_IA`): in a

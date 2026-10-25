@@ -653,8 +653,8 @@ pub async fn add_chunk(
         };
 
         if let Err(e) = tx.execute(
-            "INSERT INTO knowledge(content, title, source, content_hash, pii, owner, origin)
-             VALUES(?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO knowledge(content, title, source, content_hash, pii, owner, origin, governance_hash)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 text,
                 title,
@@ -663,6 +663,13 @@ pub async fn add_chunk(
                 crate::gate::pii_flag(title.as_deref().unwrap_or(""), &text),
                 &owner,
                 crate::gate::origin_for_source(Some(&source)),
+                // governance tuple as STORED: no access_scope/domain columns
+                // named here, so both land at the schema defaults.
+                crate::service::ingest::governance_hash(
+                    owner.as_deref(),
+                    "private",
+                    "global",
+                ),
             ],
         ) {
             return AddResponse::error(format!("Insert failed: {}", e));
@@ -1231,8 +1238,8 @@ pub async fn ingest_memory(
 
             if tx
                 .execute(
-                    "INSERT INTO knowledge(content, title, source, content_hash, pii, owner, origin)
-                     VALUES(?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO knowledge(content, title, source, content_hash, pii, owner, origin, governance_hash)
+                     VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
                     params![
                         text,
                         title,
@@ -1242,7 +1249,14 @@ pub async fn ingest_memory(
                         &owner,
                         // derive, never hardcode: the origin is a function of
                         // the source kind (the Seatbelt posture label truth).
-                        crate::gate::origin_for_source(Some("memory"))
+                        crate::gate::origin_for_source(Some("memory")),
+                        // governance tuple as STORED (schema defaults for the
+                        // unnamed scope/domain columns).
+                        crate::service::ingest::governance_hash(
+                            owner.as_deref(),
+                            "private",
+                            "global",
+                        )
                     ],
                 )
                 .is_err()
@@ -2006,12 +2020,49 @@ pub(crate) async fn ingest_markdown(
         // domain move left chunks in "global" with no signal. Post-commit, so a
         // rejection is dishonest; log instead.
         match task::spawn_blocking(move || -> Result<(), AppError> {
-            let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
-            conn.execute(
-                "UPDATE knowledge SET domain = ?1 WHERE document_id = ?2 AND domain = 'global'",
-                params![d, did],
-            )
-            .map_err(|e| AppError::Internal(e.to_string()))?;
+            let mut conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
+            // A domain move is a governance act: every moved chunk's
+            // governance hash must be recomputed for the NEW tuple, in the
+            // same tx as the move (Rust computes; the read and the update
+            // share the tx so the hash matches the state it commits with).
+            // IMMEDIATE (the write-discipline needle): read-modify-write —
+            // the moved rows are read, hashed in Rust, and rewritten.
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+            let moved: Vec<(i64, Option<String>, String)> = {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT id, owner, access_scope FROM knowledge \
+                         WHERE document_id = ?1 AND domain = 'global'",
+                    )
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
+                let rows = stmt
+                    .query_map(params![did], |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get(1)?, r.get(2)?))
+                    })
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| AppError::Internal(e.to_string()))?
+            };
+            {
+                let mut stmt = tx
+                    .prepare("UPDATE knowledge SET domain = ?1, governance_hash = ?2 WHERE id = ?3")
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
+                for (id, owner, access_scope) in moved {
+                    stmt.execute(params![
+                        d,
+                        crate::service::ingest::governance_hash(
+                            owner.as_deref(),
+                            &access_scope,
+                            &d
+                        ),
+                        id
+                    ])
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
+                }
+            }
+            tx.commit().map_err(|e| AppError::Internal(e.to_string()))?;
             Ok(())
         })
         .await
@@ -2179,8 +2230,8 @@ pub fn write_markdown_ingest(
         tx.execute(
             "INSERT INTO knowledge
                (title, content, source, content_hash, document_id, chunk_index,
-                heading_path, line_start, line_end, source_path, pii, owner)
-             VALUES (?1, ?2, 'markdown', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                heading_path, line_start, line_end, source_path, pii, owner, governance_hash)
+             VALUES (?1, ?2, 'markdown', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 doc_title,
                 &chunk.text,
@@ -2202,6 +2253,10 @@ pub fn write_markdown_ingest(
                 crate::gate::pii_flag(doc_title, &chunk.text)
                     || crate::gate::pii_flag(&chunk.heading_path, ""),
                 owner,
+                // governance tuple as STORED: chunks insert into 'global'
+                // (the frontmatter domain move below recomputes the hash in
+                // the same tx as the move when the domain differs).
+                crate::service::ingest::governance_hash(owner.as_deref(), "private", "global",),
             ],
         )
         .map_err(|e| AppError::Internal(e.to_string()))?;

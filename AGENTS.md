@@ -1,5 +1,119 @@
 # Agent Execution Log — brain-server
 
+> **R138 "Governed" (R-GOV, 2026-10-25): the governance state of a memory
+> row is now tamper-evident at row level — and on pre-round main, corrupting
+> it broke NOTHING.** arXiv:2610.30698 (PREPRINT, 2026-10-22:
+> "Governance-State Corruption in Long-Term Memory for LLM Agents") found
+> the gap class: content-integrity does not cover governance-integrity.
+> Measured on clean main (`78a18990`) before a line was written: a row
+> inserted through `store_record`, then edited out-of-band with
+> `SET access_scope='public'`, produced **audit delta 0, a still-matching
+> `content_hash`, and no consumer anywhere that could see it** — the
+> corruption's only visible effects were SERVING effects (any permit set
+> containing `public` now admits the row; the role-less owner gate, which
+> is `{private}∩own-sub`, actually LOCKS the owner out of her own row —
+> corruption in both directions, invisible either way).
+>
+> **THE TUPLE AND THE HASH.** `knowledge.governance_hash` (v1.29.32
+> migration, guarded ALTER + a RUST backfill in one tx — SQL never
+> computes): SHA-256 over `(owner, access_scope, domain)` in a FIXED
+> order, presence-marked + length-prefixed under a `brain-governance-v1`
+> format tag, so NULL and "" are distinct and a future tuple EXTENSION is
+> a tag bump, never a silent reinterpretation. `domain` is IN the tuple
+> even though the content-hash dedup is domain-scoped, because the hash
+> value covers content bytes only (measured) and moving a row between
+> domains is a governance act. Content is excluded — `content_hash` owns
+> it, and the isolation pin holds the boundary in BOTH directions.
+>
+> **TEN WRITE PATHS MAINTAINED, one pin and one guard to keep them
+> honest.** The Phase 0 inventory (the pii guard's own scanner semantics
+> over production regions): `store_record`, the KCS draft, the
+> proposal-approve promotion, the procedure root+steps, `/add`, the
+> `/ingest/memory` capture, the markdown import (insert + its post-commit
+> domain move), and the admin `domain-move`. The relabel and the markdown
+> domain move now recompute per-row in the SAME tx (read affected → hash
+> in Rust → update domain+hash together). The structural sibling
+> `every_knowledge_write_names_the_governance_hash` (the pii guard's
+> scanner, extracted shared) holds every INSERT to naming the column and
+> every governance-field UPDATE to recomputing in the same statement —
+> born of the pii history: a column an INSERT omits is silently valid, and
+> for this column the default is NULL, the `legacy_unhashed` class
+> forever.
+>
+> **THE DETECTION SURFACE, and the read-path decision.** `brain
+> verify-governance [--db PATH]`: counts `ok`, lists tampered ids, counts
+> `legacy_unhashed`, exit ≠ 0 on tampering, and ERRORS when it cannot
+> measure (measured on a pre-migration DB copy: `no such column:
+> governance_hash`, exit 1 — never clean). Recall does NOT check per row
+> (bounds/perf law): the scan is the detection surface, fail-closed lives
+> in its reporting. Legacy rows are DISCLOSED with a count and never
+> failed on — and the migration backfill necessarily LAUNDERS any
+> tampering that predates it (the R108 legacy disclosure shape, stated in
+> the migration, the CHANGELOG, and the register row).
+>
+> **FOUR DRILLS, RUN and REVERTED, both teeth on one plant:** (D1) the
+> relabel recompute reverted → the pin reds `a domain move is a governance
+> act: the hash must follow the NEW tuple, recomputed in the SAME
+> transaction as the relabel` (stale-vs-recomputed hex pair) AND the
+> structural guard names `domains_admin.rs:569`; (D2) the scan stubbed
+> always-ok → pin 1 reds `left: [] right: [1]` while the probe drill
+> prints `ok=1 tampered=[]` over a REALLY tampered row — the exact miss
+> the scan exists to prevent; (D3) the backfill removed → `3 were
+> waiting, left: 3 right: 0` (the known-mix count the prompt required);
+> (D4) the pins grafted onto clean main → `E0425: cannot find function
+> 'verify_governance'` — the red is the surface's absence, and the
+> probe's recorded silence rides in pin 1's failure text so the red on
+> main is behavioral evidence, not just a compile error. THE CLI DRILL
+> RAN END TO END on the shipped binary: clean fixture → exit 0; one
+> tampered row → `tampered: 1 (ids: [1])`, exit 1; pre-migration copy →
+> fail-closed error, exit 1. (The operator's live DB was only read as a
+> COPY.)
+>
+> **THE HONEST BOUNDARY, verbatim:** out-of-band tampering with these
+> columns requires local DB access, which is the same attacker class as
+> the stated wipe-everything ceiling. NOT a remote-attacker fix. The round
+> makes the product's "governed" guarantee self-verifying at row level,
+> the way the keyed audit chain makes the event log self-verifying —
+> tamper-EVIDENT, not tamper-proof.
+>
+> **THE PROMPT'S OWN CLAIM WAS MEASURED FALSE, the R137 lesson applied.**
+> The prompt said "the Oct 2026 sweep already carries the paper" —
+> `docs/research/20-22` carried no `2610.30698` anywhere (measured); the
+> cross-reference line was ADDED by this round to sweep 22, with the
+> correction recorded there. Also corrected by measurement: the probe's
+> gate arm — the expected "recall gate serves the row under the widened
+> scope" holds only for permit sets containing `public` (role/unrestricted
+> readers); the role-less gate is deny-by-default BOTH ways, so the same
+> tamper can also silently LOCK AN OWNER OUT — the serving claim in the
+> round's artifacts states the precise shape.
+>
+> **OWED, named:** the `/health/db` `governance_rows_tampered` wire field
+> is DEFERRED (CLI-only this round — the field pulls openapi +
+> route-coverage + authz guard-table + shell regen + an `x-api-version`
+> bump, its own additive round); the structural guard's behavioral
+> conversion for the three pre-convergence router paths (lands with their
+> service-line move); a future tuple EXTENSION (lawful_basis/purpose/
+> origin/pii are write-once-at-ingest with no update path today, so the
+> drift class cannot arise for them yet) is a `brain-governance-v2` tag
+> bump.
+>
+> **TWO STANDING GATES MOVED AS NAMED ACTS, and one round-law bit back
+> correctly:** the router's frozen SQL census 49 → 52 (the markdown
+> domain-move arm grew its own SELECT/UPDATE prepares — the hash recompute
+> is in-tx by construction); the write-discipline pin flagged both new
+> transactions as DEFERRED read-modify-write seams, and both were converted
+> to `BEGIN IMMEDIATE` (the needle the discipline wants) rather than
+> raising the frozen ceilings; the comments gate refused the round's own
+> "v1.29.32"/"R108" labels in code comments (labels dropped, invariant
+> sentences kept) — three gates that red on the round's own diff are the
+> process working.
+>
+> **ponytail:** one column + one hash fn + one scan in the ingest core,
+> ten maintained call sites, one CLI subcommand, five pins + one
+> structural guard, one migration block; no new dependency (sha2 was
+> already the audit module's), no trigger, no read-path change, no recall
+> SQL change, no wire change, no second test file.
+
 > **R137 "Lantern" (Phase III-8, 2026-10-22): the plugin's suite ran NOWHERE —
 > and the integration is now proved against the binary that actually ships.**
 > The OpenClaw plugin carried 1,768 lines of tests across seven files and

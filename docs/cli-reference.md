@@ -16,6 +16,7 @@ on the HTTP API or the client console.
 | `brain kb build --domain <d> --out <dir> [--db <path>] [--base-url <url>] [--with-case-status] [--locales en,de,fr,es,nl]` | Build the public KB as a static artifact from published articles (deterministic bytes + SHA-256 manifest carrying the Art 50(2) provenance seal; sign before hosting). `--with-case-status` also emits the live `status/{ref}.json|.html` case-status pages; `--locales` emits per-locale pages with hreflang alternates |
 | `brain status` | Counts, model, version |
 | `brain check-consistency` | Report duplicates, conflicts, stale sources, near-duplicates |
+| `brain verify-governance` [`--db PATH`] | Row-level governance-integrity scan: recount every knowledge row's SHA-256 over its governance tuple (owner, access_scope, domain); reports ok / tampered (ids) / legacy_unhashed, exit ≠ 0 on tampering |
 | `brain snapshot-status` | Show the point-in-time snapshot state |
 | `brain setup [domain] [--profile NAME] [--yes]` | Interactive first-run: pick a profile preset, preview its knobs, bind it to a domain (`--yes` scripts it) |
 | `brain bench` | Benchmark harness (always compiled into `brain`; the `bench` Cargo feature gates the separate `bench` BINARY) |
@@ -190,6 +191,9 @@ brain ingest-dir ~/notes/health
 
 # Check the memory for duplicates and conflicts
 brain check-consistency
+
+# Verify row-level governance integrity (owner/scope/domain tamper-evidence)
+brain verify-governance
 
 # Back up the database (passphrase via file; DB path from BRAIN_DB_PATH)
 brain backup ~/backups/brain-$(date +%F).enc --passphrase-file ~/.config/brain-server/backup.pass

@@ -326,10 +326,10 @@ pub fn store_record(
     tx.execute(
         "INSERT INTO knowledge (title, content, source, content_hash, domain, pii, owner, \
             node_kind, assertion_kind, confidence, access_scope, expires_at, valid_from, \
-            valid_to, observed_at, ump_id, ump_meta, lawful_basis, purpose, origin) \
+            valid_to, observed_at, ump_id, ump_meta, lawful_basis, purpose, origin, governance_hash) \
          VALUES (?1, ?2, 'structured', ?3, ?4, ?5, ?6, COALESCE(?7, 'fact'), \
             COALESCE(?8, 'stated'), COALESCE(?9, 1.0), COALESCE(?10, 'private'), \
-            ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+            ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         rusqlite::params![
             &input.title,
             &input.content,
@@ -365,6 +365,14 @@ pub fn store_record(
             } else {
                 crate::gate::origin_for_source(Some("structured"))
             },
+            // governance-state integrity: hashed over the STORED tuple
+            // (the access_scope COALESCE mirrors ?10's), same tx as the
+            // write and its audit row.
+            governance_hash(
+                input.owner,
+                input.access_scope.unwrap_or("private"),
+                input.domain,
+            ),
         ],
     )
     .map_err(|e| IngestError::Database(format!("insert knowledge failed: {e}")))?;
@@ -529,6 +537,138 @@ pub fn store_record(
             input.lawful_basis,
         ),
     })
+}
+
+// ── Governance-state integrity (row-level, tamper-evident) ────────────
+//
+// arXiv:2610.30698 (PREPRINT, 2026-10-22: "Governance-State Corruption in
+// Long-Term Memory for LLM Agents") stress-tests what happens when a
+// memory row's GOVERNANCE state — owner, scope, domain — is corrupted
+// while its content stays intact: content-integrity does not cover
+// governance-integrity, and systems that conflate the two serve the
+// corrupted row as a legitimate one. `content_hash` covers CONTENT only
+// (xxh3-64 over the content bytes; the dedup scopes by domain in a WHERE
+// clause but the hash value itself never sees it — measured in Phase 0 of
+// the round), so nothing on this table could witness an out-of-band
+// access_scope rewrite (the probe's raw statement is recorded verbatim in
+// the pins section, inside cfg(test)): pre-round main recorded audit
+// delta 0 and a still-matching content_hash.
+//
+// THE HONEST BOUNDARY (stated everywhere this round produces): out-of-band
+// tampering with these columns requires local DB access, which is the same
+// attacker class as the stated wipe-everything ceiling. This is NOT a
+// remote-attacker fix. It makes the product's own "governed" guarantee
+// SELF-VERIFYING at row level — the same role the keyed audit chain plays
+// for the event log — so an operator can distinguish "the row says private
+// because the app wrote private" from "the row says private because
+// somebody edited it".
+//
+// THE TUPLE is minimal and FIXED: `(owner, access_scope, domain)`. Content
+// is explicitly excluded (content_hash owns it). `domain` is included even
+// though content_hash's dedup is domain-scoped, because moving a row
+// between domains is a governance act. The compliance labels
+// (`lawful_basis`/`purpose`/`origin`) and the `pii` bit are write-once at
+// ingest with NO update path in the round's write-path inventory, so the
+// drift class this hash closes (an update that changes a governance field
+// without recomputing) cannot arise for them; covering them is a future
+// tuple EXTENSION, which is why the serialization carries a format tag.
+//
+// THE READ-PATH DECISION: recall does NOT check this hash per row (bounds
+// and perf law) — the scan below is the detection surface, and a tampered
+// row it finds is handled by the operator or the purge/repair surface.
+// Fail-closed lives in the scan's REPORTING (tampered rows are loud), not
+// in recall latency.
+
+/// The governance tuple's field order, named once — the serialization
+/// [`governance_hash`] feeds is FIXED and any change to it is a format
+/// bump (`brain-governance-v1` → v2), never a silent edit.
+pub const GOVERNANCE_TUPLE: [&str; 3] = ["owner", "access_scope", "domain"];
+
+/// SHA-256 over a length-prefixed, presence-marked serialization of the
+/// governance tuple in the FIXED order `owner → access_scope → domain`.
+/// Architecture Law: SQL never computes; Rust does — every write path
+/// calls this and stores the result in the SAME transaction as the write
+/// (the audit-per-write law: the hash and the evidence commit or roll
+/// back together).
+pub fn governance_hash(owner: Option<&str>, access_scope: &str, domain: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    // Domain separation + format tag: hashes of different shapes must
+    // never compare equal, and a future tuple extension must bump the tag
+    // rather than reinterpret old rows.
+    h.update(b"brain-governance-v1");
+    // Presence marker + big-endian u64 length prefix + bytes: a NULL owner
+    // and an empty-string owner are DISTINCT states, and no field's bytes
+    // can be forged from a neighbour's delimiter positions.
+    let mut feed = |v: Option<&str>| match v {
+        None => h.update([0u8]),
+        Some(s) => {
+            h.update([1u8]);
+            h.update((s.len() as u64).to_be_bytes());
+            h.update(s.as_bytes());
+        }
+    };
+    feed(owner);
+    feed(Some(access_scope));
+    feed(Some(domain));
+    crate::audit::hex_encode(&h.finalize())
+}
+
+/// One `verify-governance` scan, mirroring `verify-chain` in shape: counts
+/// rows `ok`, lists per-row ids whose stored hash mismatches the
+/// recomputed tuple (`tampered` — the loud arm), and counts rows with a
+/// NULL hash (`legacy_unhashed` — rows that predate the migration, or were
+/// written by a path that skipped the recompute). Legacy rows are
+/// DISCLOSED with a count and never failed on: the migration's backfill
+/// removes the class going forward, and the backfill itself necessarily
+/// launders tampering that happened BEFORE it ran — the same disclosure
+/// shape the legacy-plaintext disclosure carried.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct GovernanceScan {
+    pub ok: usize,
+    pub tampered: Vec<i64>,
+    pub legacy_unhashed: usize,
+}
+
+impl GovernanceScan {
+    /// The scan's verdict: any tampered row is a failure. Used by the CLI
+    /// (`brain verify-governance`) for its exit code — a scan that could
+    /// not run errors instead of reporting clean (fail-closed).
+    pub fn is_clean(&self) -> bool {
+        self.tampered.is_empty()
+    }
+}
+
+/// The exhaustive row scan behind `brain verify-governance`. Read-only: no
+/// audit row, no mutation — it is the detection surface, and what it finds
+/// is the operator's (or the purge/repair surface's) to act on.
+pub fn verify_governance(conn: &rusqlite::Connection) -> rusqlite::Result<GovernanceScan> {
+    let mut stmt =
+        conn.prepare("SELECT id, owner, access_scope, domain, governance_hash FROM knowledge")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, Option<String>>(4)?,
+        ))
+    })?;
+    let mut scan = GovernanceScan::default();
+    for row in rows {
+        let (id, owner, access_scope, domain, stored) = row?;
+        match stored {
+            None => scan.legacy_unhashed += 1,
+            Some(stored) => {
+                if stored == governance_hash(owner.as_deref(), &access_scope, &domain) {
+                    scan.ok += 1;
+                } else {
+                    scan.tampered.push(id);
+                }
+            }
+        }
+    }
+    Ok(scan)
 }
 
 #[cfg(test)]
@@ -990,5 +1130,418 @@ mod tests {
             StoreOutcome::Created { .. } => panic!("same-domain dedup must hold"),
         }
         tx.commit().unwrap();
+    }
+
+    // ── R-GOV (v1.29.32 "Governed") pins ─────────────────────────────────
+    //
+    // The pre-round truth this section exists against, MEASURED on main at
+    // 78a18990 (2026-10-25) with a fixture over the real migrated schema:
+    // a knowledge row inserted through `store_record`, then tampered
+    // out-of-band with `UPDATE knowledge SET access_scope='public'`, broke
+    // NOTHING —
+    //   PRE : id=1 owner=ana scope=private domain=global
+    //   TAMPER: 1 row updated out-of-band (access_scope private->public)
+    //   POST: scope=public audit_rows=1 (delta 0)
+    //   POST: content unchanged=true content_hash still matches content=true
+    // Content-integrity did not cover governance-integrity
+    // (arXiv:2610.30698, PREPRINT 2026-10-22). Every pin below reds
+    // against that state.
+
+    /// One stored row's (owner, access_scope, domain, governance_hash),
+    /// read as the scan reads it.
+    fn stored_tuple(conn: &rusqlite::Connection, id: i64) -> (Option<String>, String, String) {
+        conn.query_row(
+            "SELECT owner, access_scope, domain FROM knowledge WHERE id = ?1",
+            rusqlite::params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+    }
+
+    /// PIN 1 — the detection surface exists and catches the attack it is
+    /// for: an out-of-band scope edit (raw rusqlite, no service, no audit
+    /// — the Phase 0 probe's exact move) must be REPORTED by the scan with
+    /// the row's id. On pre-round main this pin cannot even compile (no
+    /// `governance_hash` column, no scan) — the red is the absence of the
+    /// surface, and the probe's observed silence is recorded above.
+    #[test]
+    fn governance_tampering_outside_the_app_is_detected() {
+        let mut conn = migrated_db();
+        let embedding = vec![0.2_f32; 512];
+        let none: Vec<(String, Option<String>)> = Vec::new();
+        let no_rels: Vec<NormalizedRelation> = Vec::new();
+        let tx = conn.transaction().unwrap();
+        let rec = input("governed body", &embedding, &none, &no_rels);
+        let StoreOutcome::Created { id, .. } = store_record(&tx, &rec).expect("stores") else {
+            panic!("expected Created");
+        };
+        tx.commit().unwrap();
+
+        let before = verify_governance(&conn).unwrap();
+        assert!(
+            before.is_clean(),
+            "fresh app-path row must scan clean: {before:?}"
+        );
+
+        // the out-of-band tamper: exactly the Phase 0 probe's statement
+        let n = conn
+            .execute(
+                "UPDATE knowledge SET access_scope='public' WHERE id = ?1",
+                rusqlite::params![id],
+            )
+            .unwrap();
+        assert_eq!(n, 1, "the fixture must actually tamper");
+
+        let after = verify_governance(&conn).unwrap();
+        assert_eq!(
+            after.tampered,
+            vec![id],
+            "governance tampering outside the app must be DETECTED and named by row id — \
+             on pre-round main the same probe recorded: 'TAMPER: 1 row updated out-of-band \
+             (access_scope private->public) / POST: scope=public audit_rows=1 (delta 0) / \
+             POST: content unchanged=true content_hash still matches content=true' — \
+             nothing broke, which is the finding this round closes"
+        );
+        assert_eq!(
+            after.ok + after.tampered.len(),
+            before.ok + before.tampered.len(),
+            "the tampered row moved from ok to tampered; no row vanished"
+        );
+        assert_eq!(after.legacy_unhashed, 0, "an app-path row is never legacy");
+    }
+
+    /// PIN 2 — every write path from the round's inventory leaves the
+    /// stored hash consistent with the stored tuple, and the one UPDATE
+    /// path (domain move) recomputes IN THE SAME TRANSACTION. A path that
+    /// writes a governance field without recomputing is the bug class
+    /// this arm catches.
+    #[test]
+    fn app_path_writes_keep_the_governance_hash_consistent() {
+        let mut conn = migrated_db();
+        let embedding = vec![0.3_f32; 512];
+        let none: Vec<(String, Option<String>)> = Vec::new();
+        let no_rels: Vec<NormalizedRelation> = Vec::new();
+
+        // (a) the structured ingest (this core)
+        let tx = conn.transaction().unwrap();
+        let mut scoped = input("tuple arm", &embedding, &none, &no_rels);
+        scoped.access_scope = Some("domain");
+        let StoreOutcome::Created { id: ingest_id, .. } =
+            store_record(&tx, &scoped).expect("stores")
+        else {
+            panic!("expected Created");
+        };
+        tx.commit().unwrap();
+        let (o, s, d) = stored_tuple(&conn, ingest_id);
+        let stored_hash: String = conn
+            .query_row(
+                "SELECT governance_hash FROM knowledge WHERE id=?1",
+                rusqlite::params![ingest_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored_hash,
+            governance_hash(o.as_deref(), &s, &d),
+            "store_record must hash the tuple it stores"
+        );
+
+        // (b) the KCS draft insert (no scope/domain named → schema defaults)
+        let kcs_id = crate::service::gate::kcs_draft_insert(
+            &conn,
+            "kcs body",
+            Some("kcs title"),
+            "agent",
+            "hash-kcs",
+            None,
+            None,
+            Some("reviewer"),
+            0,
+        )
+        .expect("kcs draft");
+        let (o, s, d) = stored_tuple(&conn, kcs_id);
+        assert_eq!(
+            s, "private",
+            "fixture sanity: the draft insert leaves scope at the default"
+        );
+        let stored_hash: String = conn
+            .query_row(
+                "SELECT governance_hash FROM knowledge WHERE id=?1",
+                rusqlite::params![kcs_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_hash, governance_hash(o.as_deref(), &s, &d));
+
+        // (c) the proposal-approve promotion (owner + domain carried)
+        let promo = crate::service::gate::Promotion {
+            content: "promoted body",
+            source_kind: "proposal",
+            content_hash: "hash-promo",
+            authority: None,
+            observed_at: None,
+            kind: "fact",
+            assertion: "stated",
+            confidence: 0.9,
+            owner: Some("approver"),
+            origin: "human",
+            flagged: 0,
+            domain: "acme",
+            pii: false,
+        };
+        let promo_id = crate::service::gate::promote_chunk_insert(&conn, &promo).expect("promote");
+        let (o, s, d) = stored_tuple(&conn, promo_id);
+        assert_eq!((d.as_str(), s.as_str()), ("acme", "private"));
+        let stored_hash: String = conn
+            .query_row(
+                "SELECT governance_hash FROM knowledge WHERE id=?1",
+                rusqlite::params![promo_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_hash, governance_hash(o.as_deref(), &s, &d));
+
+        // (d) the procedure store (root + steps: owner NULL on the row)
+        let steps = vec![
+            (
+                "step one".to_string(),
+                "do A".to_string(),
+                crate::procedural::MemoryKind::Fact,
+            ),
+            (
+                "step two".to_string(),
+                "do B".to_string(),
+                crate::procedural::MemoryKind::Fact,
+            ),
+        ];
+        let proc_tx = conn.transaction().unwrap();
+        let (root_id, _step_ids) = crate::service::procedure::store_procedure(
+            &proc_tx,
+            "proc title",
+            "proc body",
+            Some("acme"),
+            &steps,
+            false,
+            &[false, false],
+            &Some("operator".to_string()),
+            "human",
+        )
+        .unwrap_or_else(|e| panic!("procedure: {e:?}"));
+        proc_tx.commit().unwrap();
+        let (o, s, d) = stored_tuple(&conn, root_id);
+        assert_eq!(
+            o, None,
+            "fixture sanity: procedure rows carry no owner column"
+        );
+        let stored_hash: String = conn
+            .query_row(
+                "SELECT governance_hash FROM knowledge WHERE id=?1",
+                rusqlite::params![root_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_hash, governance_hash(None, &s, &d));
+
+        // (e) the domain move — the one UPDATE path — recomputes for the
+        // NEW tuple in the same tx as the relabel
+        let (moved, _) = crate::service::domains_admin::relabel_chunks(
+            &mut conn,
+            &[ingest_id, kcs_id],
+            "acme",
+            "global",
+        )
+        .expect("relabel");
+        assert_eq!(moved, 2, "both rows move out of global");
+        for id in [ingest_id, kcs_id] {
+            let (o, s, d) = stored_tuple(&conn, id);
+            assert_eq!(d, "acme");
+            let stored_hash: String = conn
+                .query_row(
+                    "SELECT governance_hash FROM knowledge WHERE id=?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                stored_hash,
+                governance_hash(o.as_deref(), &s, &d),
+                "a domain move is a governance act: the hash must follow the NEW tuple, \
+                 recomputed in the SAME transaction as the relabel"
+            );
+        }
+
+        // everything above, taken together, scans clean
+        let scan = verify_governance(&conn).unwrap();
+        assert!(
+            scan.is_clean(),
+            "inventory writes leave no tampered rows: {scan:?}"
+        );
+    }
+
+    /// PIN 3 — legacy rows (NULL hash: written before the migration) are
+    /// COUNTED and DISCLOSED, never failed on. The migration's backfill
+    /// removes the class going forward; the backfill itself launders
+    /// prior tampering, exactly as R108 disclosed legacy plaintext
+    /// snapshots — stated here so the disclosure travels with the pin.
+    #[test]
+    fn legacy_rows_are_counted_and_disclosed_not_failed() {
+        let mut conn = migrated_db();
+        let embedding = vec![0.4_f32; 512];
+        let none: Vec<(String, Option<String>)> = Vec::new();
+        let no_rels: Vec<NormalizedRelation> = Vec::new();
+        let tx = conn.transaction().unwrap();
+        let a = input("legacy arm a", &embedding, &none, &no_rels);
+        let StoreOutcome::Created { id: id_a, .. } = store_record(&tx, &a).expect("stores") else {
+            panic!("expected Created");
+        };
+        let b = input("legacy arm b", &embedding, &none, &no_rels);
+        let StoreOutcome::Created { id: id_b, .. } = store_record(&tx, &b).expect("stores") else {
+            panic!("expected Created");
+        };
+        tx.commit().unwrap();
+
+        // the pre-migration shape: rows whose hash was never computed
+        conn.execute(
+            "UPDATE knowledge SET governance_hash = NULL WHERE id IN (?1, ?2)",
+            rusqlite::params![id_a, id_b],
+        )
+        .unwrap();
+
+        let scan = verify_governance(&conn).unwrap();
+        assert_eq!(
+            scan.legacy_unhashed, 2,
+            "legacy rows are counted, not silently ignored"
+        );
+        assert!(
+            scan.tampered.is_empty(),
+            "a NULL hash is NOT tampering — failing closed on it would brick every \
+             pre-migration corpus at first scan"
+        );
+        assert!(
+            scan.is_clean(),
+            "the scan's verdict stays clean: legacy rows are disclosed, not failed"
+        );
+        assert_eq!(scan.ok, 0, "the fixture has no other rows");
+    }
+
+    /// PIN 4 (isolation) — the two integrity families stay orthogonal in
+    /// BOTH directions: a content-only edit breaks content_hash and NOT
+    /// the governance hash; a governance-only edit breaks the governance
+    /// hash and NOT content_hash. This round must not weaken the content
+    /// consumers' detector (consolidation's target_hash, the tombstone
+    /// checks, the anchor inserts all read content_hash), and the
+    /// governance scan must not pretend to own content.
+    #[test]
+    fn content_tampering_stays_with_content_hash_not_the_governance_scan() {
+        let mut conn = migrated_db();
+        let embedding = vec![0.5_f32; 512];
+        let none: Vec<(String, Option<String>)> = Vec::new();
+        let no_rels: Vec<NormalizedRelation> = Vec::new();
+        let tx = conn.transaction().unwrap();
+        let rec = input("isolation body", &embedding, &none, &no_rels);
+        let StoreOutcome::Created { id, .. } = store_record(&tx, &rec).expect("stores") else {
+            panic!("expected Created");
+        };
+        tx.commit().unwrap();
+
+        // content-only tamper: the content consumers' detector fires
+        conn.execute(
+            "UPDATE knowledge SET content = 'rewritten by host actor' WHERE id = ?1",
+            rusqlite::params![id],
+        )
+        .unwrap();
+        let (stored_hash, content): (String, String) = conn
+            .query_row(
+                "SELECT content_hash, content FROM knowledge WHERE id=?1",
+                rusqlite::params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        use xxhash_rust::xxh3::xxh3_64;
+        let recomputed = format!("{:016x}", xxh3_64(content.as_bytes()));
+        assert_ne!(
+            stored_hash, recomputed,
+            "content tampering is still caught by the content-hash consumers' own check"
+        );
+        let scan = verify_governance(&conn).unwrap();
+        assert!(
+            scan.is_clean(),
+            "a content-only edit is NOT governance tampering (content_hash owns content): {scan:?}"
+        );
+
+        // governance-only tamper: the governance scan fires, content_hash does not
+        let content_state_before: (String, String) = conn
+            .query_row(
+                "SELECT content_hash, content FROM knowledge WHERE id=?1",
+                rusqlite::params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        conn.execute(
+            "UPDATE knowledge SET owner='mallory' WHERE id = ?1",
+            rusqlite::params![id],
+        )
+        .unwrap();
+        let content_state_after: (String, String) = conn
+            .query_row(
+                "SELECT content_hash, content FROM knowledge WHERE id=?1",
+                rusqlite::params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            content_state_before, content_state_after,
+            "a governance-only edit leaves the content detector cold — the gap this round closes"
+        );
+        let scan = verify_governance(&conn).unwrap();
+        assert_eq!(
+            scan.tampered,
+            vec![id],
+            "the governance scan owns this direction"
+        );
+    }
+
+    /// The backfill half of the migration: rows that predate the column
+    /// (simulated by dropping it — the pre-v1.29.32 schema shape) are
+    /// hashed by `run_migration` itself, so the legacy class is emptied
+    /// going forward. The known mix is THREE rows; the drill (Phase 3)
+    /// removes the backfill and this pin must name the expected count.
+    #[test]
+    fn the_migration_backfill_hashes_pre_existing_rows() {
+        let mut conn = migrated_db();
+        let embedding = vec![0.6_f32; 512];
+        let none: Vec<(String, Option<String>)> = Vec::new();
+        let no_rels: Vec<NormalizedRelation> = Vec::new();
+        let tx = conn.transaction().unwrap();
+        for body in ["backfill one", "backfill two"] {
+            let rec = input(body, &embedding, &none, &no_rels);
+            let StoreOutcome::Created { .. } = store_record(&tx, &rec).expect("stores") else {
+                panic!("expected Created");
+            };
+        }
+        tx.commit().unwrap();
+        // a legacy-shaped row no app path could have written
+        conn.execute(
+            "INSERT INTO knowledge(content, content_hash) VALUES ('legacy raw', 'x')",
+            [],
+        )
+        .unwrap();
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 3, "fixture seeds the known mix: 2 app rows + 1 raw");
+
+        // rewind to the pre-v1.29.32 schema shape and re-run the migration
+        conn.execute("ALTER TABLE knowledge DROP COLUMN governance_hash", [])
+            .unwrap();
+        crate::migration::run_migration(&mut conn, 1).expect("re-migrate");
+
+        let scan = verify_governance(&conn).unwrap();
+        assert_eq!(
+            scan.legacy_unhashed, 0,
+            "the backfill must hash EVERY pre-existing row — 3 were waiting"
+        );
+        assert_eq!(scan.ok, 3, "all three rows hashed and consistent: {scan:?}");
+        assert!(scan.is_clean());
     }
 }

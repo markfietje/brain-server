@@ -97,8 +97,9 @@ pub(crate) fn kcs_draft_insert(
 ) -> Result<i64, GateError> {
     conn.execute(
         "INSERT INTO knowledge(content, title, source, content_hash, authority,
-                               observed_at, node_kind, assertion_kind, confidence, owner, origin, flagged, kcs_state, pii)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'fact', 'stated', 0.8, ?7, ?8, ?9, 'draft', ?10)",
+                               observed_at, node_kind, assertion_kind, confidence, owner, origin, flagged, kcs_state, pii,
+                               governance_hash)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'fact', 'stated', 0.8, ?7, ?8, ?9, 'draft', ?10, ?11)",
         rusqlite::params![
             content,
             title,
@@ -110,6 +111,10 @@ pub(crate) fn kcs_draft_insert(
             crate::gate::origin_for_source(Some("agent")),
             flagged,
             crate::gate::pii_flag(title.unwrap_or(""), content) as i64,
+            // governance tuple as STORED: this insert names neither
+            // access_scope nor domain, so both land at their schema
+            // defaults ('private' / 'global') — hashed accordingly.
+            crate::service::ingest::governance_hash(owner, "private", "global"),
         ],
     )
     .map_err(|e| GateError::Database(format!("insert failed: {e}")))?;
@@ -199,8 +204,9 @@ pub(crate) struct Promotion<'a> {
 pub(crate) fn promote_chunk_insert(conn: &Connection, p: &Promotion<'_>) -> Result<i64, GateError> {
     conn.execute(
         "INSERT INTO knowledge(content, title, source, content_hash, authority,
-                               observed_at, node_kind, assertion_kind, confidence, owner, origin, flagged, domain, pii)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                               observed_at, node_kind, assertion_kind, confidence, owner, origin, flagged, domain, pii,
+                               governance_hash)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         rusqlite::params![
             p.content,
             None::<String>,
@@ -216,6 +222,9 @@ pub(crate) fn promote_chunk_insert(conn: &Connection, p: &Promotion<'_>) -> Resu
             p.flagged,
             p.domain,
             p.pii as i64,
+            // governance tuple as STORED: access_scope is not named by this
+            // insert, so it lands at the schema default 'private'.
+            crate::service::ingest::governance_hash(p.owner, "private", p.domain),
         ],
     )
     .map_err(|e| GateError::Database(format!("insert failed: {e}")))?;

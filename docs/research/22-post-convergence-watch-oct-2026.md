@@ -203,6 +203,18 @@ of labor is single-responsibility by design: arxiv-watch owns the eight
 standing lanes, research-watch owns everything else, so no source is swept
 twice and no seen-state is duplicated.
 
+- [Governance-State Corruption in Long-Term Memory for LLM Agents:
+  A Cross-Model Stress Test](https://arxiv.org/abs/2610.30698) (preprint,
+  2026-10-22): faults that alter which retained records enter model-visible
+  context while stored content stays fixed — content-integrity does not
+  cover governance-integrity. Integrated 2026-10-25 as R-GOV (v1.29.32
+  "Governed"): `knowledge.governance_hash` over `(owner, access_scope,
+  domain)` + `brain verify-governance`, with the local-attacker caveat
+  stated in THREAT_MODEL and the gate-law register. (Correction recorded:
+  this round's execution prompt claimed the Oct 2026 sweep "already
+  carried" this paper — it did not; this line is the cross-reference, added
+  by the round that used it.)
+
 *The ceiling.* The Loopjacking entry is the one full read with a live
 defense verification — fourteen checks against an isolated instance of the
 shipped binary, not the operator's live deployment, with the PII-masking
