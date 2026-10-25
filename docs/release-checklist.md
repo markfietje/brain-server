@@ -158,7 +158,7 @@ surface: add it to `ingest_write_sites_route_through_screen`.
 
 | Script | Purpose | Documented |
 |---|---|---|
-| `install-service.sh` | Build + install binaries, launchd plist, strips macOS provenance xattr. | deployment.md / AGENTS.md |
+| `install-service.sh` | Build + install binaries, launchd plist, strips macOS provenance xattr; installs the Brain Shell `.app` to `/Applications` best-effort (`APP_INSTALL_DIR`); health check matches the served version and allows ~3 min for first-boot migrations. | deployment.md / AGENTS.md |
 | `release.sh` | Tag + publish; watches the public runs for the tagged SHA (the fail-closed green gate is `release.yml`'s). | this page / AGENTS.md |
 | `release-sign.sh` | Sign release artifacts (also signs `brain kb build` tarballs). | cli-reference.md (kb) |
 | `badges.sh` | Regenerate README badges from the real build; `--verify-count` is the test-count drift guard, `--selfcheck` the cheap derivations + completeness. | this page |

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Build the release binary, install it to ~/.local/bin, and restart the
 # launchd service so the running com.brain.server picks up the new binary.
+# When the Tauri bundler has produced a Brain Shell .app (universal release
+# bundle dir), it is installed to /Applications as well — best-effort, so
+# CLI-only installs keep working when no bundle exists.
 #
 # Usage: scripts/install-service.sh
 #
@@ -141,6 +144,57 @@ for entry in "${OPTIONAL_BINS[@]}"; do
 		install_bin "$src" "$DEST_DIR/$bin"
 	fi
 done
+
+# 2a. Install the Brain Shell desktop app (v1.29.31: the chat-first IA — the
+#     app is now the product surface, so an operator install should not have
+#     to hand-copy the bundle out of the target tree). Best-effort like the
+#     optional bins: no bundle → skip with a log line, never fatal, so
+#     CLI-only/headless installs are unaffected. The bundler's raw bundle is
+#     "Brain Shell.app" (tauri.conf productName); the "Brain-Shell.app.tar.gz"
+#     beside it is the signing lane's renamed PUBLICATION artefact (the hyphen
+#     survives GitHub's space→dot asset-name rewrite) and is not an
+#     installable .app — only a real .app directory is.
+APP_BUNDLE_DIR="$REPO/shell/src-tauri/target/universal-apple-darwin/release/bundle/macos"
+APP_INSTALL_DIR="${APP_INSTALL_DIR:-/Applications}"
+SRC_APP=""
+for cand in "Brain-Shell.app" "Brain Shell.app"; do
+    [[ -d "$APP_BUNDLE_DIR/$cand" ]] && SRC_APP="$APP_BUNDLE_DIR/$cand" && break
+done
+if [[ -z "$SRC_APP" ]]; then
+    log "no .app in $APP_BUNDLE_DIR -> desktop app install skipped (build the shell first: cd shell && pnpm tauri build)"
+else
+    DEST_APP="$APP_INSTALL_DIR/$(basename "$SRC_APP")"
+    # Never replace a RUNNING app: the live instance would keep executing a
+    # half-replaced bundle while its resources shift underneath it.
+    if pgrep -f "$DEST_APP/Contents/MacOS" >/dev/null 2>&1; then
+        die "Brain Shell is running from $DEST_APP -- quit it, then re-run"
+    fi
+    # Remove-then-copy, never merge: a plain copy-over leaves stale files from
+    # the previous bundle inside the new one. The rm is guarded to the install
+    # dir so a mis-set APP_INSTALL_DIR cannot delete elsewhere. ditto (not
+    # cp -R) preserves signatures, modes and symlinks the way installer copy
+    # does.
+    case "$DEST_APP" in
+        "$APP_INSTALL_DIR"/*.app) rm -rf "$DEST_APP" ;;
+        *) die "refusing to install outside $APP_INSTALL_DIR: $DEST_APP" ;;
+    esac
+    ditto "$SRC_APP" "$DEST_APP"
+    # Same trust basis as install_bin above: locally-written bundles can carry
+    # provenance/quarantine xattrs that Gatekeeper/taskgated act on at exec.
+    xattr -cr "$DEST_APP" 2>/dev/null || true
+    # The installed copy must still pass its own seal (ad-hoc + hardened
+    # runtime): a broken install dies here rather than at first launch.
+    codesign --verify --deep --strict "$DEST_APP" >/dev/null 2>&1 \
+        || die "installed app failed codesign verification: $DEST_APP"
+    ok "installed $DEST_APP"
+    # Echo the kernel the installed app carries (and attaches to) — the sealed
+    # provenance, the same record the gate enforces at launch.
+    PROV_JSON="$DEST_APP/Contents/Resources/binaries/SIDECAR_PROVENANCE.json"
+    if [[ -f "$PROV_JSON" ]]; then
+        PROV_KERNEL="$(plutil -extract kernel_version raw "$PROV_JSON" 2>/dev/null || true)"
+        ok "installed app ships kernel ${PROV_KERNEL:-unknown} (sealed provenance)"
+    fi
+fi
 
 # 2b. Ensure the auth token is read from a 0600 secret file, not the plist env.
 #     Never changes an existing token value — only relocates it from the plist's
@@ -309,13 +363,37 @@ done
 ok "running pid $PID from $DEST_BIN"
 
 log "waiting for health endpoint..."
+# A FIRST boot after an upgrade can be much slower than a warm restart:
+# migrations with Rust backfills run over every stored row (measured
+# 2026-10-25: the v1.29.32 governance backfill hashed 8745 rows and the boot
+# crossed the old 15-try (~45s) window seconds before serving — the install
+# reported failure while the server was coming up healthy). Wait up to ~3 min.
+# The check also matches the SERVED version against the installed binary's:
+# a foreign kernel holding 127.0.0.1:8765 (an app sidecar, a dev instance)
+# must not satisfy this check — the restart would look green while the new
+# binary never bound the port.
+WANT_VER="$("$DEST_BIN" --version 2>/dev/null | awk '{print $2}')"
 healthy=0
-for _ in $(seq 1 15); do
-  if curl -sf -m 2 -o /dev/null http://127.0.0.1:8765/health; then healthy=1; break; fi
+for _ in $(seq 1 90); do
+  body="$(curl -sf -m 2 http://127.0.0.1:8765/health 2>/dev/null || true)"
+  if [[ -n "$body" ]]; then
+    if [[ -z "$WANT_VER" ]] || grep -q "\"version\":\"$WANT_VER\"" <<<"$body"; then
+      healthy=1; break
+    fi
+  fi
   sleep 1
 done
-[[ "$healthy" = "1" ]] || die "service up but /health not responding -- check logs"
-ok "/health OK"
+if [[ "$healthy" != "1" ]]; then
+    # Surface the evidence, not a pointer to it: the last log lines are what
+    # the operator needs first (boot panic, migration stall, port held).
+    printf 'ERR /health not ready after 90s (want version %s)\n' "${WANT_VER:-any}" >&2
+    printf '---- last brain-server.err.log lines ----\n' >&2
+    tail -15 "$HOME/Library/Logs/brain-server.err.log" >&2 2>/dev/null || true
+    printf '---- last brain-server.log lines ----\n' >&2
+    tail -15 "$HOME/Library/Logs/brain-server.log" >&2 2>/dev/null || true
+    die "service not healthy -- logs above"
+fi
+ok "/health OK (version ${WANT_VER:-unverified})"
 POSTURE_ECHO="$(plutil -extract EnvironmentVariables.BRAIN_WRITE_POSTURE raw "$PLIST" 2>/dev/null || true)"
 printf '\nDone. Logs: ~/Library/Logs/brain-server.{log,err.log}\n'
 printf 'Write posture: %s\n' "${POSTURE_ECHO:-open (compiled default)}"

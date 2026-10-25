@@ -12,6 +12,15 @@ backing it up.
 `~/.local/bin`, relocates the auth token from the launchd plist into a 0600 secret
 file, restarts the service, and waits for `/health`. It is idempotent.
 
+The health wait matches the version `/health` **serves** against the installed
+binary's `--version` — a foreign kernel holding `127.0.0.1:8765` (an app
+sidecar, a dev instance) cannot satisfy the restart check — and allows up to
+~3 minutes, because a first boot after an upgrade can run row-hashing
+migrations over the whole corpus (measured 2026-10-25: the v1.29.32
+governance backfill hashed 8,745 rows and crossed the old short window while
+coming up healthy). On failure the script prints the last lines of both
+service logs (`brain-server.log`, `brain-server.err.log`).
+
 ```bash
 scripts/install-service.sh
 ```
@@ -35,6 +44,19 @@ This installs:
 > **macOS note:** newly copied executables can get a `com.apple.provenance` xattr
 > that Gatekeeper uses to SIGKILL on first exec (exit 137). The install script
 > strips it. A manual `cp` does not.
+
+> **Desktop app:** when the Tauri bundler has produced a Brain Shell `.app`
+> (from `shell/src-tauri/target/universal-apple-darwin/release/bundle/macos`;
+> build it with `cd shell && pnpm tauri build`), the script installs it to
+> `/Applications` — override with `APP_INSTALL_DIR`. Best-effort like the
+> optional bins: no bundle → a log line, never fatal, so CLI-only and
+> headless installs are unaffected. The install refuses to replace a running
+> app (quit it first), copies by guarded remove-then-`ditto` (preserving
+> signatures and modes; never a merge over a stale bundle), strips
+> provenance/quarantine xattrs, verifies the installed copy's codesign seal,
+> and echoes the kernel version from the app's sealed provenance. Only a real
+> `.app` directory installs — the hyphenated `.tar.gz` beside it is the
+> signing lane's publication artefact, not an app.
 
 ---
 

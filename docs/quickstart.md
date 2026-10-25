@@ -158,7 +158,9 @@ scripts/install-service.sh
 ```
 
 This builds the release binaries, installs them to `~/.local/bin`, relocates the
-auth token to a 0600 file, restarts the service, and waits for `/health`. See
+auth token to a 0600 file, restarts the service, and waits for `/health`
+(version-matched against the installed binary; the Brain Shell `.app` is
+installed to `/Applications` too, when a bundle exists). See
 [Deployment](./deployment.md) for details and the client GUI.
 
 ---

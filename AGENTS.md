@@ -1730,7 +1730,10 @@ scripts/badges.sh --verify-count          # the REAL count compare (one full car
 scripts/badges.sh --selfcheck             # CHEAP gate: version↔README, UMP, checklist, SBOM
 # (derives version from Cargo.toml, test count from cargo test --features bench,migrate)
 
-# Install + restart launchd service (also installs CLI binaries, strips macOS provenance xattr)
+# Install + restart launchd service (installs the CLI binaries, strips macOS
+# provenance xattr, installs the Brain Shell .app to /Applications best-effort,
+# and health-checks the SERVED version against the installed binary — a foreign
+# kernel on 8765 cannot satisfy it; ~3 min window for first-boot migrations)
 scripts/install-service.sh
 
 # Health + stats against running server
