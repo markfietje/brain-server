@@ -1,5 +1,77 @@
 # Agent Execution Log — brain-server
 
+> **R139 "Grounded" (the chat spine, 2026-10-25): one chat turn became
+> recall-as-evidence plus streamed on-device generation, and NOTHING is
+> mocked anywhere in the verification chain.** The wire shipped first, per
+> the substrates-before-consumers precedent: `POST /chat/turns` streams SSE
+> `grounding` → `delta`\* → `final`/`error`, and the app's streaming-composer
+> surface is Round 2, named below. The release that carries it is 1.29.32 —
+> three rounds in one release (R-GOV's row-level governance integrity, the
+> installer's app-shipping + version-matched health check, and this spine).
+>
+> **THE BRIDGE IS THE MODEL LAYER, UNREBUILT.** `shell-macos` grew a
+> `brain-afm` executable (JSONL over stdio) reusing `ChatModelLayer` as-is —
+> ChatRouter (never escalate turn 1; conversation+evidence vs the MEASURED
+> budget verses measured at startup), the HistoryBudget watermark trimmer
+> through `historyTransform`, and ChatTurnPlanner refusing BEFORE the
+> request leaves. The framework has no seed-history API, so conversation
+> continuity lives in the BRIDGE, keyed by the kernel's session id. **PCC is
+> measured, not assumed, and the measurement is the refusal:** the window
+> reads 32,768 while generation is REFUSED (`ModelManagerError` 1046 — the
+> missing APP ENTITLEMENT, not hardware), so `.deep` stays nominal, `escalationPermitted`
+> rides the probe (never `isAvailable`), and when an entitled build exists
+> the same startup probe flips the 32K tier with zero code changes.
+>
+> **THE GROUNDING IS THE RECALL PATH'S OWN CONTRACT.** The route runs the
+> SAME `run_recall` core as `/recall`, submodularly packed to 1,024 tokens,
+> every hit `wrap_fenced` — recalled memory enters the model as DATA, never
+> instructions. Cancel is structural: dropping the receiver sends `op:cancel`,
+> the TURN dies, the SESSION survives. Locale is fail-closed against the
+> model's MEASURED roster (the `de` retrieval-only precedent, now enforced at
+> the model seam), and `chat_bridge_unavailable` is a POSTURE, not a crash —
+> an absent binary answers by name and every other surface is unaffected.
+> The bundle stages `brain-afm` beside `brain-server` (universal,
+> arch-checked, sealed in the provenance record).
+>
+> **THE E2E IS REAL ON-DEVICE GENERATION** (`tests/chat_grounding_flow.rs`,
+> the green-tea question over the composed app, nothing scripted): the
+> grounding event carries the hit ids, the answer speaks in the memory's own
+> terms (catechins/EGCG/Camellia), deltas precede the final, `tier:
+> on_device`, zero error events. Beside it the Swift protocol pins drive the
+> REAL binary (capabilities key-set EXACT, `instructions_locked`,
+> turn-before-capabilities refused by name, malformed-line survival), and
+> the kernel client pin proves the 4096/32,768 readings + the named
+> refusal. The tree's own guards red on the way in and are green with their
+> updates: dup-guard (the second `router()` joins the allowlist), the
+> doc-truth gate (openapi + api.md rows), the router census (OPEN_GATES 203
+> → 204, a named act), the authz matrix, the error taxonomy
+> (`BridgeError`/`provider`/`display`), and the census re-derivation.
+>
+> **THE RELEASE LANE'S OWN FINDING (2026-10-25).** The updater endpoint
+> `releases/latest/download/latest.json` has been 404 since v1.29.30 shipped
+> without the chain — found by fetching the published URL from the open
+> internet, not by any local gate. R136's law now runs in the lane itself:
+> `release.sh` waits for the release, then stages → signs → publishes the
+> chain → verifies the endpoint ANSWERS, all in one tool.
+>
+> **OWED, named in the register row, not hidden:** the composer streaming
+> surface (Svelte + a Tauri streaming Channel — Round 2's opener); session
+> persistence to `agent_session_events` + the listing endpoints (Round 2,
+> paired with the sidebar); the Settings Advanced relocation and the plugin
+> settings screen (Round 2 scope); the `LlmProvider` adapter for LoopDriver
+> adoption (when tools join chat); the bundle's first staging EXECUTION of
+> brain-afm (the code is staged; the tree was dirty at the cut, so the lane
+> runs it on the first clean-tree stage); and the PCC `.deep` drill on an
+> entitled machine — the one measurement this tree cannot make until Apple
+> grants the entitlement.
+>
+> **ponytail:** one stdio protocol, one Swift executable, one serde client,
+> one route; the bridge holds no keys, no tokens, no DB access, and no
+> network egress except Apple's framework; no new dependency in the kernel,
+> no env knob, no wire contract break (additive tables), no second test
+> file (the e2e is one file), and no mocked model anywhere.
+>
+
 > **R138 "Governed" (R-GOV, 2026-10-25): the governance state of a memory
 > row is now tamper-evident at row level — and on pre-round main, corrupting
 > it broke NOTHING.** arXiv:2610.30698 (PREPRINT, 2026-10-22:

@@ -63,6 +63,68 @@ see it (measured before a line was written).
 - **Deferred, named:** the `/health/db` `governance_rows_tampered` field
   (CLI-only this round — the wire change is its own additive round).
 
+## [1.29.32] — 2026-10-25 — governed rows, a self-installing app, and the chat learns to answer
+
+Three rounds, one release. **R-GOV** (committed `9d154909`): the governance
+state of a memory row is tamper-evident at row level — `knowledge.governance_hash`
+(SHA-256 over owner/scope/domain, presence-marked and length-prefixed under a
+`brain-governance-v1` tag), recomputed in-transaction on all ten write paths,
+held by one structural guard, detected by `brain verify-governance` (fail-closed
+when it cannot measure), with the legacy count disclosed and the migration's
+laundering ceiling stated. **The installer round** (`d08036a8`): install-service.sh
+now ships the Brain Shell `.app` to /Applications when a bundle exists
+(remove-then-ditto, codesign-verified, refuses a running app), and the health
+wait learned two lessons measured live on 2026-10-25 — a first boot can run
+row-hashing migrations past the old window (the R-GOV backfill hashed 8,745
+rows), and the check now VERSION-MATCHES `/health` against the installed
+binary so a foreign kernel on 8765 cannot satisfy it. **The chat spine**
+(`feat(chat)`): `POST /chat/turns` — one chat turn becomes recall-as-evidence
+plus streamed on-device generation. The `brain-afm` bridge (JSONL stdio,
+reusing the measured ChatModelLayer: router, watermark trimmer, planner) holds
+the live sessions; the kernel grounds every turn through the same `run_recall`
+core as `/recall`, every hit `wrap_fenced`, and streams SSE
+`grounding` → `delta`* → `final`/`error`. PCC is measured, not assumed: the
+window reads 32,768 while generation is refused for the missing app
+ENTITLEMENT — so `.deep` stays nominal and on-device always answers; when an
+entitled build exists, the same startup probe flips and the 32K tier lights
+up with zero code changes. The green-tea e2e drives the whole path over the
+composed app with REAL on-device generation and nothing mocked.
+
+### Release notes
+
+**New**
+
+- The chat spine (kernel + AFM bridge): `POST /chat/turns` — one chat turn
+  becomes recall-as-evidence (the same `run_recall` core as `/recall`, every
+  hit wrapped as fenced data carrying its ids) plus streamed on-device
+  generation via the `brain-afm` bridge: SSE `grounding` → `delta`* →
+  `final`/`error`. The wire ships first; the app's streaming composer surface
+  is the next round, per the substrates-before-consumers precedent.
+- The installer round's Shell-app shipping: `install-service.sh` now installs
+  the Brain Shell `.app` to /Applications when a bundle exists
+  (remove-then-ditto, codesign-verified, refuses over a running app), and the
+  install health check now VERSION-MATCHES `/health` against the installed
+  binary — a foreign kernel already on 8765 cannot satisfy it. First-boot
+  waits grew to cover the row-hashing migration (8,745 rows hashed live).
+
+**Security fixes**
+
+- Governance integrity is tamper-evident at row level: `knowledge.governance_hash`
+  (SHA-256 over owner/scope/domain under a `brain-governance-v1` tag) is
+  recomputed in-transaction on all ten write paths and held by one structural
+  guard; `brain verify-governance` scans fail-closed (errors when it cannot
+  measure), lists tampered ids, and discloses the legacy row count instead of
+  failing on it.
+
+**Changed**
+
+- The updater chain rides this release: the update manifest and its signed
+  artefact are published onto the release by the signing lane post-tag, ending
+  the endpoint gap that has 404'd since v1.29.30 shipped without the chain.
+- macOS 27 required for chat sessions (historyTransform is a DynamicProfile
+  method); below it the bridge refuses turns by name (`model_unavailable`),
+  and every other surface is unaffected.
+
 ## [1.29.31] — 2026-10-25 — the chat is the app: the chat-first IA lands, and the chrome earns its place by exception
 
 Two rounds, one operator decision (2026-10-22, plan `21_CHAT_FIRST_IA`): in a
