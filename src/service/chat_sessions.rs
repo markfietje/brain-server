@@ -823,11 +823,13 @@ mod tests {
         )
         .unwrap();
         let (turns, _) = list_turns(&conn, &OwnerScope::unrestricted(), "s-screen", 50, 0).unwrap();
-        for turn in &turns {
+        for (i, turn) in turns.iter().enumerate() {
+            // A failing assert must not echo transcript bytes into the
+            // panic/log sink: the index diagnoses the row, the predicate
+            // still reads the stored bytes.
             assert!(
                 !turn.content.contains("<script>"),
-                "the stored form must not carry a live script tag: {:?}",
-                turn.content
+                "the stored form must not carry a live script tag (turn #{i})"
             );
         }
         assert_eq!(turns.len(), 2, "the screened pair still pairs");
