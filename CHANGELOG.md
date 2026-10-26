@@ -13,7 +13,7 @@ measured. Those records are kept as they were written (this file is
 append-only), and their heading says `Unreleased` because that is what they
 were when the round landed — not because the work is still unreleased.
 
-## [Unreleased] — M3-c: the chat transcript learns to survive
+## [1.29.33] — 2026-10-26 — the chat transcript learns to survive (M3-c, sessions and history)
 
 The chat spine (v1.29.32) held the live conversation in the bridge and
 persisted NOTHING; this round lands the durable store and the sidebar's
@@ -21,6 +21,31 @@ session region (plan 23), as one pair: `chat_sessions` + `chat_turns`
 (additive, no FK — the `decision_run_traces` posture), a service core owning
 SQL + invariants + audited writes, four owner-scoped endpoints, and the
 frame's History region reading them over the typed wire.
+
+### Release notes
+
+**New**
+
+- **Chat sessions are now durable.** Every conversation you have is stored
+  on your own kernel — the questions you asked, the answers with their
+  on-device tier, and the memory each answer was grounded on — and the
+  sidebar's new **History** region lists your conversations. Click one to
+  reopen its transcript; the evidence each answer cited is still there.
+- **Your conversations are yours.** Sessions are owner-scoped end to end:
+  a credential reads and moves only its own transcripts; renaming and
+  deleting happen in the sidebar. Delete erases the whole conversation —
+  turns and row — in one step, and the erasure itself is recorded on the
+  tamper-evident audit chain.
+- **Nothing is stored before you say something.** "New chat" mints a fresh
+  conversation locally; a session appears in History only after its first
+  turn, and a failed turn leaves nothing behind.
+
+**Changed**
+
+- **The local API's CORS default now allows `PATCH`** (a session rename is
+  a browser-preflighted method the old default omitted). Operators who set
+  `CORS_METHODS` explicitly and want shell rename support add `PATCH` to
+  their list.
 
 - **The lazy-creation law.** A session row exists only because a turn named
   its key: `/chat/turns`' FINAL arm persists the pair — the user's message

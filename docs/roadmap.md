@@ -11,9 +11,10 @@ private plans archive on 2026-10-04 — this page is the in-repo roadmap.)
 
 ## Current status
 
-**v1.29.x — the current server line (1.29.32 — the governed row hashes, a
-self-installing app, and the grounded chat spine over on-device AFM — the
-two audit passes of 1.29.3 "Hardening" beneath it).** Brain Server ships two operator
+**v1.29.x — the current server line (1.29.33 — the chat transcript learns to
+survive: durable, owner-scoped sessions and the sidebar's History region,
+over 1.29.32's grounded chat spine, governed row hashes and self-installing
+app, with the two audit passes of 1.29.3 "Hardening" beneath it).** Brain Server ships two operator
 GUIs over one HTTP API: the **Dioxus control surface** (`client/` — one Rust
 codebase, web + desktop) and the **SvelteKit + Tauri shell** (`shell/` — the
 active successor; a typed-wire SvelteKit SPA with a Tauri desktop core, its
