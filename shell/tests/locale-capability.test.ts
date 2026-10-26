@@ -92,7 +92,10 @@ const FRENCH_LOANWORDS = new Set([
 	'shell.nav',
 	'memory.badge.score',
 	'audit.title',
-	'governance.domain.relations'
+	'governance.domain.relations',
+	// The session region (2026-10-26): "Conversation" is a French word of
+	// identical spelling — the unlabelled row's noun, a cognate not a copy.
+	'chat.sessions.unlabelled'
 ]);
 
 const SPANISH_LOANWORDS = new Set([

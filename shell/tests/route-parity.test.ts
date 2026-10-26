@@ -225,7 +225,15 @@ const ROUTE_PARITY: readonly RouteParity[] = [
 			// transports carry the call sites; recallMemory/verifyClaim/
 			// forgetRecord carry none). `[forget]` is the mutating one, and it
 			// is soft-only — asserted at this route's OWN call site below.
-			kernel: { '/recall': 'Read', '/verify': 'Read', '/ump/forget': 'Write' },
+			// M3-c: the session switch's replay fetch joins via the frame's
+			// store (`fetchTurns` from `#lib/shell/sessions.svelte.js`) — the
+			// stored-turn page is a Read.
+			kernel: {
+				'/recall': 'Read',
+				'/chat/sessions/{session}/turns': 'Read',
+				'/verify': 'Read',
+				'/ump/forget': 'Write'
+			},
 			mutates: {
 				path: '/ump/forget',
 				act: 'tombstones the cited row — SOFT only: the request is `{id}` and nothing else, and the core refuses any request carrying `hard`'
@@ -694,7 +702,15 @@ const API_DIR = join(shellRoot, 'src', 'lib', 'api');
  */
 const MODULE_DIRS: Readonly<Record<string, string>> = {
 	api: API_DIR,
-	queue: join(shellRoot, 'src', 'lib', 'queue')
+	queue: join(shellRoot, 'src', 'lib', 'queue'),
+	// M3-c (plan 23): the frame's session store joins the derivation for the
+	// SAME reason the queue tree did — the home page imports it
+	// (`fetchTurns` for replay), so the module IS route-reachable, and naming
+	// it in NON_ROUTE_CALL_SITES would be the R141 lie (that slot's reason
+	// field is "why it is not route-reachable", and this one is). The store
+	// is ALSO the frame's data module — AppShell renders it on every route —
+	// which is why FRAME_CONSUMERS below joins the reachability walk.
+	shell: join(shellRoot, 'src', 'lib', 'shell')
 };
 
 /** `client.*` call sites OUTSIDE the derivation's two known places (route
@@ -849,9 +865,9 @@ function apiModuleSymbolPaths(source: string): Map<string, string[]> {
 function apiImportsOf(source: string): Map<string, string[]> {
 	const imports = new Map<string, string[]>();
 	for (const m of source.matchAll(
-		/(?:^|\n)[ \t]*import\s*\{([^;]*?)\}\s*from\s*'#lib\/(api|queue)\/([\w.-]+?)(?:\.js)?'/g
+		/(?:^|\n)[ \t]*import\s*\{([^;]*?)\}\s*from\s*'#lib\/(api|queue|shell)\/([\w.-]+?)(?:\.js)?'/g
 	)) {
-		const file = join(MODULE_DIRS[m[2]!]!, `${m[3]!}.ts`);
+		const file = join(MODULE_DIRS[m[2] as 'api' | 'queue' | 'shell']!, `${m[3]!}.ts`);
 		const names = m[1]!
 			.split(',')
 			.map((s) => s.replace(/^\s*type\s+/, '').split(/\s+as\s+/)[0]!.trim())
@@ -926,11 +942,12 @@ test('every_user_reachable_shell_route_carries_its_kernels_own_authz_verdict', (
 	// / (recall, verify, ump/forget), /audit (two), /decisions,
 	// /decisions/[id] (two), /governance (three), /recall (its own recall
 	// plus health, stats and the proposal), the trace, /review. It was 9
-	// over the six-route table.
+	// over the six-route table. M3-c: 18 — the home page's replay fetch
+	// (`fetchTurns` via the frame's store) adds /chat/sessions/{session}/turns.
 	expect(
 		derivedTotal,
-		'the whole table derived fewer than the measured seventeen kernel paths — the derivation is not reading the wire'
-	).toBeGreaterThanOrEqual(17);
+		'the whole table derived fewer than the measured eighteen kernel paths — the derivation is not reading the wire'
+	).toBeGreaterThanOrEqual(18);
 });
 
 test('the_authz_table_is_derived_from_the_wire_the_routes_call', () => {
@@ -987,6 +1004,17 @@ test('the_authz_table_is_derived_from_the_wire_the_routes_call', () => {
 	}
 
 	// ---- every api symbol carrying a call is reachable from a route ----
+	//
+	// M3-c: the walk reads the ROUTE pages AND the frame component. The
+	// sidebar frame (R141) renders on EVERY route — its data modules are
+	// user-reachable by construction — and a page-only walk would call the
+	// frame's wire "dead" ("exports refresh, which NO route imports"), a
+	// false claim: the region's reads/writes are the session region's whole
+	// point. The frame is NAMED here rather than invented into the route
+	// census: it is chrome, not a page, and its derivation stays out of the
+	// per-route authz rows (a shared path's scope is not stateable by this
+	// census — kernelScopeFor's own refusal).
+	const frameConsumers = [join(shellRoot, 'src', 'lib', 'components', 'AppShell.svelte')];
 	for (const file of apiModules) {
 		const bySymbol = apiModuleSymbolPaths(readFileSync(file, 'utf8'));
 		expect(
@@ -994,7 +1022,7 @@ test('the_authz_table_is_derived_from_the_wire_the_routes_call', () => {
 			`${relative(shellRoot, file)} has a client call with no preceding export — the attribution scan ` +
 				'cannot say which symbol owns it'
 		).toBe(false);
-		const importedBy = entries.flatMap(
+		const importedBy = [...entries, ...frameConsumers.map((f) => ({ file: f }))].flatMap(
 			(e) => apiImportsOf(readFileSync(e.file, 'utf8')).get(file) ?? []
 		);
 		for (const [symbol, paths] of bySymbol) {

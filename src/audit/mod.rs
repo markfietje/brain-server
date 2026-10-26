@@ -151,6 +151,13 @@ pub enum AuditKind {
     /// step count. Caller content got no evidence row before this kind
     /// existed — the audit-per-write law applies to every write path.
     Procedure,
+    /// chat-session lifecycle (the chat spine's durable store): lazy
+    /// session create, turn-pair persistence, rename, erase.
+    /// A dedicated kind (the `Forget`/`Procedure` precedent) so kind-filtered
+    /// audit consumers can find transcript writes without detail-hash mining;
+    /// the chain stores hashes of target + detail, so no session key and no
+    /// turn text rides the chain raw.
+    Chat,
 }
 
 impl AuditKind {
@@ -175,6 +182,7 @@ impl AuditKind {
             AuditKind::Decision => "decision",
             AuditKind::Forget => "forget",
             AuditKind::Procedure => "procedure",
+            AuditKind::Chat => "chat",
         }
     }
 }

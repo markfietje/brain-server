@@ -54,6 +54,12 @@
 	import { Textarea } from '#lib/components/ui/textarea/index.js';
 	import ArrowUpIcon from '@lucide/svelte/icons/arrow-up';
 	import { currentConversationEpoch } from '#lib/shell/frame.svelte.js';
+	import {
+		currentActiveKey,
+		noteFinal
+	} from '#lib/shell/sessions.svelte.js';
+	import { fetchTurns } from '#lib/shell/sessions.svelte.js';
+	import { replayTurns } from '#lib/chat/replay.js';
 
 	interface Turn {
 		id: number;
@@ -229,6 +235,45 @@
 		composerEl?.focus();
 	});
 
+	// ── the session switch (plan 23 §2 D5/D6) ──────────────────────────
+	//
+	// The sidebar's row click moves the session store's active pointer; this
+	// surface answers by fetching the stored turns and mapping them through
+	// the PURE replay module — the page never shapes raw rows. A null key
+	 // (a fresh chat, a first load) opens the live conversation, not a
+	// fetch. The loaded transcript replaces the live one: switching is
+	// total, like dsh — and the composer keeps focus (the chrome law).
+	let seenSessionKey = currentActiveKey();
+	$effect(() => {
+		const key = currentActiveKey();
+		if (key === seenSessionKey) return;
+		seenSessionKey = key;
+		actions = {};
+		verifying = null;
+		claimDrafts = {};
+		evidenceOpen = {};
+		if (key === null) {
+			turns = [];
+			composerEl?.focus();
+			return;
+		}
+		void (async () => {
+			const stored = await fetchTurns(key);
+			// A fetch that failed (offline/refused) leaves the transcript as it
+			// was — an empty transcript would LIE that the session is empty.
+			if (stored === null || key !== currentActiveKey()) return;
+			turns = replayTurns(stored).map((replayed, index) => ({
+				id: index,
+				rendering: replayed.rendering,
+				// Provenance for EVERY replayed turn — the grounding event is the
+				// turn's evidence of record, and a zero-hit turn shows a zero
+				// count rather than a fabricated block-less shape (the branch
+				// never reads a length; the union carries the passages).
+				provenance: provenanceBlock(replayed.passages, null, Date.now())
+			}));
+		})();
+	});
+
 	// The core is injected so the surface is pinnable without a Tauri runtime.
 	// Production passes the real core; the pin passes a stub that answers with
 	// each of the six states in turn.
@@ -304,6 +349,12 @@
 		} finally {
 			busy = false;
 			composerEl?.focus();
+			// The after-final glance (plan 23 §2 D5): the list's last_turn_at
+			// may have changed. Today the turn rode /recall (nothing persisted
+			// — the read is a harmless glance); the streaming composer (M3-d)
+			// makes this trigger load-bearing, when the FINAL carries the
+			// persisted pair with it.
+			noteFinal();
 		}
 	}
 
@@ -674,6 +725,62 @@
 									{/if}
 								</li>
 								{/each}
+							</ul>
+						{/if}
+
+					{/if}
+
+				{:else if turn.rendering.kind === 'generated'}
+					<!-- The chat spine's rendering (plan 25's union member; replay
+					     produces it today): the ANSWER TEXT is the turn of record
+					     — the deltas were presentation — and the grounding hits
+					     ride beside it as evidence, collapsed like every other
+					     citation block (plan 21 §3). -->
+					<p class="text-sm whitespace-pre-wrap">{turn.rendering.answer}</p>
+					{#if turn.rendering.tier}
+						<p class="text-xs text-muted-foreground" data-testid="chat-tier">
+							{m['chat.tier']({ tier: turn.rendering.tier })}
+						</p>
+					{/if}
+					{#if turn.provenance}
+						<Button
+							type="button"
+							variant="ghost"
+							size="sm"
+							class="w-fit"
+							data-testid="chat-evidence"
+							aria-expanded={evidenceIsOpen(turn.id)}
+							aria-controls="chat-evidence-list-{turn.id}"
+							onclick={() => toggleEvidence(turn.id)}
+						>
+							{#if evidenceIsOpen(turn.id)}
+								{m['chat.evidence.collapse']()}
+							{:else}
+								{m['chat.evidence.count']({ count: turn.provenance.count })}
+								<span class="sr-only"> — {m['chat.evidence.expand']()}</span>
+							{/if}
+						</Button>
+						{#if evidenceIsOpen(turn.id)}
+							<ul class="grid gap-3" id="chat-evidence-list-{turn.id}">
+							{#each turn.provenance.citations as citation (citation.id)}
+								<li class="grid gap-1 text-sm" data-testid="chat-citation">
+									<span class="font-medium">
+										{citation.title.kind === 'present' ? citation.title.value : m['chat.untitled']()}
+									</span>
+									{#if citation.text.length > 0}
+										<span class="text-muted-foreground">{citation.text}</span>
+									{/if}
+									<span
+										data-historical={citation.validity.historical}
+										class="text-xs text-muted-foreground"
+									>
+										{citation.validity.summary}
+									</span>
+									{#if citation.flagged}
+										<span class="text-xs text-destructive">{m['chat.quarantined']()}</span>
+									{/if}
+								</li>
+							{/each}
 							</ul>
 						{/if}
 					{/if}

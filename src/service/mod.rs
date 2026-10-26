@@ -62,6 +62,7 @@
 //! a handler that needs one writes the core first.
 
 pub mod art30;
+pub mod chat_sessions;
 #[cfg(feature = "compliance-pack")]
 pub mod compliance;
 pub mod create;

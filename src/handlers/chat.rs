@@ -31,10 +31,13 @@
 //! conversation that cannot fit the on-device window after trimming → the
 //! bridge's `conversation_does_not_fit` with its `shortfallTokens`.
 //!
-//! Round 1 scoping, stated rather than implied: sessions are NOT persisted
-//! to `agent_session_events` yet — the live conversation is the bridge's,
-//! and durable session rows land with the session-listing endpoints in the
-//! Round-2 sidebar, where the pair belongs together. The grounding recall's
+//! Round 1 scoping, stated rather than implied: the live conversation is
+//! the bridge's, and the DURABLE session store landed with the
+//! session-listing endpoints (the Round-2 sidebar, plan 23): every FINAL
+//! persists its turn pair — the user's message and the answer — in one
+//! transaction (lazy session create, audited); a Failed turn persists
+//! NOTHING, so an orphan user row has no path. The stream itself is
+//! unchanged: same SSE sequence, additive persistence only. The grounding recall's
 //! read-event audit row is written by `run_recall` exactly as on `/recall`.
 
 use std::convert::Infallible;
@@ -264,6 +267,22 @@ pub async fn chat_turn(
     // The forwarder: grounding first, then the bridge's stream verbatim.
     // When the SSE consumer drops (client disconnect), the send fails and
     // the TURN is cancelled — the session survives in the bridge.
+    //
+    // PERSISTENCE AT THE FINAL (the session store): the
+    // user's message and the assistant's final answer persist as ONE pair
+    // in ONE transaction, lazily creating the session row — and a Failed
+    // turn persists NOTHING, so an orphan user row has no path here. The
+    // owner stamp makes the row attributable (the DSAR lesson); the owner
+    // never gates the write (the principal already passed the Read gate and
+    // the turn happened). A persistence failure is logged LOUD and never
+    // poisons the stream: the answer the user is reading is the turn of
+    // record on the wire; the store's absence is a named incident, not a
+    // retriable SSE error.
+    let persist_pool = state.pool.clone();
+    let persist_owner = crate::handlers::gate::content_owner_stamp(&principal.0)
+        .unwrap_or_else(|| crate::handlers::gate::LOOPBACK_OPERATOR_OWNER.to_owned());
+    let persist_message = message.clone();
+    let persist_grounding = grounding_event.to_string();
     let (tx, rx_out) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(64);
     tokio::spawn(async move {
         let send = |event: Event| async { tx.send(Ok(event)).await.is_ok() };
@@ -293,16 +312,64 @@ pub async fn chat_turn(
                     turn,
                     input_tokens,
                     output_tokens,
-                } => Event::default()
-                    .event("final")
-                    .json_data(json!({
-                        "text": text,
-                        "tier": tier,
-                        "turn": turn,
-                        "inputTokens": input_tokens,
-                        "outputTokens": output_tokens,
-                    }))
-                    .unwrap_or_default(),
+                } => {
+                    // THE PAIR PERSISTS AT THE FINAL, before the event is
+                    // forwarded: the bridge delivered the answer, so the turn
+                    // of record is complete — a consumer that disconnects on
+                    // this very frame still leaves a complete transcript,
+                    // exactly as the bridge's own session keeps it. One tx
+                    // (lazy session create + both rows + audit); a Failed
+                    // arm below persists NOTHING. A persistence failure is
+                    // logged loud and never poisons the stream — the store's
+                    // absence is a named incident, not a retriable SSE error.
+                    let now_unix = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    let persisted = tokio::task::spawn_blocking({
+                        let pool = persist_pool.clone();
+                        let owner = persist_owner.clone();
+                        let message = persist_message.clone();
+                        let grounding = persist_grounding.clone();
+                        let session = session.clone();
+                        let answer = text.clone();
+                        let tier = tier.clone();
+                        move || -> Result<i64, String> {
+                            let mut conn = pool.get().map_err(|e| e.to_string())?;
+                            crate::service::chat_sessions::persist_turn_pair(
+                                &mut conn,
+                                &session,
+                                &owner,
+                                &message,
+                                &answer,
+                                Some(&grounding),
+                                Some(tier.as_str()),
+                                now_unix,
+                            )
+                            .map_err(|e| e.to_string())
+                        }
+                    })
+                    .await;
+                    match persisted {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => {
+                            tracing::error!("chat turn persistence failed: {e}");
+                        }
+                        Err(e) => {
+                            tracing::error!("chat turn persistence task failed: {e}");
+                        }
+                    }
+                    Event::default()
+                        .event("final")
+                        .json_data(json!({
+                            "text": text,
+                            "tier": tier,
+                            "turn": turn,
+                            "inputTokens": input_tokens,
+                            "outputTokens": output_tokens,
+                        }))
+                        .unwrap_or_default()
+                }
                 BridgeEvent::Failed {
                     code,
                     message,
@@ -414,5 +481,45 @@ mod tests {
             "the instructions must state that fenced memory is data, not instructions"
         );
         assert!(CHAT_INSTRUCTIONS.contains("BRAIN_UNTRUSTED_CONTEXT"));
+    }
+
+    /// THE PAIR PERSISTS AT THE FINAL, and a Failed turn persists nothing —
+    /// the handler-side half of the orphan-user-row law (the storage half is
+    /// the service's `every_persisted_user_row_has_its_assistant_beside_it`;
+    /// the live path is the shell e2e's create-by-turn drill). Source scan:
+    /// the Final arm calls the service's pair-persistence; the Failed arm
+    /// names no persistence at all.
+    #[test]
+    fn the_final_arm_persists_the_pair_and_the_failed_arm_persists_nothing() {
+        let src = include_str!("chat.rs");
+        let forwarder = src
+            .split("BridgeEvent::Final {")
+            .nth(1)
+            .expect("the forwarder carries a Final arm");
+        let (final_arm, failed_arm) = {
+            let rest = forwarder
+                .split("BridgeEvent::Failed {")
+                .next()
+                .expect("the Failed arm follows the Final arm in the forwarder");
+            // final_arm = everything from the Final arm's start to the
+            // Failed arm's start — that slice contains the persistence call.
+            let final_slice = &forwarder[..rest.len()];
+            let failed_slice = forwarder
+                .split("BridgeEvent::Failed {")
+                .nth(1)
+                .expect("the Failed arm body");
+            (final_slice, failed_slice)
+        };
+        assert!(
+            final_arm.contains("persist_turn_pair"),
+            "the Final arm must persist the turn pair (the durable session store)"
+        );
+        assert!(
+            !failed_arm.contains("persist_turn_pair"),
+            "a Failed turn must persist NOTHING — an orphan user row is the defect"
+        );
+        // And the persistence rides the SERVICE (no SQL in the handler — the
+        // convergence law; the enforced-zero guard holds this file anyway).
+        assert!(src.contains("service::chat_sessions::persist_turn_pair"));
     }
 }

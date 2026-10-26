@@ -8,7 +8,7 @@
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createConnection } from 'node:net';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -231,6 +231,33 @@ export default async function (): Promise<() => Promise<void>> {
 		});
 		if (build.status !== 0) throw new Error('kernel server build failed');
 
+		// The chat bridge (M3-c, plan 23) is resolved BEFORE the spawn: the
+		// env must be in the child's initial environment (chat_bridge() is a
+		// once-initialized lazy). The e2e kernel runs from target/debug, so
+		// the bridge is exported EXPLICITLY when a candidate binary exists
+		// (the R139 posture: a machine without the bridge keeps every OTHER
+		// surface — the sessions spec skips-with-reason on the 503 the kernel
+		// answers by name).
+		const bridgeCandidates = [
+			process.env['BRAIN_AFM_BRIDGE'],
+			join(kernelRoot, 'target', 'debug', 'brain-afm'),
+			join(kernelRoot, 'shell-macos', '.build', 'out', 'Products', 'Debug', 'brain-afm'),
+			join(kernelRoot, 'shell-macos', '.build', 'out', 'Products', 'Release', 'brain-afm')
+		].filter((p): p is string => typeof p === 'string' && p.length > 0);
+		const bridge = bridgeCandidates.find((p) => {
+			try {
+				return statSync(p).isFile();
+			} catch {
+				return false;
+			}
+		});
+		if (bridge) {
+			process.env['E2E_AFM_BRIDGE'] = bridge;
+			console.log(`[e2e] AFM bridge resolved: ${bridge}`);
+		} else {
+			console.log('[e2e] no AFM bridge binary found — the chat-turn surfaces will answer chat_bridge_unavailable');
+		}
+
 		dataDir = mkdtempSync(join(tmpdir(), 'decision-e2e-kernel-'));
 		const childEnv = { ...process.env };
 		delete childEnv['AUTH_TOKEN'];
@@ -246,7 +273,13 @@ export default async function (): Promise<() => Promise<void>> {
 				BRAIN_DB_PATH: join(dataDir, 'brain.db'),
 				BRAIN_WRITE_POSTURE: 'open',
 				BRAIN_AUDIT_READ_EVENTS: 'on',
-				CORS_ORIGINS: 'http://127.0.0.1:4173'
+				CORS_ORIGINS: 'http://127.0.0.1:4173',
+				// The AFM bridge is EXPLICIT here (never inherited): the candidate
+				// was resolved above, and a machine without one keeps the kernel's
+				// named 503 posture.
+				...(process.env['E2E_AFM_BRIDGE']
+					? { BRAIN_AFM_BRIDGE: process.env['E2E_AFM_BRIDGE'] }
+					: {})
 			},
 			stdio: ['ignore', 'pipe', 'pipe']
 		});

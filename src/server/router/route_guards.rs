@@ -443,6 +443,12 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/workflow/claims/{id}",
     "/workflow/claims/{id}/verify",
     "/workflow/claims/{id}/promote",
+    // The chat session store (the chat spine's durable store): the listing, the turn page and
+    // the {session} path (PATCH rename + DELETE erase share it). Sessions are
+    // NOT routes in the shell — the census there stays 8.
+    "/chat/sessions",
+    "/chat/sessions/{session}",
+    "/chat/sessions/{session}/turns",
 ];
 
 /// Every non-public route and the `Action::X` its handler must carry.
@@ -841,4 +847,20 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/workflow/claims/{id}/promote", "Write"),
     ("/workflow/claim-schemas", "Write"),
     ("/workflow/claims", "Write"),
+    // The chat session store (the chat spine's durable store): four endpoints over two
+    // distinct-path shapes. The listing and the turn page are Reads; the
+    // {session} path carries PATCH (rename) and DELETE (erase) — the Read
+    // row comes FIRST on purpose: it is the row the RBAC middleware and the
+    // authz matrix read for the path (DELETE's own gate — erasing one's own
+    // transcript is a Read-class act; Admin/loopback may delete any, a
+    // narrowed principal only its own, by the owner filter, never the table),
+    // and the row it pairs with the last-registered method must be the
+    // method's. PATCH's Write is the second row: the rename is a write the
+    // handler enforces per-method (the shared-table convention — the method
+    // column does not exist, so the per-method truth is the handler's
+    // authorize, and this row is what the forward coverage scan reads).
+    ("/chat/sessions", "Read"),
+    ("/chat/sessions/{session}/turns", "Read"),
+    ("/chat/sessions/{session}", "Read"),
+    ("/chat/sessions/{session}", "Write"),
 ];

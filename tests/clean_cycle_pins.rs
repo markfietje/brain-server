@@ -425,10 +425,11 @@ fn r48_the_route_tables_are_unchanged() {
     // create-loop suite's `route_tables_count_six_more_rows_than_the_prior_freeze`,
     // which states the same property positively and cannot be satisfied by
     // deleting rows.
-    const OPEN_ROUTES: usize = 217;
-    // +1 (204): v1.29.32's chat spine adds the one gated route
-    // /chat/turns (Read) — a named act, not drift.
-    const OPEN_GATES: usize = 204;
+    const OPEN_ROUTES: usize = 220;
+    // +4 rows (208): the chat session store — the listing GET, the turn-page
+    // GET, and the {session} path carrying PATCH rename (Write) and DELETE
+    // erase (Read, the erasure posture) — a named act, not drift.
+    const OPEN_GATES: usize = 208;
 
     let guards = read_repo("src/server/router/route_guards.rs");
     let between = |start: &str| -> String {

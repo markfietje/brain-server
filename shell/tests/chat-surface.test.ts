@@ -296,6 +296,10 @@ describe('II-7 accessibility', () => {
 		for (const kind of [
 			'pending',
 			'answered',
+			// M3-c: the chat spine's rendering — replay produces it today, the
+			// streaming consumer (plan 25) will produce it live. A union member
+			// with no branch is a turn that renders as nothing.
+			'generated',
 			'absent',
 			'abstained',
 			'refused',

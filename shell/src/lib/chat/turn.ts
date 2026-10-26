@@ -51,6 +51,7 @@ import type { Passage, RecallOutcome } from '../api/recall';
 export type TurnRendering =
 	| { kind: 'pending'; query: string }
 	| { kind: 'answered'; query: string; passages: Passage[]; confidence: number | null }
+	| { kind: 'generated'; query: string; answer: string; tier: string | null; passages: Passage[] }
 	| { kind: 'absent'; query: string; searched: string; limit: number }
 	| { kind: 'abstained'; query: string; searched: string; limit: number; confidence: number | null }
 	| { kind: 'refused'; query: string; status: number; scope: string }
@@ -130,4 +131,16 @@ export function isAnswerLike(turn: TurnRendering): boolean {
  */
 export function renderingToken(turn: TurnRendering): string {
 	return turn.kind;
+}
+
+/**
+ * True only for the chat-spine rendering — the one that carries the model's
+ * ANSWER TEXT (the recall renderings carry evidence, which is the answer of
+ * a retrieval turn). Replay produces it; the streaming consumer (plan 25)
+ * will produce it live. A surface that wants to show answer text asks this
+ * instead of testing a literal, so a future member cannot silently miss the
+ * branch.
+ */
+export function carriesAnswerText(turn: TurnRendering): boolean {
+	return turn.kind === 'generated';
 }

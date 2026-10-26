@@ -13,6 +13,93 @@ measured. Those records are kept as they were written (this file is
 append-only), and their heading says `Unreleased` because that is what they
 were when the round landed — not because the work is still unreleased.
 
+## [Unreleased] — M3-c: the chat transcript learns to survive
+
+The chat spine (v1.29.32) held the live conversation in the bridge and
+persisted NOTHING; this round lands the durable store and the sidebar's
+session region (plan 23), as one pair: `chat_sessions` + `chat_turns`
+(additive, no FK — the `decision_run_traces` posture), a service core owning
+SQL + invariants + audited writes, four owner-scoped endpoints, and the
+frame's History region reading them over the typed wire.
+
+- **The lazy-creation law.** A session row exists only because a turn named
+  its key: `/chat/turns`' FINAL arm persists the pair — the user's message
+  and the answer, with the grounding event and the tier — in ONE
+  transaction that lazily creates the row and writes the audit evidence
+  inside it. A Failed turn persists NOTHING (an orphan user row is the
+  defect named in the register row); there is no create route, and the
+  shell's New chat stays a pure client act — a minted `s-` key that is
+  never sent until something is said, so an abandoned new chat costs
+  nothing.
+- **Owner scope is a WHERE clause.** The review queue's fence, reused:
+  `authorize(Read)` first, then the resolved owner set rides the SQL — a
+  JWT principal reads and moves only its own rows; loopback/Admin see all;
+  a foreign key answers the SAME `chat_session_not_found` as an unknown one
+  (no existence oracle — the refusals are pinned byte-equal). Erasure is
+  Read-gated by design (a user may erase its own transcript without holding
+  Write; Admin may delete any), hard (turns + row in one tx — a
+  soft-deleted transcript keeps data the user asked to remove), and
+  audited.
+- **Four endpoints, one named gate move.** `GET /chat/sessions`, `GET
+  /chat/sessions/{session}/turns`, `PATCH` + `DELETE
+  /chat/sessions/{session}` — AUTHZ_GATES +4 (204 → 208; the shared path
+  carries Read first, Write for the patch, with the middleware/table
+  pairing stated in the table), OPENAPI_ROUTES +3 (217 → 220), openapi.yaml
+  + regenerated typed client in the same commit. The chat rows carry NO
+  governance hash (that tuple is the knowledge row's); the transcript's
+  integrity story is the hash-chained audit row per write (`AuditKind::Chat`).
+- **The router's SQL census is MEASURED at 52 and UNMOVED** — the pin
+  counts `src/server/router/memory.rs`'s call shapes, and this round's SQL
+  is a NEW service core (the convergence law's destination), so no router
+  file gained a statement. The prompt's expected 52→57 was a wrong
+  prediction about which tree the census reads; the census and the register
+  row state the measurement.
+- **The frame's History region** (dsh-shaped, Svelte 5 runes, one
+  `.svelte.ts` store): rows = label + LOCALE-AWARE relative time
+  (`Intl.RelativeTimeFormat` over the paraglide locale — hand-rolled
+  English reds the i18n pin), glance-refresh at mount/focus/palette-open/
+  after-final, NO interval (structural scan), chrome-by-exception at zero
+  rows, collapsed rail keeping every name accessible, inline rename,
+  delete-behind-a-confirm-dialog. Replay is a PURE module
+  (`lib/chat/replay.ts`): stored pairs → the transcript's rendering union
+  (new `generated` member carrying answer text + tier + grounding
+  passages) — the provenance-first law survives replay.
+- **The census grew three named acts:** the route-parity derivation hops
+  into `lib/shell` (the frame's store is route-reachable — the home page
+  imports it; naming it non-route would be the R141 lie), the reachability
+  walk reads the frame component (chrome every route renders inside), and
+  the transcript-branch pin demands the `generated` arm.
+- **The CORS default gained PATCH** — the shell's rename is a browser
+  preflighted method the default methods list omitted, so the rename worked
+  over curl and silently no-oped in the app (measured in the e2e's wire
+  log). `CORS_METHODS` docs updated; the drift is the additive fix.
+- **Pins:** nine service pins (lazy create + pair-in-one-tx; no empty
+  rows; foreign-404 == unknown-404 with the strings compared; 52-row cap
+  with the honest total; rename round-trip + 80-byte ceiling; delete
+  atomicity + audit; the orphan-user-row law; screen-at-write; the key
+  fence), the handler's Final-arm structural scan, six chrome pins, four
+  replay pins, the i18n parity + loanword arms (fr's "Conversation" joined
+  its measured loanword list). EVERY pin red-proved by planting, watching
+  red, reverting, confirming — and the battery's own two green plants were
+  FIXED as findings: the zero-session pin now also refuses the heading at
+  zero, and the no-write recorder reads the method off the Request object
+  (openapi-fetch always sends one — the R141 Request-vs-init defect class
+  in a second site).
+- **The e2e is real end to end:** two sessions created BY TURN on a real
+  loopback kernel with real on-device generation, switch preserving both
+  transcripts through the replay mapper, rename reflected on the wire,
+  delete reflected in the list AND on the audit chain; it skips-with-reason
+  where no bridge binary exists (the R139 posture — the model is
+  macOS-27-only, so an Ubuntu lane cannot run it). The harness resolves the
+  AFM bridge explicitly for the e2e kernel before spawn.
+- **Owed, named:** the streaming composer on the chat spine (M3-d — this
+  store is its substrate; the after-final trigger becomes load-bearing
+  there); rename-UX polish (per-character validation affordances);
+  chat-row retention integration (the governance round's); the shell lane's
+  first RUNNER execution of the sessions spec (the model is macOS-only —
+  the lane runs it on a macOS runner, and until then this machine is the
+  witness).
+
 ## [Unreleased] — R-GOV: the governance state learns to prove itself
 
 Row-level governance integrity (arXiv:2610.30698, PREPRINT 2026-10-22 —

@@ -3432,6 +3432,43 @@ pub fn run_migration_with_store_dim(
         }
     }
 
+    // ── the chat session store (the chat spine's durability) ───────────
+    // Two ADDITIVE tables, no FK — the decision_run_traces posture (foreign
+    // rows are the writer's refusal, not the schema's). A session row is
+    // created by the FIRST TURN that names its key, never by a create call:
+    // an empty session row is the defect this store kills, so nothing here
+    // (and nothing in the service) may INSERT a session without a turn.
+    // chat rows carry NO governance_hash — that tuple is the KNOWLEDGE
+    // row's governance state (owner, access_scope, domain); a chat turn is
+    // not a knowledge row. The transcript's integrity story is the
+    // hash-chained audit row per write, not a second governance tuple.
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS chat_sessions(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_key TEXT NOT NULL UNIQUE,
+            owner TEXT NOT NULL,
+            label TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            last_turn_at INTEGER NOT NULL,
+            turn_count INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE INDEX IF NOT EXISTS idx_chat_sessions_owner_activity
+             ON chat_sessions(owner, last_turn_at);
+         CREATE TABLE IF NOT EXISTS chat_turns(
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             session_id INTEGER NOT NULL,
+             seq INTEGER NOT NULL,
+             role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+             content TEXT NOT NULL,
+             grounding_json TEXT,
+             tier TEXT,
+             created_at INTEGER NOT NULL,
+             UNIQUE(session_id, seq)
+         );
+         CREATE INDEX IF NOT EXISTS idx_chat_turns_session
+             ON chat_turns(session_id, seq);",
+    )?;
+
     // ── Parity check: assert vec0 absorbed all valid legacy vectors ──────
     // A silent partial backfill (e.g. skipped non-512-dim rows) would otherwise
     // leave the index incomplete with no signal. We log a warning for any

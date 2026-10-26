@@ -26,7 +26,11 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 | POST | `/ingest` | Structured ingest (explicit entities/relations). Since v1.28.74 accepts optional `origin_context: "owner"\|"channel"` — absent = owner (byte-compat); `channel` stores the row with origin `channel-capture` (recall labels it; the plugin can exclude); any other value is `400` |
 | POST | `/sources/reconcile` · DELETE `/sources/{id}` | Sweep deleted sources / retire a source |
 | POST | `/recall` | Structured recall — the primary endpoint |
-| POST | `/chat/turns` | One memory-grounded chat turn (SSE: `grounding`, `delta`*, `final`\|`error`) — recall as fenced evidence + on-device AFM generation via the `brain-afm` bridge; fail-closed postures `chat_bridge_unavailable` (503) and `locale_not_supported` (400). v1.29.32 |
+| POST | `/chat/turns` | One memory-grounded chat turn (SSE: `grounding`, `delta`*, `final`\|`error`) — recall as fenced evidence + on-device AFM generation via the `brain-afm` bridge; fail-closed postures `chat_bridge_unavailable` (503) and `locale_not_supported` (400). Every `final` persists its turn pair (user + answer + grounding) in one transaction, lazily creating the session row; a failed turn persists nothing. v1.29.32 |
+| GET | `/chat/sessions` | The caller's chat sessions, newest activity first (`limit` ≤ 50 default 20, `offset`) — owner-scoped (a JWT principal reads its own rows; loopback/Admin all). Rows exist only when a turn named their key (lazy creation — no create route). v1.29.33 line |
+| GET | `/chat/sessions/{session}/turns` | One session's stored turns, oldest first (`limit` ≤ 50 default 50) — the FINAL text is the answer of record; assistant rows carry the grounding event verbatim. Unknown and foreign keys answer the same `chat_session_not_found`. v1.29.33 line |
+| PATCH | `/chat/sessions/{session}` | Rename (`{label}` ≤ 80 bytes) — write-gated; the owner fence still applies. v1.29.33 line |
+| DELETE | `/chat/sessions/{session}` | Erase a session — turns + row in ONE transaction, audited (the erasure posture: a transcript is personal data). Read-gated (a user may erase its own); Admin/loopback may delete any. v1.29.33 line |
 | GET | `/search` | Semantic search *(deprecated; use `/recall`)* |
 | GET | `/get/{id}` · POST `/multi-get` | Fetch chunk(s) by id |
 | GET | `/recall/{trace_id}/trace` | Recall-trace replay (decision-path evidence) |

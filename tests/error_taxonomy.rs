@@ -96,6 +96,16 @@ const KNOWN_ERRORS: &[(&str, &str, &str, &str)] = &[
     // The routing seam's refusal. `service` category: every variant names a cause
     // and none interpolates a stored verdict, so the Display is operator-safe.
     ("RoutingError", "service/routing.rs", "service", "display"),
+    // The chat-session core's refusal. `service` category: the Display names
+    // the cause plainly (invalid key/label shape, not-found without an index,
+    // storage with the rusqlite text) and never formats stored turn content —
+    // the handler maps SessionNotFound onto the probe-blind 404.
+    (
+        "ChatSessionError",
+        "service/chat_sessions.rs",
+        "service",
+        "display",
+    ),
     ("WfmError", "bin_common/wfm_import.rs", "service", "display"),
     // The drift census's operator-facing error. `service` category: it is a
     // cadence job's failure contract, and every variant is a fixed-prefix

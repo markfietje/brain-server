@@ -796,6 +796,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/chat/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the caller's chat sessions (v1.29.33 line — the chat spine's durable store). Owner-scoped: a JWT principal reads its own rows (the review-queue fence); loopback/opaque and Admin read all. Rows exist only when a turn named their key (lazy creation — there is no create route, and an empty session row is a defect). */
+        get: operations["listChatSessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chat/sessions/{session}/turns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One session's stored turns, oldest first — the replay page. The FINAL text is the answer of record (deltas are never stored); an assistant row carries its grounding event verbatim (the hits the turn was grounded on) and its tier. */
+        get: operations["listChatSessionTurns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chat/sessions/{session}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Erase a chat session — turns + row in ONE transaction, audited. The erasure posture: a transcript is personal data; soft-delete keeps data the user asked to remove. Read-gated (a user may erase its own); the owner fence decides whose — Admin/loopback may delete any, a narrowed principal only its own. A foreign key 404s like an unknown one. */
+        delete: operations["deleteChatSession"];
+        options?: never;
+        head?: never;
+        /** Rename a chat session (label ≤ 80 bytes). Write-gated; the owner fence still applies (a narrowed principal renames only its own). */
+        patch: operations["renameChatSession"];
+        trace?: never;
+    };
     "/recall": {
         parameters: {
             query?: never;
@@ -7292,6 +7344,178 @@ export interface operations {
             };
             /** @description chat_bridge_unavailable — no brain-afm binary beside the kernel (every other surface unaffected) */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listChatSessions: {
+        parameters: {
+            query?: {
+                /** @description Page size, capped at 50; default 20. */
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The page, newest activity first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        sessions: {
+                            session_key: string;
+                            label: string;
+                            turn_count: number;
+                            created_at: number;
+                            last_turn_at: number;
+                        }[];
+                        total: number;
+                    };
+                };
+            };
+            /** @description The bearer was refused. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listChatSessionTurns: {
+        parameters: {
+            query?: {
+                /** @description Page size, capped at 50; default 50. */
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                session: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stored turn page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        turns: {
+                            seq: number;
+                            /** @enum {string} */
+                            role: "user" | "assistant";
+                            content: string;
+                            /** @description The grounding event (assistant rows) verbatim. */
+                            grounding?: Record<string, never> | null;
+                            tier?: string | null;
+                            created_at: number;
+                        }[];
+                        total: number;
+                    };
+                };
+            };
+            /** @description The bearer was refused. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description chat_session_not_found — unknown key and another owner's key answer identically (no existence oracle). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteChatSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The erasure receipt. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ok: boolean;
+                        turns_deleted: number;
+                    };
+                };
+            };
+            /** @description chat_session_not_found — unknown and foreign keys answer identically. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    renameChatSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    label: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The renamed session summary. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        session_key: string;
+                        label: string;
+                        turn_count: number;
+                        created_at: number;
+                        last_turn_at: number;
+                    };
+                };
+            };
+            /** @description chat_label_invalid — empty or over the 80-byte ceiling. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description chat_session_not_found — unknown and foreign keys answer identically. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

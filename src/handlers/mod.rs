@@ -25,6 +25,7 @@ pub mod case_run;
 pub mod channel;
 pub mod channel_webhook;
 pub mod chat;
+pub mod chat_sessions;
 pub mod claims;
 pub mod clients;
 #[cfg(feature = "compliance-pack")]

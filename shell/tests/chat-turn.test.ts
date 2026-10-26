@@ -4,6 +4,7 @@ import { describe, expect, test } from 'vitest';
 import { shellRoot } from './fixtures';
 import type { Passage, RecallOutcome } from '../src/lib/api/recall';
 import { isAnswerLike, renderTurn, renderingToken } from '../src/lib/chat/turn';
+import { replayTurns } from '../src/lib/chat/replay.js';
 import {
 	confidenceWord,
 	isHistorical,
@@ -237,5 +238,94 @@ describe('II-4 provenance', () => {
 				.join('\n');
 			expect(code, `${file} uses {@html}`).not.toContain('@html');
 		}
+	});
+});
+// ── M3-c · replay: persisted turns → the transcript's shape (plan 23 D6) ──
+
+describe('M3-c replay maps the stored turn page purely', () => {
+	const pair = (
+		seq: number,
+		role: 'user' | 'assistant',
+		content: string,
+		grounding: Record<string, unknown> | null = null,
+		tier: string | null = null
+	) => ({ seq, role, content, grounding, tier, created_at: 1_760_000_000 });
+
+	test('a_pair_maps_to_one_generated_turn_carrying_the_answer_and_the_grounding', () => {
+		const turns = replayTurns([
+			pair(1, 'user', 'what grounds the gate?'),
+			pair(
+				2,
+				'assistant',
+				'the gate is read-first.',
+				{
+					decision: 'ok',
+					hits: [
+						{ id: 7, title: 'Gate law', score: 0.91, domain: 'global', flagged: false },
+						{ id: 9, title: null, score: 0.42, domain: 'ops', flagged: true }
+					]
+				},
+				'on_device'
+			)
+		]);
+		expect(turns.length).toBe(1);
+		const turn = turns[0]!;
+		expect(turn.rendering.kind).toBe('generated');
+		expect(turn.rendering.query).toBe('what grounds the gate?');
+		expect(turn.rendering.answer).toBe('the gate is read-first.');
+		expect(turn.rendering.tier).toBe('on_device');
+		// The grounding hits ARE the evidence: two hits, ids/scores/domains
+		// carried, the flagged one visible — the provenance-first law
+		// survives replay.
+		expect(turn.passages.length).toBe(2);
+		const first = turn.passages[0]!;
+		expect(first.id).toBe(7);
+		expect(first.score).toBe(0.91);
+		expect(first.domain).toBe('global');
+		expect(first.flagged).toBe(false);
+		// The grounding event carries NO passage body: the mapper must not
+		// INVENT source text — the citation renders its title, and the empty
+		// text is the named shape of "the event does not carry the body".
+		expect(turn.passages.every((p) => p.text === '')).toBe(true);
+	});
+
+	test('two_sessions_in_one_page_stay_two_turns_and_order_follows_seq', () => {
+		const turns = replayTurns([
+			pair(1, 'user', 'first question'),
+			pair(2, 'assistant', 'first answer', null, null),
+			pair(3, 'user', 'second question'),
+			pair(4, 'assistant', 'second answer', { decision: 'degraded', hits: [] }, null)
+		]);
+		expect(turns.map((t) => t.rendering.query)).toEqual(['first question', 'second question']);
+		expect(turns.map((t) => t.rendering.answer)).toEqual(['first answer', 'second answer']);
+		// A degraded grounding (zero hits) still produces a turn — with an
+		// EMPTY passage list, never a fabricated citation.
+		expect(turns[1]!.passages).toEqual([]);
+	});
+
+	test('an_incomplete_tail_is_skipped_and_never_renders_as_an_answerless_question', () => {
+		// The store's own pin says an orphan user row cannot exist; the
+		// mapper's posture is to SKIP the impossible tail, named — the
+		// alternative (rendering a question with no answer) is the one shape
+		// a transcript must never show.
+		const turns = replayTurns([
+			pair(1, 'user', 'answered'),
+			pair(2, 'assistant', 'fine'),
+			pair(3, 'user', 'orphan tail')
+		]);
+		expect(turns.length).toBe(1);
+		expect(turns[0]!.rendering.query).toBe('answered');
+		// And an assistant row with no user row before it is skipped too.
+		const orphanAssistant = replayTurns([pair(1, 'assistant', 'no question')]);
+		expect(orphanAssistant).toEqual([]);
+	});
+
+	test('an_empty_page_maps_to_an_empty_transcript_and_malformed_grounding_degrades_to_no_passages', () => {
+		expect(replayTurns([])).toEqual([]);
+		const turns = replayTurns([
+			pair(1, 'user', 'q'),
+			pair(2, 'assistant', 'a', { hits: 'not-an-array' }, null)
+		]);
+		expect(turns[0]!.passages).toEqual([]);
 	});
 });

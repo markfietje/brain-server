@@ -24,9 +24,11 @@
 	import ListIcon from '@lucide/svelte/icons/list';
 	import MessageCircleIcon from '@lucide/svelte/icons/message-circle';
 	import PanelLeftIcon from '@lucide/svelte/icons/panel-left';
+	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
+	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import CommandIcon from '@lucide/svelte/icons/command';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { CommandPalette } from '#lib/components/ui/command/index.js';
@@ -44,6 +46,15 @@
 		clearWireFault,
 		currentWireFault
 	} from '#lib/chat/wire-status.svelte.js';
+	import {
+		activate as activateSession,
+		currentActiveKey,
+		currentSessions,
+		fresh as freshSession,
+		refresh as refreshSessions,
+		remove as removeSession,
+		rename as renameSession
+	} from '#lib/shell/sessions.svelte.js';
 	import {
 		currentKernelFacts,
 		currentStatusContext,
@@ -129,7 +140,85 @@
 
 	function newChat(): void {
 		startNewConversation();
+		// The session store follows: a fresh key becomes active with NO write
+		// (the lazy law — the row appears when the turn is said, not before).
+		freshSession();
 		void goto(resolve('/'));
+	}
+
+	// ── the session region (plan 23 §2 D5) ────────────────────────────
+	//
+	// The dsh-shaped list between the nav and the facts foot: one row per
+	// stored session — label (or the kernel's own shape) plus a RELATIVE time
+	// — click opens the transcript in the frame, rename is an inline input,
+	// delete is a confirmed dialog. Chrome-by-exception: ZERO sessions render
+	// NOTHING (an empty rail is noise), and a failed read is not an empty
+	// list — the region renders nothing for a refusal too, while the status
+	// bar carries the wire's own sentence (the fault is the one interrupt,
+	// plan 21 §1's law).
+	const sessionRows = $derived(currentSessions());
+	const activeSessionKey = $derived(currentActiveKey());
+
+	/** Relative time, LOCALE-AWARE: `Intl.RelativeTimeFormat` over the
+	 * paraglide locale, never hand-rolled English (the i18n pin reds those). */
+	function relativeTime(unixSeconds: number): string {
+		const rtf = new Intl.RelativeTimeFormat(currentLocale, { numeric: 'auto' });
+		const deltaSeconds = unixSeconds - Math.floor(Date.now() / 1000);
+		const minutes = Math.round(deltaSeconds / 60);
+		if (Math.abs(minutes) < 60) return rtf.format(minutes, 'minute');
+		const hours = Math.round(deltaSeconds / 3600);
+		if (Math.abs(hours) < 24) return rtf.format(hours, 'hour');
+		const days = Math.round(deltaSeconds / 86400);
+		if (Math.abs(days) < 30) return rtf.format(days, 'day');
+		return rtf.format(Math.round(deltaSeconds / (86400 * 30)), 'month');
+	}
+
+	/** The row's name: the renamed label if the user gave one, else the
+	 * kernel-agnostic "session" sentence — the SNIPPET-first design lives
+	 * with the stored turns (open() maps them), not a guess on the row. */
+	function rowName(label: string): string {
+		const trimmed = label.trim();
+		if (trimmed.length > 0) return trimmed;
+		return m['chat.sessions.unlabelled']();
+	}
+
+	let renamingKey = $state<string | null>(null);
+	let renameDraft = $state('');
+
+	function startRename(key: string, label: string): void {
+		renamingKey = key;
+		renameDraft = label;
+	}
+
+	async function commitRename(key: string): Promise<void> {
+		const draft = renameDraft;
+		renamingKey = null;
+		if (draft.trim().length === 0) return;
+		await renameSession(key, draft);
+	}
+
+	let deleteDialogOpen = $state(false);
+	let deleteTarget = $state<string | null>(null);
+
+	function askDelete(key: string): void {
+		deleteTarget = key;
+		deleteDialogOpen = true;
+	}
+
+	/** The name the confirmation dialog speaks about — the row's own name,
+	 * read from the list the frame already holds. */
+	const deleteTargetName = $derived.by(() => {
+		const row = sessionRows.find((r) => r.session_key === deleteTarget);
+		return row === undefined ? m['chat.sessions.unlabelled']() : rowName(row.label);
+	});
+
+	async function confirmDelete(): Promise<void> {
+		const key = deleteTarget;
+		deleteTarget = null;
+		if (key === null) return;
+		await removeSession(key);
+		// The list just changed shape: the confirmed delete IS a glance.
+		void refreshSessions();
 	}
 
 	const PALETTE_GROUPS = $derived([
@@ -235,10 +324,17 @@
 		void refreshQueue();
 		void refreshFacts();
 		void refreshChain();
+		// The session region's FIRST glance: the list is read at mount like
+		// every other chrome fact (the queue's own law — mount, focus, palette
+		// open; the after-final trigger is the page's `noteFinal()`).
+		void refreshSessions();
 	});
 
 	$effect(() => {
-		if (paletteOpen) void refreshQueue();
+		if (paletteOpen) {
+			void refreshQueue();
+			void refreshSessions();
+		}
 	});
 
 	const facts = $derived(currentKernelFacts());
@@ -476,7 +572,7 @@
 	}
 </script>
 
-<svelte:window onkeydown={onKeydown} onfocus={() => void refreshQueue()} />
+<svelte:window onkeydown={onKeydown} onfocus={() => { void refreshQueue(); void refreshSessions(); }} />
 
 <div
 	data-slot="app-shell"
@@ -596,7 +692,91 @@
 			</ul>
 		</nav>
 
-		<div class="flex-1"></div>
+		<!-- The session region (plan 23 §2 D5) — the frame's one empty slot,
+		     between the nav and the facts foot. Chrome-by-exception: ZERO rows
+		     (and any state that is not a live list) render NOTHING here — an
+		     empty rail is noise, and a refusal is not an empty list. The rail
+		     (collapsed) keeps every name in the accessible tree via sr-only
+		     rows, the R141 law. -->
+		<div class="min-h-0 flex-1 overflow-y-auto" data-testid="session-region">
+			{#if sessionRows.length > 0}
+				<p class="px-3 pb-1 pt-2 text-xs font-medium text-muted-foreground {collapsed ? 'sr-only' : ''}">
+					{m['chat.sessions.heading']()}
+				</p>
+				<ul class="grid gap-0.5 px-2">
+					{#each sessionRows as row (row.session_key)}
+						{@const active = row.session_key === activeSessionKey}
+						{@const name = rowName(row.label)}
+						<li class="group relative" data-testid="session-item">
+							{#if renamingKey === row.session_key}
+								<!-- The inline rename: an input with a named label,
+								     Enter commits, Escape cancels. -->
+								<input
+									class="h-8 w-full rounded-md border border-brand bg-background px-2 text-sm outline-none"
+									bind:value={renameDraft}
+									maxlength={80}
+									aria-label={m['chat.sessions.rename.label']({ name })}
+									data-testid="session-rename-input"
+									onkeydown={(event) => {
+										if (event.key === 'Enter') {
+											event.preventDefault();
+											void commitRename(row.session_key);
+										} else if (event.key === 'Escape') {
+											event.preventDefault();
+											renamingKey = null;
+										}
+									}}
+								/>
+							{:else}
+								<button
+									type="button"
+									data-testid="session-row"
+									data-active={active ? 'true' : 'false'}
+									aria-current={active ? 'true' : undefined}
+									class="flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm text-muted-foreground transition-colors hover:bg-sidebar-hover hover:text-foreground {active
+									? 'bg-sidebar-active text-foreground'
+									: ''}"
+									onclick={() => activateSession(row.session_key)}
+								>
+									<span class="min-w-0 flex-1 truncate {collapsed ? 'sr-only' : ''}">{name}</span>
+									{#if !collapsed}
+										<span
+											class="shrink-0 text-xs text-muted-foreground tabular-nums"
+											data-testid="session-relative-time"
+										>
+											{relativeTime(row.last_turn_at)}
+										</span>
+									{/if}
+								</button>
+								<!-- The row's two affordances, visible on hover/focus
+								     (and always in the tab order), collapsed-rail safe:
+								     each carries its own accessible name. -->
+								<span class="absolute right-1 top-1 flex {collapsed ? 'sr-only' : ''}">
+									<button
+										type="button"
+										data-testid="session-rename"
+										aria-label={m['chat.sessions.rename']({ name })}
+										class="grid size-6 place-items-center rounded-md text-muted-foreground opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
+										onclick={() => startRename(row.session_key, row.label)}
+									>
+										<PencilIcon class="size-3.5" aria-hidden="true" />
+									</button>
+									<button
+										type="button"
+										data-testid="session-delete"
+										aria-label={m['chat.sessions.delete']({ name })}
+										class="grid size-6 place-items-center rounded-md text-muted-foreground opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 hover:text-destructive"
+										onclick={() => askDelete(row.session_key)}
+									>
+										<Trash2Icon class="size-3.5" aria-hidden="true" />
+									</button>
+								</span>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		</div>
 
 		<div
 			class="border-t border-sidebar-border px-3 py-3 text-xs text-muted-foreground"
@@ -801,5 +981,37 @@
 				{/if}
 			</div>
 		{/if}
+	</div>
+</Dialog>
+
+<!-- The delete confirmation: erasure is DESTRUCTIVE (the kernel hard-deletes
+	 the turns and the row in one transaction), so the act is named twice —
+	 the dialog says what will be lost and the buttons carry their verbs. -->
+<Dialog
+	bind:open={deleteDialogOpen}
+	title={m['chat.sessions.delete.title']()}
+	description={m['chat.sessions.delete.description']({ name: deleteTargetName })}
+	closeLabel={m['common.cancel']()}
+>
+	<div class="flex justify-end gap-2 py-2">
+		<Button
+			variant="outline"
+			size="sm"
+			data-testid="session-delete-cancel"
+			onclick={() => (deleteDialogOpen = false)}
+		>
+			{m['common.cancel']()}
+		</Button>
+		<Button
+			variant="destructive"
+			size="sm"
+			data-testid="session-delete-confirm"
+			onclick={() => {
+				deleteDialogOpen = false;
+				void confirmDelete();
+			}}
+		>
+			{m['chat.sessions.delete.confirm']()}
+		</Button>
 	</div>
 </Dialog>

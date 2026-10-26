@@ -785,7 +785,12 @@ pub const CONNECTION_WATCHDOG_INTERVAL_SECS: u64 = 30;
 pub const CONNECTION_WATCHDOG_THRESHOLD_SECS: u64 = 300;
 
 pub const CORS_DEFAULT_ORIGINS: &str = "http://localhost:3000,http://localhost:8080";
-pub const CORS_DEFAULT_METHODS: &str = "GET,POST,PUT,DELETE,OPTIONS";
+// PATCH joins the allowlist beside the session store: the shell renames a
+// chat session with PATCH from the webview, and a browser preflights the
+// non-simple method — a default that omits it makes the rename fail in the
+// app while the same request answers fine over curl (measured: the e2e's
+// rename silently no-oped until this list carried it).
+pub const CORS_DEFAULT_METHODS: &str = "GET,POST,PUT,PATCH,DELETE,OPTIONS";
 pub const CORS_DEFAULT_HEADERS: &str = "content-type,authorization";
 pub const CORS_MAX_AGE_SECS: u64 = 3600;
 

@@ -1091,8 +1091,17 @@ fn r45_0_correction_leaves_the_audit_chain_module_byte_untouched() {
 /// green — plus the new red-first `chain_verify_is_immune_to_a_concurrent_append`,
 /// which FAILS on the pre-fix code (verified: red at verify #0, 0.44s) and
 /// passes with the fix. 57/57 `--lib audit` tests green.
+///
+/// RE-RECORDED 2026-10-26 (the v1.29.33 line, M3-c — plan 23's session
+/// store) on the same extend-don't-weaken footing: one new variant,
+/// `AuditKind::Chat` → `"chat"`, with its arm in `as_str`. NO verdict, key,
+/// epoch, chain_link, scheme, check, or audit-row shape moved — the kind is
+/// the chat-session store's evidence rows (lazy create, turn pair, rename,
+/// erase), the same dedicated-kind precedent `Forget`/`Procedure` set, and
+/// the module's own battery (keyed hash, tamper controls, genesis + head
+/// pins) is untouched and still green.
 const CHAIN_MODULE_SHA256: &str =
-    "164abb1c911bd958804bad1e3ed33ced45e82bb5837d35151bd4005778908dfe";
+    "09d1789cee87009e97119effc0c80c44c4d84833656f8abeee45a73b24e93f3d";
 
 /// E8's second half: the correction adds no key material and no audit row.
 #[test]

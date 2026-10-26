@@ -7352,6 +7352,10 @@ Final paragraph after the rule.";
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/chat.rs"
                             )),
+                            "chat_sessions" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/chat_sessions.rs"
+                            )),
                             m => panic!("no source mapping for handlers module {m}"),
                         }
                     } else if handler.contains("handlers::") {

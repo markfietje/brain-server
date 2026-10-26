@@ -174,7 +174,7 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | `BRAIN_EGRESS_ALLOW_PRIVATE` | — | The ONE egress opt-out (Deadbolt): `1` admits a private/loopback/metadata webhook sink at boot with a LOUD warn (the sink stays DNS-pinned). Unset = private sinks refuse the boot; any other value refuses the boot (fail-closed parse). |
 | `BRAIN_SSE_REAUTH_SECS` | `30` | SSE heartbeat re-auth cadence (v1.28.86): re-consults the identity kill-switch every N seconds on long-lived streams (revoked → `{"revoked":true}` frame then close). `0` = admission-only (the pre-.86 ceiling, explicit opt-in, loud boot warn); 1–3600 allowed; anything else refuses the boot. |
 | `BRAIN_OTEL_ENABLED` / `BRAIN_OTEL_ENDPOINT` | enabled on `--features otel` builds / `http://127.0.0.1:4318/v1/traces` | OpenTelemetry OTLP export. Kill-switch only: `0\|false\|no\|off` disables the compiled-in exporter (a default build compiles no exporter at all) |
-| `CORS_METHODS` | `GET,POST,PUT,DELETE,OPTIONS` | Allowed CORS methods |
+| `CORS_METHODS` | `GET,POST,PUT,PATCH,DELETE,OPTIONS` | Allowed CORS methods |
 | `CORS_HEADERS` | `content-type,authorization` | Allowed CORS request headers |
 
 ## Features & kill switches

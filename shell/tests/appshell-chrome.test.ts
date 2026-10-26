@@ -7,6 +7,18 @@ import { goto } from '$app/navigation';
 import { m } from '$paraglide/messages.js';
 import { shellRoot } from './fixtures';
 import { currentConversationEpoch, recordKernelFacts } from '../src/lib/shell/frame.svelte.js';
+import type { SessionSummary } from '../src/lib/shell/sessions.svelte.js';
+
+// The session store is imported DYNAMICALLY (the construction-order law,
+// this file's own header): it runtime-imports the typed client, and the
+// client captures `fetch` at creation — a static import would initialize it
+// before the stub below is installed, and every store read would refuse.
+type SessionsStore = typeof import('../src/lib/shell/sessions.svelte.js');
+let sessions: SessionsStore;
+async function store(): Promise<SessionsStore> {
+	sessions ??= await import('../src/lib/shell/sessions.svelte.js');
+	return sessions;
+}
 
 /**
  * The frame's STRUCTURAL pins — the sidebar chrome that replaced plan 21's
@@ -48,17 +60,32 @@ vi.mock('$app/state', () => ({ page: { url: new URL('http://127.0.0.1/'), params
 // is DYNAMIC — the stub must be installed at module top, before any
 // component module loads. One identity-stable mock; per-test responders
 // swap underneath it.
-type Responder = (path: string) => Promise<Response>;
+type Responder = (
+	path: string,
+	init?: RequestInit
+) => Promise<Response>;
 const json = (body: unknown, status = 200): Response =>
 	new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 const quiet: Responder = async (path) =>
-	path === '/proposals' ? json([]) : new Response('not found', { status: 404 });
+	path === '/proposals'
+		? json([])
+		: path === '/chat/sessions'
+			? json({ sessions: [], total: 0 })
+			: new Response('not found', { status: 404 });
 let responder: Responder = quiet;
-vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-	// A Request object's String() is "[object Request]" — the URL is `.url`.
-	const url = input instanceof Request ? input.url : String(input);
-	return responder(new URL(url).pathname);
-}));
+vi.stubGlobal(
+	'fetch',
+	vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+		// A Request object's String() is "[object Request]" — the URL is `.url`.
+		const url = input instanceof Request ? input.url : String(input);
+		// openapi-fetch 0.17 builds a Request for EVERY call, so the method
+		// lives on the REQUEST, never on `init` — reading init?.method was the
+		// R141 defect class in a second site (the no-write pin was blind to
+		// every write until the drill's own plant proved it).
+		const method = input instanceof Request ? input.method : (init?.method ?? 'GET');
+		return responder(new URL(url).pathname, { method });
+	})
+);
 
 /** The kernel's `/proposals` row shape, as `parseQueueRows` validates it. */
 function proposalRow(id: number): Record<string, unknown> {
@@ -346,4 +373,234 @@ test('the_shell_tree_holds_no_wizard_import_and_no_dropped_route_directory', () 
 		`dropped route directories still present under src/routes (${dropped.join(', ')}) — the ` +
 			'census is the eight-route set, and a surviving directory is a route the walk would find'
 	).toEqual([]);
+});
+
+// ── M3-c · the session region (plan 23 §2 D5) ────────────────────────────
+
+/** A kernel `/chat/sessions` row, as openapi.yaml states it. */
+function sessionRow(
+	key: string,
+	overrides: Partial<SessionSummary> = {}
+): SessionSummary {
+	return {
+		session_key: key,
+		label: '',
+		turn_count: 2,
+		created_at: 1_760_000_000,
+		last_turn_at: 1_760_000_000,
+		...overrides
+	};
+}
+
+/** The module store is LEVEL ACROSS SCENARIOS (the M3 lesson — every
+ * scenario waits for its reads to LAND before teardown), and the session
+ * store is a second module store beside the frame's. Reset it by waiting
+ * for a landed empty read — and clear the SESSION-LOCAL state the frame
+ * persists (the sidebar's collapsed flag lives in sessionStorage and would
+ * otherwise leak the rail posture into the next scenario's DOM). */
+async function resetSessionStore(): Promise<void> {
+	try {
+		sessionStorage.clear();
+	} catch {
+		// private mode: nothing to clear
+	}
+	const s = await store();
+	responder = quiet;
+	await s.refresh();
+	await waitFor(() => expect(s.currentReadState()).toBe('ok'));
+	await waitFor(() => expect(s.currentSessions().length).toBe(0));
+}
+
+test('the_session_region_is_absent_at_zero_sessions_and_never_guesses_a_state', async () => {
+	const s = await store();
+	// ── zero rows (a fact, not a fault): the region renders NOTHING ──
+	await resetSessionStore();
+	await renderHost();
+	await waitFor(() => expect(screen.getByTestId('session-region')).toBeTruthy());
+	expect(
+		document.querySelectorAll('[data-testid="session-row"]').length,
+		'zero sessions must cost the UI nothing — no rows, no heading (chrome-by-exception)'
+	).toBe(0);
+	// The heading is INSIDE the guard too — an always-on guard that renders
+	// only the heading is the exact near-miss this pin's message names (the
+	// drill proved the rows-only assertion let it through).
+	expect(
+		screen.queryByText(m['chat.sessions.heading']()),
+		'zero sessions must not render the History heading either'
+	).toBeNull();
+	cleanup();
+
+	// ── rows: the region renders one row per session, named ──
+	serve({
+		'/proposals': [],
+		'/chat/sessions': {
+			sessions: [sessionRow('s-alpha', { label: 'Gate notes', last_turn_at: 1_760_000_000 })],
+			total: 1
+		}
+	});
+	await renderHost();
+	const rows = await screen.findAllByTestId('session-row');
+	expect(rows.length).toBe(1);
+	expect(rows[0]!.textContent).toContain('Gate notes');
+	cleanup();
+
+	// ── the read REFUSED: the region renders nothing — a refusal is not an
+	//    empty list, and the status bar (not the region) carries faults ──
+	await resetSessionStore();
+	serve({
+		'/proposals': [],
+		'/chat/sessions': () => json({ error: 'forbidden' }, 403)
+	});
+	await renderHost();
+	await waitFor(() => expect(s.currentReadState()).toBe('refused'));
+	expect(
+		document.querySelectorAll('[data-testid="session-row"]').length,
+		'a refused read must not render rows on a guess'
+	).toBe(0);
+	cleanup();
+
+	// ── the read is OFFLINE: same posture — nothing, and the fault is named ──
+	// Offline is a NETWORK failure (fetch rejects), not a status: the kernel
+	// that ANSWERS 5xx has SPOKEN, and a refusal is its own state.
+	await resetSessionStore();
+	responder = async () => {
+		throw new TypeError('the network is down');
+	};
+	await renderHost();
+	await waitFor(() => expect(s.currentReadState()).toBe('offline'));
+	expect(document.querySelectorAll('[data-testid="session-row"]').length).toBe(0);
+});
+
+test('session_rows_carry_a_relative_time_in_the_rendered_locale', async () => {
+	await resetSessionStore();
+	// One minute ago — every locale renders a MINUTE-granularity relative.
+	const now = Math.floor(Date.now() / 1000);
+	serve({
+		'/proposals': [],
+		'/chat/sessions': {
+			sessions: [sessionRow('s-t', { label: 'fresh', last_turn_at: now - 60 })],
+			total: 1
+		}
+	});
+	await renderHost();
+	const time = await screen.findByTestId('session-relative-time');
+	// Locale-aware, never hand-rolled English: the text is whatever
+	// Intl.RelativeTimeFormat produces for the active locale — asserted
+	// against the SAME instrument, so the pin reds if the component ever
+	// hardcodes a string.
+	const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+	expect(time.textContent!.trim()).toBe(rtf.format(-1, 'minute'));
+});
+
+test('the_glance_triggers_refresh_and_no_interval_exists_in_the_region', async () => {
+	const s = await store();
+	// STRUCTURAL: the region's module carries NO polling loop — no
+	// setInterval, no setTimeout loop, no watchdog. The glance moments
+	// (mount, focus, palette open, after-final) are the whole refresh law.
+	const source = readFileSync(
+		join(shellRoot, 'src', 'lib', 'shell', 'sessions.svelte.ts'),
+		'utf8'
+	);
+	expect(source, 'the session store must not poll (setInterval)').not.toContain('setInterval');
+	expect(source, 'the session store must not poll (setTimeout)').not.toContain('setTimeout');
+	// And the frame mounts it at the glance moments: mount (the effect),
+	// focus (the window handler), palette open.
+	const shell = readFileSync(join(shellRoot, 'src', 'lib', 'components', 'AppShell.svelte'), 'utf8');
+	expect(shell).toContain('refreshSessions()');
+	expect(shell).toContain('onfocus=');
+
+	// BEHAVIORAL: a refresh is a READ of the wire and nothing else — the
+	// glance never writes (the lazy law's store half: nothing persists until
+	// a turn is said).
+	await resetSessionStore();
+	const methods: string[] = [];
+	responder = async (path) => {
+		methods.push(path);
+		return path === '/chat/sessions' ? json({ sessions: [], total: 0 }) : json([]);
+	};
+	await s.refresh();
+	await waitFor(() => expect(s.currentReadState()).toBe('ok'));
+	expect(methods, 'a glance refresh issues no write').toEqual(['/chat/sessions']);
+});
+
+test('new_chat_mints_a_fresh_key_and_the_store_performs_no_write', async () => {
+	const s = await store();
+	await resetSessionStore();
+	await renderHost();
+	const beforeKey = s.currentActiveKey();
+	const beforeEpoch = currentConversationEpoch();
+	const writes: string[] = [];
+	responder = async (path, init) => {
+		const method = (init?.method ?? 'GET').toUpperCase();
+		if (method !== 'GET') writes.push(`${method} ${path}`);
+		return path === '/proposals'
+			? json([])
+			: path === '/chat/sessions'
+				? json({ sessions: [], total: 0 })
+				: new Response('not found', { status: 404 });
+	};
+	await userEvent.click(screen.getByTestId('shell-new-chat'));
+	expect(currentConversationEpoch()).toBe(beforeEpoch + 1);
+	expect(s.currentActiveKey(), 'a fresh chat activates a minted key').not.toBe(beforeKey);
+	expect(s.currentActiveKey(), 'the minted key carries the s- prefix').toMatch(/^s-[0-9a-f]{8}$/);
+	// Give the queued effects a tick, then hold the law: NO write left the
+	// store. (A PATCH/DELETE/POST here would be the create-route defect.)
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	expect(writes, 'new chat must mint and clear WITHOUT a write').toEqual([]);
+});
+
+test('the_collapsed_rail_keeps_every_session_name_accessible', async () => {
+	await resetSessionStore();
+	serve({
+		'/proposals': [],
+		'/chat/sessions': {
+			sessions: [sessionRow('s-rail', { label: 'rail visible', last_turn_at: 1_760_000_000 })],
+			total: 1
+		}
+	});
+	await renderHost();
+	await screen.findAllByTestId('session-row');
+	await userEvent.click(screen.getByTestId('shell-sidebar-toggle'));
+	expect(document.querySelector('[data-slot="app-shell"]')?.getAttribute('data-sidebar')).toBe(
+		'collapsed'
+	);
+	// Collapsed hides the labels VISUALLY only: the name-span carries the
+	// sr-only class and the row still carries its name in the accessible
+	// tree, the R141 rail law for sessions.
+	const row = screen.getByTestId('session-row');
+	const nameSpan = row.querySelector('span');
+	expect(nameSpan?.getAttribute('class')).toContain('sr-only');
+	expect(row.textContent).toContain('rail visible');
+});
+
+test('session_delete_confirms_then_refreshes_the_list', async () => {
+	const s = await store();
+	await resetSessionStore();
+	serve({
+		'/proposals': [],
+		'/chat/sessions': {
+			sessions: [sessionRow('s-doomed', { label: 'the doomed', last_turn_at: 1_760_000_000 })],
+			total: 1
+		}
+	});
+	await renderHost();
+	await screen.findAllByTestId('session-row');
+	// The destructive act asks first: the dialog names the conversation and
+	// carries two named buttons.
+	await userEvent.click(screen.getByTestId('session-delete'));
+	const dialog = await screen.findByRole('dialog');
+	expect(dialog.textContent).toContain('the doomed');
+	let deleted = false;
+	responder = async (path) => {
+		if (path === '/chat/sessions/s-doomed') {
+			deleted = true;
+			return json({ ok: true, turns_deleted: 2 });
+		}
+		return path === '/proposals' ? json([]) : json({ sessions: [], total: 0 });
+	};
+	await userEvent.click(screen.getByTestId('session-delete-confirm'));
+	await waitFor(() => expect(deleted).toBe(true));
+	// The confirmed delete IS a glance: the list re-reads and the row leaves.
+	await waitFor(() => expect(s.currentSessions().length).toBe(0));
+	await waitFor(() => expect(s.currentTotal()).toBe(0));
 });
