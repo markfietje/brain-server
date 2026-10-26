@@ -757,7 +757,12 @@ describe('the envelope law', () => {
 		// as the kernel's SQL census.
 		const { execFileSync } = await import('node:child_process');
 		const { gzipSync } = await import('node:zlib');
-		const { readdirSync, statSync } = await import('node:fs');
+		const { readdirSync, statSync, rmSync } = await import('node:fs');
+		// A stale `.svelte-kit/output` (a dev run's or an interrupted build's
+		// leftovers) fails the kit's postbuild analyse with a missing-module
+		// error — measured here once — so the pin clears it before building.
+		// The directory is generated intermediate state, never tracked.
+		rmSync(join(shellRoot, '.svelte-kit', 'output'), { recursive: true, force: true });
 		// THE BUILD MUST SEE THE LANE'S OWN ENVIRONMENT: inherited `VITEST` /
 		// `NODE_ENV=test` flip vite's resolve conditions and produce a SMALLER,
 		// DIFFERENT bundle (39 files / 226 KB vs 45 files / 203 KB — measured),
@@ -769,7 +774,15 @@ describe('the envelope law', () => {
 			if (key === 'VITEST' || key === 'NODE_ENV' || key === 'VITEST_POOL_ID') continue;
 			cleanEnv[key] = value;
 		}
-		execFileSync('pnpm', ['exec', 'vite', 'build'], { cwd: shellRoot, stdio: 'pipe', env: cleanEnv });
+		// And run it at LOW scheduler priority: a six-second build inside a
+		// vitest worker starves the other workers' quick shell-outs (one
+		// pre-existing 5 s-bounded pin timed out beside it once — the R135
+		// class), and `nice` is the portable way to take the edge off.
+		execFileSync('nice', ['-n', '10', 'pnpm', 'exec', 'vite', 'build'], {
+			cwd: shellRoot,
+			stdio: 'pipe',
+			env: cleanEnv
+		});
 		const dist = join(shellRoot, 'build', '_app');
 		const jsFiles: string[] = [];
 		const walk = (dir: string): void => {
