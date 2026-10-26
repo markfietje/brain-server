@@ -13,6 +13,59 @@ measured. Those records are kept as they were written (this file is
 append-only), and their heading says `Unreleased` because that is what they
 were when the round landed — not because the work is still unreleased.
 
+## [1.29.34] — 2026-10-26 — the chat answers live: the streaming composer, grounded on your memory
+
+The chat spine (v1.29.32) answered in one block after a pause; this round
+wires the shell's composer to it and the answer now ARRIVES like an answer:
+the memory the reply is grounded on appears first, the text grows as the
+on-device model writes it, and Stop stops it. The round's law change is the
+fallback: when the on-device model is unavailable — or the conversation's
+language is one it cannot write — the turn is still answered, from your
+memory alone, with a notice naming exactly that. The fallback is a decision,
+never a failure, and the composer never dies.
+
+### Release notes
+
+**New**
+
+- **Answers stream in live.** Ask a question and the reply grows on screen
+  as the on-device model writes it — grounded first on your memory (the
+  citations card appears before the first word), with the answer's evidence
+  collapsible beside it as always. A Stop button replaces Send while the
+  model writes; stopping keeps the text that already arrived and says the
+  turn was stopped.
+- **The chat works even when the model can't.** If the on-device model is
+  unavailable (for example before the AFM bridge is installed), a question
+  is still answered — from your memory alone — with a one-line notice
+  naming that posture. The same happens when the conversation's language is
+  one the model cannot write in (German today, on the measured roster):
+  retrieval never was fenced, so the deterministic answer is a full answer,
+  not an error.
+- **Streaming failures say their name, on the turn.** If the model closes
+  mid-answer, the text already written stays on the turn beside a one-line
+  sentence for what happened (the model closed, the answer outgrew the
+  model's window — start a new chat, or the generation failed); the red
+  banner above the composer stays reserved for actual wire faults, like a
+  dropped connection mid-answer.
+
+**Changed**
+
+- **The composer's send now rides the chat spine** (`POST /chat/turns`,
+  server-sent events) instead of the deterministic recall route — one wire
+  module added to the shell, riding the same loopback origin, credential
+  discipline and bearer as every other call; no new dependency, no
+  EventSource polyfill, no polling, no client timeout. Stop is the only
+  early abort, and the kernel's own keep-alives prove liveness.
+- **A stopped, failed or refused turn persists nothing;** the session row
+  is written when the final answer lands, as before. A fresh chat's key is
+  still minted locally and only sent when something is said.
+- **The webview grew by ~5 KB gzipped** (measured, pinned, and broken down
+  in the test): the streaming states, the ten new strings in all five
+  languages (real translations, not relabelled English), and the
+  browser-posture fallback core that lets the model-less answer work outside
+  the desktop app too. The bundle-size law now holds the build to the new
+  measured ceiling with the baseline and budget in the pin.
+
 ## [1.29.33] — 2026-10-26 — the chat transcript learns to survive (M3-c, sessions and history)
 
 The chat spine (v1.29.32) held the live conversation in the bridge and
