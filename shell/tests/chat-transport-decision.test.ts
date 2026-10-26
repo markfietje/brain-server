@@ -160,21 +160,19 @@ test('the_chat_surface_reads_through_the_core_and_never_opens_its_own_wire', asy
 	);
 	expect(skipped[0], 'nothing reaches the wire before authorize').toBe('authorize');
 
-	// ---- ARM 2 (structural): no chat module opens a wire of its own --------
+	// ---- ARM 2 (structural): the chat's ONE wire carries the discipline ----
 	//
-	// The anti-vacuity arm has to be honest in BOTH worlds, because at the
-	// moment the decision is made the chat route does not exist yet (it is
-	// II-3), and a scan over zero modules is a green light for nothing. So the
-	// arm is a DISJUNCTION whose each half can fail:
-	//
-	//   - the route exists  -> there are modules, and none opens a wire
-	//   - the route absent  -> there are provably no modules, and that is
-	//                          asserted as the known state rather than
-	//                          quietly satisfied
-	//
-	// The second half is not a loophole: it names the one file that would flip
-	// it. Drop `+page.svelte` into `routes/` and the first half takes
-	// over on the next run.
+	// M3-d (plan 25, the NAMED reversal): the chat now rides `POST /chat/turns`,
+	// and openapi-fetch cannot stream — so `lib/chat/spine.ts` IS the chat's
+	// own wire, riding plain `fetch`. The old law ("no chat module opens a
+	// wire") is reversed on purpose; what survives is the DISCIPLINE the old
+	// law existed to protect: the spine must ride the SAME loopback origin
+	// (`apiBase()`), await the SAME memoized credential before its first byte
+	// (R130), and attach the SAME runtime-held bearer (`authHeaders()`). So the
+	// scan exempts exactly ONE module — the spine — and a separate arm pins
+	// that the exempted module carries the three discipline calls. Every OTHER
+	// chat module still may not open a wire: a second unaudited path to private
+	// data still fails here.
 	const modules = chatWireModules();
 	const routeExists = existsSync(join(chatDir, '+page.svelte'));
 	if (routeExists) {
@@ -189,7 +187,18 @@ test('the_chat_surface_reads_through_the_core_and_never_opens_its_own_wire', asy
 		).toEqual([]);
 	}
 
+	// The ONE exempt module, named by path: the chat spine's consumer. A scan
+	// exemption for anything else is how a second wire gets built "like a
+	// refactor" — so the exemption is exact, and the anti-vacuity arm below
+	// proves the exempted file really is the spine.
+	const SPINE = join(srcDir, 'lib', 'chat', 'spine.ts');
+	expect(
+		modules.includes(SPINE),
+		'the spine module must exist for the wire exemption to mean anything'
+	).toBe(true);
+
 	for (const path of modules) {
+		if (path === SPINE) continue;
 		const text = readFileSync(path, 'utf8');
 		const codeLines = text
 			.split('\n')
@@ -204,10 +213,27 @@ test('the_chat_surface_reads_through_the_core_and_never_opens_its_own_wire', asy
 		for (const forbidden of ['fetch(', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'navigator.sendBeacon']) {
 			expect(
 				codeLines.includes(forbidden),
-				`${path.slice(srcDir.length + 1)} opens its own wire ("${forbidden}"). The webview's client.ts is the only wire, it is loopback-pinned, and the core's bounds and classification sit between it and the kernel — a second wire skips both.`
+				`${path.slice(srcDir.length + 1)} opens its own wire ("${forbidden}"). The webview's client.ts is the only typed wire and lib/chat/spine.ts is the chat's one streaming wire — a third path skips the core's bounds, the origin pin and the credential discipline.`
 			).toBe(false);
 		}
 	}
+
+	// THE EXEMPTION'S TEETH: the exempted module carries the discipline the
+	// old law protected. Three source pins — the loopback origin, the awaited
+	// credential precondition, and the runtime-held bearer. Delete any of the
+	// three and the chat's wire is a second unaudited path again.
+	const spineCode = readFileSync(SPINE, 'utf8')
+		.split('\n')
+		.filter((line) => {
+			const trimmed = line.trim();
+			return !trimmed.startsWith('//') && !trimmed.startsWith('/*') && !trimmed.startsWith('*');
+		})
+		.join('\n');
+	expect(spineCode, 'the spine must ride the loopback-pinned origin (apiBase)').toContain('apiBase()');
+	expect(spineCode, 'the spine must await the credential BEFORE the first byte (R130)').toContain(
+		'await bootstrapToken()'
+	);
+	expect(spineCode, 'the spine must attach the runtime-held bearer (D7)').toContain('authHeaders()');
 });
 
 test('the_register_records_the_transport_decision_and_what_it_ruled_out', () => {

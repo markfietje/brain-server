@@ -1,5 +1,80 @@
 # Agent Execution Log — brain-server
 
+> **R142 "Fallback" (M3-d, 2026-10-26): the shell's chat stopped riding
+> `/recall` — a sent question now grounds, streams and finals over the chat
+> spine (`POST /chat/turns`), and the round's LAW CHANGE is D1: a named
+> posture refusal renders the DETERMINISTIC `/recall` answer beside a notice
+> — the fallback is a DECISION, never a failure.** The spine's consumer is
+> `shell/src/lib/chat/spine.ts`, the one new wire module (openapi-fetch
+> cannot stream), riding `fetch` with the SAME discipline as the typed
+> client — `apiBase()`, the awaited bootstrap bearer, `authHeaders()` — and
+> a hand-rolled SSE parser: split frames, CRLF, axum keep-alive comments,
+> `replace` deltas (a revision DISCARDS the accumulation — the
+> silent-corruption defect, pinned), terminal-is-terminal, malformed frames
+> skipped and counted with a `contract_violation` cap, no client timeout
+> (keep-alives are liveness; Stop is the only abort). The kernel's REAL 503
+> envelope surprised the prompt: the code is `recall_unavailable` — the
+> `chat_bridge_unavailable` name rides the MESSAGE prefix (measured off
+> `src/handlers/chat.rs:137`) — so the posture table reads the marker, not
+> the code.
+>
+> **THE E2E FOUND WHAT THE UNIT STUBS MASKED, which is why the leg exists.**
+> The staged-fallback leg rendered `unreachable (no Tauri runtime)`: the
+> fallback rode the Tauri-only recall core in a bare browser — the browser
+> has no runtime to ask, and plan 25 names the PWA/dev posture as a
+> FALLBACK CUSTOMER. The fix is `webRecallCore`: the same bounds and the
+> same six-arm classification as `shell/src-tauri/src/recall.rs` (2,000-byte
+> query ceiling, limit 1..=100 default 5, 401/403 → refused, unreadable 200
+> → contract_violation, `low_confidence` → abstained, `ok`+zero → absent),
+> pinned arm-for-arm against the Rust classifier's fixtures, used ONLY when
+> no runtime exists — in the app the Rust core classifies, unchanged (the
+> P2 law). **The chat-transport-decision pin's structural law was REVERSED
+> as a named act with teeth:** the no-second-wire scan now exempts exactly
+> one module and PINS its discipline, so the exemption cannot quietly
+> widen.
+>
+> **TEN DRILLS, every one RUN and REVERTED, and the observed red:** the
+> `replace` law off → the accumulation pin red on the blind append; an
+> `error:` frame routed to the fault handler → TWO pins red on one law (the
+> trap, and the shortfall that died with it); a second terminal emitted →
+> terminal-is-terminal red; the posture table reduced to `status === 503` →
+> "some other 503" red; rAF coalescing off → the 200-delta burst pin red at
+> 200 flushes; the malformed cap off; the abort reported as a fault; the
+> end-of-stream terminal clause off; the web core's mapping drifted
+> (`low_confidence` → answered) → the mirror pin red. **The envelope budget
+> moved as a NAMED ACT:** plan 25's 3 KiB estimate measured 5,067 bytes
+> gzipped (page states 2,880 + ten keys × five real locales 1,325 + the web
+> core ~450 + the spine ~120); merging or dropping copy to fit the estimate
+> would have traded the round's own law — no unnamed failure state anywhere
+> in the composer — for a number, so the ceiling holds the measurement and
+> the breakdown lives in the pin. **And one measure-twice lesson:** the
+> bundle-size pin builds the client ITSELF, and an inherited `VITEST`/
+> `NODE_ENV=test` env produces a DIFFERENT bundle (39 files / 226 KB vs 45
+> files / 203 KB — measured), so the pin strips the env to what a plain
+> `pnpm build` carries.
+>
+> **OWED, named:** the mid-stream bridge-kill and disconnect drills at the
+> kernel's HTTP seam — the prompt's claim that "the kernel e2e already pins
+> `bridge_exited`" was MEASURED FALSE (no such pin exists in `tests/`; the
+> name lives only in `src/agentloop/bridge_afm.rs`), and the drill needs a
+> real bridge to kill, so it is recorded rather than faked; the ⌘⇧C copy
+> affordance (the receipt string exists in provenance; nothing consumes it,
+> so the final's usage tokens ride the DTO pinned, unrendered); per-locale
+> generation roster beyond the kernel's measured fence; the composer "+"
+> procedures flow; PCC `.deep` on an entitled machine (R139's owed
+> measurement). The e2e ran the full chromium lane three times green — the
+> real stream over the real bridge (grounding ids, deltas, `tier:
+> on_device`, zero errors), the machine's honest posture leg, and the
+> staged 503 fallback asserting the notice + a deterministic answer — and
+> cleans up the `default` session row it creates, because the sessions
+> spec asserts exact counts against the same harness kernel.
+>
+> **ponytail:** one wire module, one parser, one posture table, one flush
+> buffer, two rendering members, one web core, one page rewrite of send(),
+> ten keys × five catalogs; no new dependency, no EventSource polyfill, no
+> polling, no client timeout, no kernel change, no wire change, no
+> `dangerous*` flag, and no unnamed failure state anywhere in the composer.
+
 > **R141 "Frame" (2026-10-25): the desktop app's chrome moved from plan 21's
 > "almost no chrome" bar to a sidebar frame shaped after the DeepSeek harness
 > (`dsh`, measured from its `AppFrame`/`SidebarRoot`: a sidebar column with

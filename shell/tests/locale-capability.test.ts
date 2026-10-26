@@ -139,7 +139,10 @@ const DUTCH_LOANWORDS = new Set([
 	'audit.title',
 	'audit.col.actor',
 	'audit.col.status',
-	'governance.title'
+	'governance.title',
+	// The streaming composer (2026-10-26): "Stop" is the Dutch imperative of
+	// "stoppen" — the genuine word for the button, spelled as English.
+	'chat.stop'
 ]);
 
 const LOANWORD_LISTS: Readonly<Record<string, ReadonlySet<string>>> = {

@@ -53,10 +53,24 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 // Same construction-order law as chat-surface.test.ts: the typed client holds
 // the `fetch` it was created with, so the stub must exist before this import.
+// M3-d: the spine's `POST /chat/turns` answers the 503 posture refusal, so the
+// answered shape arrives through the D1 fallback and the core IPC — the same
+// seam these affordance pins have always driven.
 vi.stubGlobal('__TAURI_INTERNALS__', {});
 vi.stubGlobal(
 	'fetch',
-	vi.fn(async () => new Response(JSON.stringify({ hits: [], decision: 'ok' }), { status: 200 }))
+	vi.fn(async (input: RequestInfo | URL) => {
+		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+		if (url.includes('/chat/turns')) {
+			return new Response(
+				JSON.stringify({
+					error: { code: 'recall_unavailable', message: 'chat_bridge_unavailable — fixture posture' }
+				}),
+				{ status: 503 }
+			);
+		}
+		return new Response(JSON.stringify({ sessions: [], total: 0 }), { status: 200 });
+	})
 );
 
 const chatModule = await import('../src/routes/+page.svelte');
@@ -107,9 +121,23 @@ async function renderAnswered(): Promise<void> {
 	verifyResult = SUPPORTED;
 	forgetResult = TOMBSTONED;
 	vi.stubGlobal('__TAURI_INTERNALS__', {});
+	// The routed wire stub (M3-d): the spine's `POST /chat/turns` answers the
+	// 503 posture refusal, so the answered shape arrives through the D1
+	// fallback and the core IPC below; the frame's glance traffic answers 200.
 	vi.stubGlobal(
 		'fetch',
-		vi.fn(async () => new Response(JSON.stringify({ hits: [], decision: 'ok' }), { status: 200 }))
+		vi.fn(async (input: RequestInfo | URL) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('/chat/turns')) {
+				return new Response(
+					JSON.stringify({
+						error: { code: 'recall_unavailable', message: 'chat_bridge_unavailable — fixture posture' }
+					}),
+					{ status: 503 }
+				);
+			}
+			return new Response(JSON.stringify({ sessions: [], total: 0 }), { status: 200 });
+		})
 	);
 	render(chatModule.default as any);
 	await waitFor(() =>

@@ -52,6 +52,21 @@ export type TurnRendering =
 	| { kind: 'pending'; query: string }
 	| { kind: 'answered'; query: string; passages: Passage[]; confidence: number | null }
 	| { kind: 'generated'; query: string; answer: string; tier: string | null; passages: Passage[] }
+	| { kind: 'streaming'; query: string; text: string; passages: Passage[] }
+	| {
+			kind: 'stream_failed';
+			query: string;
+			/** The NAMED code the turn ended with — the kernel's own (`bridge_exited`,
+			 * `conversation_does_not_fit`, `generation_failed`, the contract's
+			 * `contract_violation`), the shell's `cancelled`, or the wire's
+			 * `transport`. Copy maps through `streamFailureToken`, never raw. */
+			code: string;
+			detail: string | null;
+			/** What streamed before the turn ended — evidence is kept, never
+			 * silently dropped because the turn failed after it. */
+			partial: string;
+			shortfallTokens: number | null;
+	  }
 	| { kind: 'absent'; query: string; searched: string; limit: number }
 	| { kind: 'abstained'; query: string; searched: string; limit: number; confidence: number | null }
 	| { kind: 'refused'; query: string; status: number; scope: string }
@@ -136,11 +151,73 @@ export function renderingToken(turn: TurnRendering): string {
 /**
  * True only for the chat-spine rendering — the one that carries the model's
  * ANSWER TEXT (the recall renderings carry evidence, which is the answer of
- * a retrieval turn). Replay produces it; the streaming consumer (plan 25)
- * will produce it live. A surface that wants to show answer text asks this
- * instead of testing a literal, so a future member cannot silently miss the
- * branch.
+ * a retrieval turn). Replay produces it from the stored answer of record; the
+ * streaming consumer (plan 25, M3-d) produces it live at the final. A surface
+ * that wants to show answer text asks this instead of testing a literal, so a
+ * future member cannot silently miss the branch. The `streaming` member does
+ * NOT count: its text is presentation still in flight, never the answer of
+ * record.
  */
 export function carriesAnswerText(turn: TurnRendering): boolean {
 	return turn.kind === 'generated';
+}
+
+// ── the spine's producers (plan 25 §2/§4) ───────────────────────────────
+
+/** The live turn while the answer streams: the grounding hits (if any) are
+ * already evidence, and the text grows under the rAF flush. */
+export function streamingTurn(query: string, text: string, passages: Passage[]): TurnRendering {
+	return { kind: 'streaming', query, text, passages };
+}
+
+/** The terminal: the final text IS the answer of record (the deltas were
+ * presentation), so the turn lands as `generated` — the same member replay
+ * produces, which is what makes replay == live (plan 25 §5.5). */
+export function generatedFromFinal(
+	query: string,
+	final: { text: string; tier: string | null },
+	passages: Passage[]
+): TurnRendering {
+	return { kind: 'generated', query, answer: final.text, tier: final.tier, passages };
+}
+
+/** The named end: the model spoke (or was stopped, or the wire died mid-
+ * answer) and the turn says so BY NAME — never the banner by itself, never a
+ * silent empty. `transport` is the one code the PAGE pairs with the banner. */
+export function streamFailedTurn(
+	query: string,
+	code: string,
+	detail: string | null,
+	partial: string,
+	shortfallTokens: number | null
+): TurnRendering {
+	return { kind: 'stream_failed', query, code, detail, partial, shortfallTokens };
+}
+
+/**
+ * The failure TOKENS the surface has copy for. A code the shell does not know
+ * (a future kernel's new name) maps to `generic` — named, never silently
+ * swallowed and never rendered as another failure's sentence.
+ */
+export type StreamFailureToken =
+	| 'bridge_exited'
+	| 'conversation_does_not_fit'
+	| 'generation_failed'
+	| 'contract_violation'
+	| 'cancelled'
+	| 'transport'
+	| 'generic';
+
+export function streamFailureToken(code: string): StreamFailureToken {
+	switch (code) {
+		case 'bridge_exited':
+		case 'conversation_does_not_fit':
+		case 'generation_failed':
+		case 'contract_violation':
+		case 'cancelled':
+		case 'transport':
+			return code;
+		default:
+			return 'generic';
+	}
 }

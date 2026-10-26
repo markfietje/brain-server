@@ -21,12 +21,21 @@
 	import {
 		recallMemory,
 		typedRecallTransport,
+		webRecallCore,
 		type AuthorizedRecall,
 		type RecallCore,
-		type RecallRequest
+		type RecallRequest,
+		type Passage
 	} from '#lib/api/recall.js';
-	import { renderTurn, renderingToken, type TurnRendering } from '#lib/chat/turn.js';
+	import { renderTurn, renderingToken, streamFailureToken, generatedFromFinal, streamingTurn, streamFailedTurn, type TurnRendering } from '#lib/chat/turn.js';
 	import { provenanceBlock, type ProvenanceBlock } from '#lib/chat/provenance.js';
+	import { hitToPassage } from '#lib/chat/replay.js';
+	import {
+		turnSpine,
+		createDeltaBuffer,
+		type SpinePosture,
+		type SpineTurn
+	} from '#lib/chat/spine.js';
 	import { wireFaultMessage } from '#lib/api/wire-fault.js';
 	import type { WireFault } from '#lib/api/client.js';
 	import {
@@ -60,12 +69,18 @@
 	} from '#lib/shell/sessions.svelte.js';
 	import { fetchTurns } from '#lib/shell/sessions.svelte.js';
 	import { replayTurns } from '#lib/chat/replay.js';
+	import { getLocale } from '$paraglide/runtime.js';
+	import SquareIcon from '@lucide/svelte/icons/square';
 
-	interface Turn {
-		id: number;
-		rendering: TurnRendering;
-		provenance: ProvenanceBlock | null;
-	}
+		interface Turn {
+			id: number;
+			rendering: TurnRendering;
+			provenance: ProvenanceBlock | null;
+			/** The D1 fallback's posture notice (plan 25 §4): the answer below came
+			 * from deterministic recall because the named posture refused. `null`
+			 * on every other turn. */
+			notice: { posture: SpinePosture; locale: string } | null;
+		}
 
 	/**
 	 * II-7g — the per-citation affordances: `[correct]` and `[forget]`.
@@ -196,7 +211,16 @@
 	}
 
 	let composer = $state('');
-	let busy = $state(false);
+	/** The composer's phase (plan 25 §4): `asking` is pre-grounding, `streaming`
+	 * from the grounding event to the terminal. `idle` is the only phase the
+	 * Send button answers. Stop replaces Send in `streaming`. */
+	let streamPhase = $state<'idle' | 'asking' | 'streaming'>('idle');
+	/** The live spine turn — the Stop affordance's handle, and the thing an
+	 * epoch or session switch aborts (a stream belongs to the conversation it
+	 * was asked in). */
+	let activeStream: SpineTurn | null = null;
+	let activeDeltaBuffer: ReturnType<typeof createDeltaBuffer> | null = null;
+	let activeTurnId = -1;
 	let turns = $state<Turn[]>([]);
 	let nextId = 0;
 
@@ -227,6 +251,10 @@
 		const epoch = currentConversationEpoch();
 		if (epoch === seenEpoch) return;
 		seenEpoch = epoch;
+		// A stream belongs to the conversation it was asked in — "New chat"
+		// cancels it (the kernel cancels the TURN; the bridge session survives).
+		activeStream?.abort();
+		activeDeltaBuffer?.discard();
 		turns = [];
 		actions = {};
 		verifying = null;
@@ -248,6 +276,10 @@
 		const key = currentActiveKey();
 		if (key === seenSessionKey) return;
 		seenSessionKey = key;
+		// Switching is total (dsh): the live stream belongs to the previous
+		// conversation view and is cancelled with it.
+		activeStream?.abort();
+		activeDeltaBuffer?.discard();
 		actions = {};
 		verifying = null;
 		claimDrafts = {};
@@ -269,7 +301,9 @@
 				// turn's evidence of record, and a zero-hit turn shows a zero
 				// count rather than a fabricated block-less shape (the branch
 				// never reads a length; the union carries the passages).
-				provenance: provenanceBlock(replayed.passages, null, Date.now())
+				provenance: provenanceBlock(replayed.passages, null, Date.now()),
+				// A replayed turn is finished history: no posture notice ever.
+				notice: null
 			}));
 		})();
 	});
@@ -303,59 +337,191 @@
 		}
 	};
 
+	/** One turn's re-render. Appends to THIS turn only — a delta never re-maps
+	 * the transcript list (plan 25 §3's perf law). `undefined` patches leave a
+	 * field untouched. */
+	function updateTurn(
+		id: number,
+		patch: { rendering?: TurnRendering; provenance?: ProvenanceBlock | null; notice?: Turn['notice'] }
+	): void {
+		turns = turns.map((turn) =>
+			turn.id === id
+				? {
+						...turn,
+						...(patch.rendering !== undefined ? { rendering: patch.rendering } : {}),
+						...(patch.provenance !== undefined ? { provenance: patch.provenance } : {}),
+						...(patch.notice !== undefined ? { notice: patch.notice } : {})
+				  }
+				: turn
+		);
+	}
+
+	/**
+	 * D1 — THE FALLBACK IS A DECISION, NOT A FAILURE (plan 25 §4, the round's
+	 * law change). A named posture renders the DETERMINISTIC `/recall` answer —
+	 * today's full answer, the same wire the plugin ships — with one notice
+	 * naming the posture. Chat stays USEFUL without the model: the PWA posture,
+	 * model-less machines and a locale outside the model's measured roster all
+	 * land here, and the composer stays alive. The alternative — a dead composer
+	 * on a model-less machine — buys zero security for the "chat is the app" law.
+	 */
+	async function fallbackTurn(
+		id: number,
+		query: string,
+		posture: SpinePosture,
+		locale: string
+	): Promise<boolean> {
+		try {
+			// THE CORE FOLLOWS THE POSTURE: the app classifies in Rust (the P2
+			// law, unchanged); the PWA/dev/e2e browser has no runtime to ask, and
+			// plan 25 D1 names THAT posture as a fallback customer too — so there
+			// the recall rides the typed wire with the web core, whose bounds and
+			// six-arm mapping mirror the Rust classifier and are pinned against
+			// its fixtures.
+			const fallbackCore: RecallCore = inTauri()
+				? core
+				: webRecallCore;
+			const outcome = await recallMemory({ query }, { core: fallbackCore, transport: typedRecallTransport });
+			const rendering = renderTurn(outcome, query);
+			// Provenance ONLY for the answered arm (the same rule as the spine's
+			// final): fabricated evidence beside any other state is the opposite
+			// failure of omitting one.
+			const provenance =
+				rendering.kind === 'answered'
+					? provenanceBlock(rendering.passages, rendering.confidence, Date.now())
+					: null;
+			// An unreachable FALLBACK is the transport arm — the wire failed while
+			// the core answered — so it buys the banner's sentence.
+			if (rendering.kind === 'unreachable') void classifyWireFaultByProbe();
+			updateTurn(id, { rendering, provenance, notice: { posture, locale } });
+			return true;
+		} catch (error) {
+			// A core that cannot be reached is DEGRADED and STATED; the wire
+			// failure is the dominant fact, so the posture notice stands down
+			// rather than diluting it (the banner carries the sentence).
+			updateTurn(id, {
+				rendering: {
+					kind: 'unreachable',
+					query,
+					status: 0,
+					detail: error instanceof Error ? error.message : String(error)
+				},
+				provenance: null,
+				notice: null
+			});
+			return false;
+		}
+	}
+
 	async function send(): Promise<void> {
 		const query = composer.trim();
-		if (query.length === 0 || busy) return;
-		busy = true;
+		if (query.length === 0 || streamPhase !== 'idle') return;
 		composer = '';
 		const id = nextId++;
 		// The PENDING arm is rendered rather than showing nothing, so a turn is
 		// never an empty region: Plan 02 §4's first-paint rule is that the
-		// surface is never blank while it works.
-		turns = [...turns, { id, rendering: { kind: 'pending', query }, provenance: null }];
+		// surface is never blank while it works. `chat.working` is accurate —
+		// the spine's FIRST phase is the grounding recall.
+		turns = [...turns, { id, rendering: { kind: 'pending', query }, provenance: null, notice: null }];
+		streamPhase = 'asking';
+
+		// The session key rides every turn (plan 23: rows exist because a turn
+		// NAMED their key — a fresh chat's minted key is sent the moment it has
+		// something to say). The locale is paraglide's CURRENT one; the kernel
+		// fences generation against the model's measured roster (the `de`
+		// retrieval-only precedent) and refuses by name.
+		const locale = getLocale();
+		const session = currentActiveKey() ?? undefined;
+
+		let passages: Passage[] = [];
+		let evidence: ProvenanceBlock | null = null;
+		let answered = false;
+
+		// Deltas land in a buffer; ONE flush per animation frame coalesces the
+		// token-rate > frame-rate bursts. The flush re-renders THIS turn's text
+		// only — never the transcript list.
+		const buffer = createDeltaBuffer((committed) => {
+			updateTurn(id, { rendering: streamingTurn(query, committed, passages) });
+		});
+
+		const stream = turnSpine({ message: query, session, locale }, {
+			onGrounding: (hits) => {
+				// The grounding hits ARE the turn's evidence (the same mapping the
+				// replay path uses, so replay == live). The citations card is built
+				// HERE, collapsed by default (the M3-b law), before any text.
+				passages = hits.map(hitToPassage);
+				evidence = provenanceBlock(passages, null, Date.now());
+				streamPhase = 'streaming';
+				updateTurn(id, { rendering: streamingTurn(query, buffer.committed, passages), provenance: evidence });
+			},
+			onDelta: (text, replace) => buffer.accept(text, replace),
+			onFinal: (final) => {
+				// A final must not leave text stranded in the buffer — flush, then
+				// REPLACE the streaming text with the answer of record.
+				buffer.flushNow();
+				answered = true;
+				updateTurn(id, { rendering: generatedFromFinal(query, final, passages) });
+			},
+			onStreamError: (err) => {
+				buffer.flushNow();
+				// A named error ON THE STREAM is an answer about the model, not a
+				// wire fault — it renders ON THE TURN (plan 25 trap 1).
+				updateTurn(id, { rendering: streamFailedTurn(query, err.code, err.message, buffer.committed, err.shortfallTokens) });
+			},
+			onRefusal: (refusal) => {
+				buffer.discard();
+				if (refusal.posture !== null) {
+					// The kernel spoke and named a fallback posture — D1 runs.
+					void fallbackTurn(id, query, refusal.posture, locale).then((ok) => {
+						if (ok) answered = true;
+					});
+				} else {
+					// Every other refusal is the kernel refusing THIS reader (or the
+					// message): the refused rendering, never the banner (the M3-b trap).
+					updateTurn(id, { rendering: { kind: 'refused', query, status: refusal.status, scope: 'chat' } });
+				}
+			},
+			onTransportFault: (detail) => {
+				buffer.flushNow();
+				// The ONE stream end that is a WIRE fault: the banner classifies
+				// it, and the turn keeps the partial text with a named line.
+				void classifyWireFaultByProbe();
+				updateTurn(id, { rendering: streamFailedTurn(query, 'transport', detail, buffer.committed, null) });
+			}
+		});
+		activeTurnId = id;
+		activeDeltaBuffer = buffer;
+		activeStream = stream;
 		try {
-			const outcome = await recallMemory({ query }, { core, transport: typedRecallTransport });
-			const rendering = renderTurn(outcome, query);
-			// Provenance is built ONLY for the answered arm. Every other state
-			// carries no passages, so a provenance block beside them would be
-			// fabricated evidence -- the opposite failure of omitting one.
-			const provenance =
-				rendering.kind === 'answered' ? provenanceBlock(rendering.passages, rendering.confidence, Date.now()) : null;
-			// M3-b: an `unreachable` that CAME BACK from the pipeline is the
-			// transport arm — the wire itself failed while the core answered —
-			// so it is the one classified state that buys the banner's
-			// sentence. A refusal is the kernel SPEAKING and never a fault;
-			// the catch arm below is the app's own core failing, which a
-			// "restart the kernel" banner would misname.
-			if (rendering.kind === 'unreachable') void classifyWireFaultByProbe();
-			turns = turns.map((turn) => (turn.id === id ? { ...turn, rendering, provenance } : turn));
-		} catch (error) {
-			// A core that cannot be reached is DEGRADED and STATED, never an
-			// empty transcript (Plan 04 §5).
-			turns = turns.map((turn) =>
-				turn.id === id
-					? {
-							...turn,
-							rendering: {
-								kind: 'unreachable' as const,
-								query,
-								status: 0,
-								detail: error instanceof Error ? error.message : String(error)
-							},
-							provenance: null
-						}
-					: turn
-			);
+			await stream.done;
 		} finally {
-			busy = false;
+			buffer.discard();
+			if (activeStream === stream) {
+				activeStream = null;
+				activeDeltaBuffer = null;
+			}
+			streamPhase = 'idle';
 			composerEl?.focus();
-			// The after-final glance (plan 23 §2 D5): the list's last_turn_at
-			// may have changed. Today the turn rode /recall (nothing persisted
-			// — the read is a harmless glance); the streaming composer (M3-d)
-			// makes this trigger load-bearing, when the FINAL carries the
-			// persisted pair with it.
-			noteFinal();
+			// The glance law's fourth trigger (plan 23 §2 D5) — after a turn's
+			// FINAL (the pair persisted inside it), or a fallback answer's end.
+			// A failed, refused or stopped turn persisted nothing.
+			if (answered) noteFinal();
 		}
+	}
+
+	/** Stop: the user's abort. No further handler calls land (the spine's
+	 * abort pin); the turn keeps the partial text and the named stopped line. */
+	function stop(): void {
+		if (activeStream === null) return;
+		activeStream.abort();
+		const id = activeTurnId;
+		const partial = activeDeltaBuffer?.committed ?? '';
+		activeDeltaBuffer?.discard();
+		turns = turns.map((turn) =>
+			turn.id === id && (turn.rendering.kind === 'streaming' || turn.rendering.kind === 'pending')
+				? { ...turn, rendering: streamFailedTurn(turn.rendering.query, 'cancelled', null, partial, null) }
+				: turn
+		);
 	}
 
 	// ── M3-b: the fault banner (exception chrome, plan 21 §1) ─────────────
@@ -385,6 +551,30 @@
 			// No core to ask (the PWA posture): the honest answer is `unknown`,
 			// whose sentence names the situation without inventing a cause.
 			classifyWireFault('unknown');
+		}
+	}
+
+	/**
+	 * The one-line sentence for a turn that ended in a NAMED failure. Copy
+	 * maps through `streamFailureToken` — a code the shell does not know renders
+	 * the generic sentence with the code named, never another failure's words.
+	 */
+	function streamFailureSentence(rendering: Extract<TurnRendering, { kind: 'stream_failed' }>): string {
+		switch (streamFailureToken(rendering.code)) {
+			case 'bridge_exited':
+				return m['chat.stream.bridge_exited']();
+			case 'conversation_does_not_fit':
+				return m['chat.stream.does_not_fit']();
+			case 'generation_failed':
+				return m['chat.stream.generation_failed']();
+			case 'contract_violation':
+				return m['chat.stream.contract_violation']();
+			case 'cancelled':
+				return m['chat.stream.cancelled']();
+			case 'transport':
+				return m['chat.stream.transport']();
+			case 'generic':
+				return m['chat.stream.generic']({ code: rendering.code });
 		}
 	}
 
@@ -534,6 +724,21 @@
 							? 'rounded-xl border border-brand/50 p-4'
 							: ''}"
 				>
+					<!-- M3-d / plan 25 D1 — the fallback's posture notice: the answer
+					     below came from deterministic recall because the named
+					     posture refused. A DECISION rendered where the reader reads,
+					     never a silent English-shaped answer wearing another name. -->
+				{#if turn.notice !== null}
+					<p
+						class="text-xs text-muted-foreground"
+						data-testid="chat-fallback-notice"
+						data-posture={turn.notice.posture}
+					>
+						{turn.notice.posture === 'locale_not_supported'
+							? m['chat.stream.locale_fallback']({ locale: turn.notice.locale })
+							: m['chat.stream.bridge_unavailable']()}
+					</p>
+				{/if}
 				{#if turn.rendering.kind === 'pending'}
 					<p aria-busy="true" class="text-sm">{m['chat.working']()}</p>
 				{:else if turn.rendering.kind === 'answered'}
@@ -743,47 +948,36 @@
 						</p>
 					{/if}
 					{#if turn.provenance}
-						<Button
-							type="button"
-							variant="ghost"
-							size="sm"
-							class="w-fit"
-							data-testid="chat-evidence"
-							aria-expanded={evidenceIsOpen(turn.id)}
-							aria-controls="chat-evidence-list-{turn.id}"
-							onclick={() => toggleEvidence(turn.id)}
-						>
-							{#if evidenceIsOpen(turn.id)}
-								{m['chat.evidence.collapse']()}
-							{:else}
-								{m['chat.evidence.count']({ count: turn.provenance.count })}
-								<span class="sr-only"> — {m['chat.evidence.expand']()}</span>
-							{/if}
-						</Button>
-						{#if evidenceIsOpen(turn.id)}
-							<ul class="grid gap-3" id="chat-evidence-list-{turn.id}">
-							{#each turn.provenance.citations as citation (citation.id)}
-								<li class="grid gap-1 text-sm" data-testid="chat-citation">
-									<span class="font-medium">
-										{citation.title.kind === 'present' ? citation.title.value : m['chat.untitled']()}
-									</span>
-									{#if citation.text.length > 0}
-										<span class="text-muted-foreground">{citation.text}</span>
-									{/if}
-									<span
-										data-historical={citation.validity.historical}
-										class="text-xs text-muted-foreground"
-									>
-										{citation.validity.summary}
-									</span>
-									{#if citation.flagged}
-										<span class="text-xs text-destructive">{m['chat.quarantined']()}</span>
-									{/if}
-								</li>
-							{/each}
-							</ul>
-						{/if}
+						{@render evidenceDisclosure(turn.id, turn.provenance)}
 					{/if}
+				{:else if turn.rendering.kind === 'streaming'}
+					<!-- The spine's live turn (plan 25 §4): the grounding card is
+					     already visible (collapsed), and the text grows under the
+					     rAF flush. The text node is the ONLY thing a delta moves —
+					     the transcript list is never re-mapped per delta. The
+					     evidence affordance is the SAME snippet the generated arm
+					     renders — one compiled body, not two. -->
+					{#if turn.provenance}
+						{@render evidenceDisclosure(turn.id, turn.provenance)}
+					{/if}
+					<p class="text-sm whitespace-pre-wrap" data-testid="chat-stream-text">
+						{turn.rendering.text}
+					</p>
+				{:else if turn.rendering.kind === 'stream_failed'}
+					<!-- The NAMED end: partial text first (evidence is kept, never
+					     dropped because the turn failed after it), then the one-line
+					     sentence for the code — on the TURN, never the banner. -->
+					{#if turn.rendering.partial.length > 0}
+						<p class="text-sm whitespace-pre-wrap">{turn.rendering.partial}</p>
+					{/if}
+					<p
+						role="status"
+						class="text-xs text-muted-foreground"
+						data-testid="chat-stream-failed"
+						data-code={streamFailureToken(turn.rendering.code)}
+					>
+						{streamFailureSentence(turn.rendering)}
+					</p>
 				{:else if turn.rendering.kind === 'absent'}
 					<!-- An ABSENCE: the search ran and the store holds nothing. -->
 					<p data-testid="chat-absent" class="text-sm">
@@ -818,6 +1012,56 @@
 			</article>
 		{/each}
 	</div>
+
+	<!-- M3-d — the evidence disclosure, as ONE snippet for BOTH arms that
+	     carry grounding (the generated turn of record and the streaming
+	     turn in flight): one compiled body, not two. Collapsed is the
+	     default (plan 21 §3); the citations render inside the opened
+	     disclosure. The streaming citations carry no passage body (the
+	     grounding event carries ids, not text), so the text line renders
+	     only when there is text to render — the same shape replay shows. -->
+	{#snippet evidenceDisclosure(turnId: number, block: ProvenanceBlock)}
+		<Button
+			type="button"
+			variant="ghost"
+			size="sm"
+			class="w-fit"
+			data-testid="chat-evidence"
+			aria-expanded={evidenceIsOpen(turnId)}
+			aria-controls="chat-evidence-list-{turnId}"
+			onclick={() => toggleEvidence(turnId)}
+		>
+			{#if evidenceIsOpen(turnId)}
+				{m['chat.evidence.collapse']()}
+			{:else}
+				{m['chat.evidence.count']({ count: block.count })}
+				<span class="sr-only"> — {m['chat.evidence.expand']()}</span>
+			{/if}
+		</Button>
+		{#if evidenceIsOpen(turnId)}
+			<ul class="grid gap-3" id="chat-evidence-list-{turnId}">
+			{#each block.citations as citation (citation.id)}
+				<li class="grid gap-1 text-sm" data-testid="chat-citation">
+					<span class="font-medium">
+						{citation.title.kind === 'present' ? citation.title.value : m['chat.untitled']()}
+					</span>
+					{#if citation.text.length > 0}
+						<span class="text-muted-foreground">{citation.text}</span>
+					{/if}
+					<span
+						data-historical={citation.validity.historical}
+						class="text-xs text-muted-foreground"
+					>
+						{citation.validity.summary}
+					</span>
+					{#if citation.flagged}
+						<span class="text-xs text-destructive">{m['chat.quarantined']()}</span>
+					{/if}
+				</li>
+			{/each}
+			</ul>
+		{/if}
+	{/snippet}
 
 	<!-- M3-b — the fault banner: the ONE interrupt plan 21 §1 allows. It
 	     renders only when a wire fault was CLASSIFIED (silent while green is
@@ -875,16 +1119,33 @@
 				class="min-h-0 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
 				data-testid="chat-composer"
 			/>
-			<Button
-				type="submit"
-				size="icon-sm"
-				class="shrink-0 rounded-full"
-				disabled={busy || composer.trim().length === 0}
-				aria-label={m['chat.send']()}
-				data-testid="chat-send"
-			>
-				<ArrowUpIcon aria-hidden="true" />
-			</Button>
+			{#if streamPhase === 'streaming'}
+				<!-- Stop replaces Send while the answer streams (plan 25 §4). It
+				     is a plain button — the form's submit must not fire — and its
+				     abort is the user's only early exit: no watchdog exists. -->
+				<Button
+					type="button"
+					size="icon-sm"
+					class="shrink-0 rounded-full"
+					variant="outline"
+					aria-label={m['chat.stop']()}
+					data-testid="chat-stop"
+					onclick={stop}
+				>
+					<SquareIcon aria-hidden="true" />
+				</Button>
+			{:else}
+				<Button
+					type="submit"
+					size="icon-sm"
+					class="shrink-0 rounded-full"
+					disabled={streamPhase !== 'idle' || composer.trim().length === 0}
+					aria-label={m['chat.send']()}
+					data-testid="chat-send"
+				>
+					<ArrowUpIcon aria-hidden="true" />
+				</Button>
+			{/if}
 		</div>
 		<p class="px-2 text-xs text-muted-foreground">{m['chat.composer.hint']()}</p>
 	</form>

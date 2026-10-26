@@ -400,5 +400,15 @@
   "chat.sessions.delete.description": "„{name}” en de volledige geschiedenis worden uit de kernel gewist. Dit kan niet ongedaan worden gemaakt.",
   "chat.sessions.delete.confirm": "Verwijderen",
   "chat.tier": "op het apparaat gegenereerd ({tier})",
+  "chat.stop": "Stop",
+  "chat.stream.bridge_unavailable": "Het model op het apparaat is nu niet beschikbaar, dus dit antwoord komt alleen uit je geheugen.",
+  "chat.stream.locale_fallback": "Het model op het apparaat kan niet in {locale} schrijven, dus dit antwoord komt alleen uit je geheugen.",
+  "chat.stream.bridge_exited": "Het model op het apparaat stopte midden in het antwoord. Stuur opnieuw om het nog eens te proberen.",
+  "chat.stream.does_not_fit": "Dit gesprek is te lang geworden voor het venster van het model op het apparaat — begin een nieuw gesprek om door te gaan.",
+  "chat.stream.generation_failed": "Het model op het apparaat kon dit antwoord niet afmaken. Stuur opnieuw om het nog eens te proberen.",
+  "chat.stream.contract_violation": "De antwoordstroom van het model kon niet worden gelezen.",
+  "chat.stream.cancelled": "Gestopt — deze beurt is geannuleerd voordat deze klaar was.",
+  "chat.stream.transport": "De verbinding met de kernel viel weg midden in het antwoord.",
+  "chat.stream.generic": "De beurt eindigde vroegtijdig ({code}).",
   "common.cancel": "Annuleren"
 }

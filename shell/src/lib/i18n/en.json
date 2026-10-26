@@ -400,5 +400,15 @@
   "chat.sessions.delete.description": "\"{name}\" and its whole transcript will be erased from the kernel. This cannot be undone.",
   "chat.sessions.delete.confirm": "Delete",
   "chat.tier": "generated on-device ({tier})",
+  "chat.stop": "Stop",
+  "chat.stream.bridge_unavailable": "The on-device model is unavailable right now, so this answer came from your memory alone.",
+  "chat.stream.locale_fallback": "The on-device model cannot write in {locale}, so this answer came from your memory alone.",
+  "chat.stream.bridge_exited": "The on-device model closed mid-answer. Send again to retry.",
+  "chat.stream.does_not_fit": "This conversation outgrew the on-device model's window — start a new chat to keep going.",
+  "chat.stream.generation_failed": "The on-device model could not finish this answer. Send again to retry.",
+  "chat.stream.contract_violation": "The model's answer stream could not be read.",
+  "chat.stream.cancelled": "Stopped — this turn was cancelled before it finished.",
+  "chat.stream.transport": "The connection to the kernel dropped mid-answer.",
+  "chat.stream.generic": "The turn ended early ({code}).",
   "common.cancel": "Cancel"
 }

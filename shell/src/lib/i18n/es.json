@@ -400,5 +400,15 @@
   "chat.sessions.delete.description": "«{name}» y todo su historial se borrarán del kernel. Esta acción no se puede deshacer.",
   "chat.sessions.delete.confirm": "Eliminar",
   "chat.tier": "generado en el dispositivo ({tier})",
+  "chat.stop": "Detener",
+  "chat.stream.bridge_unavailable": "El modelo en el dispositivo no está disponible ahora mismo, así que esta respuesta proviene solo de tu memoria.",
+  "chat.stream.locale_fallback": "El modelo en el dispositivo no puede escribir en {locale}, así que esta respuesta proviene solo de tu memoria.",
+  "chat.stream.bridge_exited": "El modelo en el dispositivo se cerró a mitad de la respuesta. Envía de nuevo para reintentarlo.",
+  "chat.stream.does_not_fit": "Esta conversación superó la ventana del modelo en el dispositivo: inicia un chat nuevo para continuar.",
+  "chat.stream.generation_failed": "El modelo en el dispositivo no pudo completar esta respuesta. Envía de nuevo para reintentarlo.",
+  "chat.stream.contract_violation": "No se pudo leer el flujo de respuesta del modelo.",
+  "chat.stream.cancelled": "Detenido: este turno se canceló antes de terminar.",
+  "chat.stream.transport": "La conexión con el kernel se perdió a mitad de la respuesta.",
+  "chat.stream.generic": "El turno terminó antes de tiempo ({code}).",
   "common.cancel": "Cancelar"
 }

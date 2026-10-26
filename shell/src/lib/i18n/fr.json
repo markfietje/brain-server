@@ -400,5 +400,15 @@
   "chat.sessions.delete.description": "« {name} » et tout son historique seront effacés du noyau. Cette action est irréversible.",
   "chat.sessions.delete.confirm": "Supprimer",
   "chat.tier": "généré sur l'appareil ({tier})",
+  "chat.stop": "Arrêter",
+  "chat.stream.bridge_unavailable": "Le modèle sur l'appareil est indisponible pour le moment ; cette réponse vient donc de votre seule mémoire.",
+  "chat.stream.locale_fallback": "Le modèle sur l'appareil ne peut pas écrire en {locale} ; cette réponse vient donc de votre seule mémoire.",
+  "chat.stream.bridge_exited": "Le modèle sur l'appareil s'est interrompu en pleine réponse. Renvoyez pour réessayer.",
+  "chat.stream.does_not_fit": "Cette conversation a dépassé la fenêtre du modèle sur l'appareil — commencez une nouvelle conversation pour continuer.",
+  "chat.stream.generation_failed": "Le modèle sur l'appareil n'a pas pu terminer cette réponse. Renvoyez pour réessayer.",
+  "chat.stream.contract_violation": "Le flux de réponse du modèle n'a pas pu être lu.",
+  "chat.stream.cancelled": "Arrêté — ce tour a été annulé avant d'être terminé.",
+  "chat.stream.transport": "La connexion au noyau a été perdue en pleine réponse.",
+  "chat.stream.generic": "Le tour s'est terminé prématurément ({code}).",
   "common.cancel": "Annuler"
 }

@@ -400,5 +400,15 @@
   "chat.sessions.delete.description": "„{name}“ und ihr gesamter Verlauf werden aus dem Kernel gelöscht. Das kann nicht widerrufen werden.",
   "chat.sessions.delete.confirm": "Löschen",
   "chat.tier": "auf dem Gerät generiert ({tier})",
+  "chat.stop": "Stopp",
+  "chat.stream.bridge_unavailable": "Das Modell auf dem Gerät ist gerade nicht verfügbar — diese Antwort stammt allein aus Ihrem Speicher.",
+  "chat.stream.locale_fallback": "Das Modell auf dem Gerät kann nicht auf {locale} schreiben — diese Antwort stammt allein aus Ihrem Speicher.",
+  "chat.stream.bridge_exited": "Das Modell auf dem Gerät wurde mitten in der Antwort beendet. Senden Sie erneut, um es noch einmal zu versuchen.",
+  "chat.stream.does_not_fit": "Diese Unterhaltung ist zu lang für das Fenster des Modells auf dem Gerät — beginnen Sie einen neuen Chat, um fortzufahren.",
+  "chat.stream.generation_failed": "Das Modell auf dem Gerät konnte diese Antwort nicht abschließen. Senden Sie erneut, um es noch einmal zu versuchen.",
+  "chat.stream.contract_violation": "Der Antwortstrom des Modells konnte nicht gelesen werden.",
+  "chat.stream.cancelled": "Gestoppt — diese Anfrage wurde abgebrochen, bevor sie abgeschlossen war.",
+  "chat.stream.transport": "Die Verbindung zum Kernel wurde mitten in der Antwort unterbrochen.",
+  "chat.stream.generic": "Diese Anfrage endete vorzeitig ({code}).",
   "common.cancel": "Abbrechen"
 }

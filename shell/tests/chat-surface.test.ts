@@ -94,13 +94,43 @@ interface Rendered {
 	container: HTMLElement;
 }
 
-async function renderChat(shape: unknown): Promise<Rendered> {
-	nextShape = shape;
-	vi.stubGlobal('__TAURI_INTERNALS__', {});
+/**
+ * The wire stub, ROUTED BY PATH (the R141 lesson: openapi-fetch hands the
+ * stub a `Request`, so the router reads the URL off either form). The chat
+ * turn rides the spine's `POST /chat/turns`; everything else is the frame's
+ * own glance traffic and answers a harmless 200.
+ *
+ * M3-d DRIVER SHAPE: the deterministic renderings (answered/absent/abstained)
+ * reach the page through the D1 FALLBACK — the spine refusal with a named
+ * posture, then the core IPC (`shape_recall_command` → `nextShape`). The
+ * refusal renderings come from the spine refusal itself. `spineAnswer` is
+ * what `POST /chat/turns` answers with for this test.
+ */
+function stubShellFetch(spineAnswer: () => Response): void {
 	vi.stubGlobal(
 		'fetch',
-		vi.fn(async () => new Response(JSON.stringify({ hits: [], decision: 'ok' }), { status: 200 }))
+		vi.fn(async (input: RequestInfo | URL) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('/chat/turns')) return spineAnswer();
+			return new Response(JSON.stringify({ sessions: [], total: 0 }), { status: 200 });
+		})
 	);
+}
+
+/** The kernel's 503 posture refusal — the D1 fallback trigger. */
+function bridgeUnavailable(): Response {
+	return new Response(
+		JSON.stringify({
+			error: { code: 'recall_unavailable', message: 'chat_bridge_unavailable — fixture posture' }
+		}),
+		{ status: 503 }
+	);
+}
+
+async function renderChat(shape: unknown, spineAnswer: () => Response = bridgeUnavailable): Promise<Rendered> {
+	nextShape = shape;
+	vi.stubGlobal('__TAURI_INTERNALS__', {});
+	stubShellFetch(spineAnswer);
 	const rendered = render(chatModule.default as any);
 	await waitFor(() =>
 		expect(screen.getAllByTestId('chat-composer').length).toBeGreaterThan(0)

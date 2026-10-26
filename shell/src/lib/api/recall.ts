@@ -151,6 +151,151 @@ export interface RecallCore {
 	): Promise<unknown>;
 }
 
+// ── the web-posture core (M3-d / plan 25 D1) ─────────────────────────────
+//
+// The D1 fallback renders "the DETERMINISTIC /recall answer" in BOTH postures
+// the plan names: the app (the Rust core classifies, as ever) and the
+// PWA/dev/e2e browser, where there is no Tauri runtime to ask. There, recall
+// rides the typed wire with the bounds and the six-arm classification below —
+// the SAME numbers and the SAME mapping as `shell/src-tauri/src/recall.rs`
+// (`MAX_QUERY_BYTES = 2_000`, `limit 1..=100` default 5, `provenance: true`;
+// 401/403 → refused, other non-2xx → unreachable, an unreadable 200 →
+// contract_violation, `low_confidence` → abstained, `ok` with zero hits →
+// absent, `ok` → answered). The Rust classifier is the reference; this one
+// exists so the fallback is a full answer outside the app too, and the pins
+// in `chat-spine.test.ts` drive it against the Rust-mapped fixtures.
+
+/** The bounds, mirrored from the Rust core (recall.rs:40-48). A drift here
+ * refuses or admits a request the other classifier would not. */
+const WEB_RECALL_BOUNDS = {
+	maxQueryBytes: 2_000,
+	minLimit: 1,
+	maxLimit: 100,
+	defaultLimit: 5
+} as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function webParseHit(value: unknown): Passage | null {
+	if (!isRecord(value)) return null;
+	const id = value['id'];
+	if (typeof id !== 'number') return null;
+	const evidence = value['evidence'];
+	const validFrom = isRecord(evidence) ? evidence['valid_from'] : null;
+	const validTo = isRecord(evidence) ? evidence['valid_to'] : null;
+	return {
+		id,
+		title: typeof value['title'] === 'string' ? value['title'] : null,
+		text: typeof value['content'] === 'string' ? value['content'] : '',
+		snippet: typeof value['snippet'] === 'string' ? value['snippet'] : null,
+		domain: typeof value['domain'] === 'string' ? value['domain'] : null,
+		score: typeof value['score'] === 'number' ? value['score'] : 0,
+		valid_from: typeof validFrom === 'string' ? validFrom : null,
+		valid_to: typeof validTo === 'string' ? validTo : null,
+		flagged: value['flagged'] === true,
+		ingest_kind: typeof value['ingest_kind'] === 'string' ? value['ingest_kind'] : null,
+		memory_kind: typeof value['memory_kind'] === 'string' ? value['memory_kind'] : null,
+		authority: typeof value['authority'] === 'number' ? value['authority'] : null
+	};
+}
+
+/** The web-posture core: same bounds, same mapping, no runtime needed. */
+export const webRecallCore: RecallCore = {
+	authorize: async (request: RecallRequest): Promise<AuthorizedRecall> => {
+		const bytes = new TextEncoder().encode(request.query).length;
+		if (bytes === 0) throw new Error('the query is empty');
+		if (bytes > WEB_RECALL_BOUNDS.maxQueryBytes) {
+			throw new Error(`the query is ${bytes} bytes; the ceiling is ${WEB_RECALL_BOUNDS.maxQueryBytes}`);
+		}
+		const limit = request.limit ?? WEB_RECALL_BOUNDS.defaultLimit;
+		if (limit < WEB_RECALL_BOUNDS.minLimit || limit > WEB_RECALL_BOUNDS.maxLimit) {
+			throw new Error(`the limit ${limit} is outside ${WEB_RECALL_BOUNDS.minLimit}..=${WEB_RECALL_BOUNDS.maxLimit}`);
+		}
+		if (request.domain !== undefined) {
+			const domainBytes = new TextEncoder().encode(request.domain).length;
+			if (domainBytes > 64 || request.domain.length === 0 || request.domain.split(/\s+/).length !== 1) {
+				throw new Error('the domain is not a label the core would authorize');
+			}
+		}
+		return {
+			doc: {
+				v: 1,
+				query: request.query,
+				...(request.domain !== undefined ? { domain: request.domain } : {}),
+				limit,
+				provenance: true
+			},
+			query_bytes: bytes
+		};
+	},
+	shape: async (
+		exchange: { status: number; body: string },
+		doc: AuthorizedRecall['doc']
+	): Promise<unknown> => {
+		if (exchange.status === 401 || exchange.status === 403) {
+			return { state: 'refused', status: exchange.status, scope: 'recall' };
+		}
+		if (!(exchange.status >= 200 && exchange.status < 300)) {
+			return {
+				state: 'unreachable',
+				status: exchange.status,
+				detail: 'the kernel answered with a non-success status'
+			};
+		}
+		let wire: unknown;
+		try {
+			wire = JSON.parse(exchange.body);
+		} catch {
+			return {
+				state: 'contract_violation',
+				status: exchange.status,
+				detail: 'the recall body is not the published contract'
+			};
+		}
+		if (!isRecord(wire) || typeof wire['decision'] !== 'string') {
+			return {
+				state: 'contract_violation',
+				status: exchange.status,
+				detail: 'the recall body is not the published contract'
+			};
+		}
+		const decision = wire['decision'] === 'low_confidence' ? 'low_confidence' : 'ok';
+		const rawHits = Array.isArray(wire['hits']) ? wire['hits'] : [];
+		const passages: Passage[] = [];
+		for (const hit of rawHits) {
+			const parsed = webParseHit(hit);
+			if (parsed === null) {
+				return {
+					state: 'contract_violation',
+					status: exchange.status,
+					detail: 'the recall body is not the published contract'
+				};
+			}
+			passages.push(parsed);
+		}
+		const telemetry = isRecord(wire['telemetry']) ? wire['telemetry'] : null;
+		const confidence = telemetry && typeof telemetry['confidence'] === 'number' ? telemetry['confidence'] : null;
+		const answer = {
+			state: 'answered' as const,
+			decision,
+			passages,
+			confidence,
+			searched: {
+				query: doc.query,
+				domain: doc.domain ?? null,
+				limit: doc.limit,
+				domains_searched: Array.isArray(wire['domains_searched']) ? (wire['domains_searched'] as string[]) : [],
+				included_global: typeof wire['included_global'] === 'boolean' ? wire['included_global'] : null
+			}
+		};
+		if (decision === 'low_confidence') return { ...answer, state: 'abstained' };
+		if (passages.length === 0) return { ...answer, state: 'absent' };
+		return answer;
+	}
+};
+
 /** The wire. Injected for the same reason, and so a pin can substitute a
  * refusal, a garbage body, or a throw without mocking the code under test. */
 export type RecallTransport = (doc: AuthorizedRecall['doc']) => Promise<{

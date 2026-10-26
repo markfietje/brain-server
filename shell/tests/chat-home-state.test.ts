@@ -70,10 +70,25 @@ vi.mock('$app/paths', () => ({ resolve: (p: string) => p }));
 
 // The construction-order law (chat-surface.test.ts): the typed client holds
 // the `fetch` it was created with, so the stub must exist before this import.
+// M3-d: the stub routes by path — the spine's `POST /chat/turns` answers the
+// 503 posture refusal (the D1 fallback driver: the deterministic shapes then
+// arrive through the core IPC, exactly as the M3-b pins drove them), and the
+// frame's own glance traffic answers a harmless 200.
 vi.stubGlobal('__TAURI_INTERNALS__', {});
 vi.stubGlobal(
 	'fetch',
-	vi.fn(async () => new Response(JSON.stringify({ hits: [], decision: 'ok' }), { status: 200 }))
+	vi.fn(async (input: RequestInfo | URL) => {
+		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+		if (url.includes('/chat/turns')) {
+			return new Response(
+				JSON.stringify({
+					error: { code: 'recall_unavailable', message: 'chat_bridge_unavailable — fixture posture' }
+				}),
+				{ status: 503 }
+			);
+		}
+		return new Response(JSON.stringify({ sessions: [], total: 0 }), { status: 200 });
+	})
 );
 
 import { invoke } from '@tauri-apps/api/core';
