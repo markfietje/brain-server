@@ -412,7 +412,7 @@ pub fn effective_filter(sub: &str, manages: &[String], roles: &[Role]) -> Retrie
 /// gates, not memory-row reads, so they read their own rows like any other
 /// principal.
 ///
-/// `plugin` is deliberately ABSENT (M3-g, plan 27): a plugin that reads the
+/// `plugin` is deliberately ABSENT: a plugin that reads the
 /// shared pool is the `agent` preset wearing a costume — the whole point of
 /// the kernel-side plugin principal is that its reach is the rows it wrote in
 /// its own domain, and the shared-pool read is precisely the capability the
@@ -484,8 +484,8 @@ pub const PRESETS_RAW: &[(&str, &str)] = &[
         "bpo-ops",
         r#"{"name":"bpo-ops","description":"BPO operations: read-only capacity/connector/queue/breach board across all clients","scopes":["private","domain","team"],"owner_filter":"self","can":["read"],"panels_default":["overview","health"],"panels_hidden":["subjects"],"tools_allowed":["ump.recall"]}"#,
     ),
-    // The 14th preset (M3-g, plan 27): the KERNEL-SIDE PLUGIN PRINCIPAL.
-    // Exactly plan 27 §2.1's JSON — a NARROWING of `agent` along every
+    // The 14th preset: the KERNEL-SIDE PLUGIN PRINCIPAL.
+    // The shipped JSON, exactly as specified — a NARROWING of `agent` along every
     // dimension the agent names. One domain, rows it wrote, scoped read/write;
     // `tools_allowed: []` is EMPTY BY LAW: no UMP/MCP tool until the operator
     // names one (`brain principal grant --tools`). `the_plugin_preset_starts_
@@ -794,7 +794,7 @@ mod tests {
         assert!(!agent.can_tool("ump.remember"));
     }
 
-    /// THE ANTI-`agent` PIN (M3-g, plan 27 §2.1). The `plugin` preset is the
+    /// THE ANTI-`agent` PIN. The `plugin` preset is the
     /// 14th ship-with role and a NARROWING of `agent` along EVERY dimension
     /// the agent preset names — the machine-client posture a third-party
     /// plugin holds WITHOUT inheriting the gateway's shared-pool read. Day

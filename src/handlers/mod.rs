@@ -654,7 +654,7 @@ pub fn authorize_tool(
         return Ok(());
     }
     let conn = pool.get().map_err(HandlerError::db_down)?;
-    // THE PLUGIN ROSTER ARM (M3-g, plan 27). A plugin principal's tool set is
+    // THE PLUGIN ROSTER ARM. A plugin principal's tool set is
     // EXACTLY what the operator named at grant time — the roster row, not the
     // role store. The role's own set (the `plugin` preset ships
     // `tools_allowed: []`) stays in the union below as the day-zero floor;

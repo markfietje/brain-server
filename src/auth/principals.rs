@@ -1,11 +1,11 @@
-//! The kernel-side plugin principal roster (M3-g, plan 27): GRANT, REVOKE,
+//! The kernel-side plugin principal roster: GRANT, REVOKE,
 //! LIST — operator acts through the `brain principal` CLI, never HTTP (an
 //! HTTP mint is a privilege-escalation surface with zero measured need;
 //! minting happens on the machine that owns the token files, the same
 //! posture as `install-service.sh`) — and the auth middleware's plugin lane,
 //! which resolves a minted bearer against this roster per request.
 //!
-//! The law (plan 22 as amended by M3-f's R6): an extension is a kernel
+//! The law: an extension is a kernel
 //! CLIENT — its own credential, a scoped role; row-level authz is the
 //! sandbox; nothing extension-authored ever runs inside the kernel. The
 //! roster carries DATA grants only — name, role, domain, tools. A token is

@@ -214,7 +214,7 @@ pub fn check_secret_permissions(path: &std::path::Path) -> Result<(), String> {
 
 /// Write one owner-only secret file — the writer-side twin of
 /// [`read_owner_only_token`], and the writer `brain principal grant` uses
-/// (M3-g): the 0600 law held at CREATION rather than by a chmod after the
+/// The 0600 law held at CREATION rather than by a chmod after the
 /// bytes land, so no window exists in which a minted bearer sits on disk
 /// group/world-readable.
 ///
@@ -393,7 +393,7 @@ mod tests {
         assert!(err.contains("group/world-accessible"), "{err}");
     }
 
-    /// THE WRITER HOLDS THE 0600 LAW AT CREATION AND NEVER CLOBBERS (M3-g).
+    /// THE WRITER HOLDS THE 0600 LAW AT CREATION AND NEVER CLOBBERS.
     /// The file lands owner-only BEFORE the first byte is written, the mode
     /// reads back clean through the reader's own law, and a second write to
     /// the same path is REFUSED — a re-grant must never silently overwrite a

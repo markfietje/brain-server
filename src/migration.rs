@@ -3469,7 +3469,7 @@ pub fn run_migration_with_store_dim(
              ON chat_turns(session_id, seq);",
     )?;
 
-    // ── the plugin principal roster (M3-g, plan 27) ─────────────────────
+    // ── the plugin principal roster ─────────────────────────────────────
     // One row per GRANTED principal: the roster the auth middleware's plugin
     // lane resolves a minted bearer against, and the surface `brain principal
     // grant|revoke|list` writes. Minting is an operator act on the machine

@@ -412,7 +412,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
         run: cmd_ropa,
         usage: "brain ropa list\n  brain ropa add --activity A --controller C --processor P --lawful-basis B\n               [--categories S] [--recipients S] [--retention-days N]\n               [--security-measures S] [--transfers S]",
     },
-    // The plugin principal verb family (M3-g, plan 27). LOCAL operator acts
+    // The plugin principal verb family. LOCAL operator acts
     // on the DB the server owns + the token files this machine holds — never
     // HTTP: there is NO mint route and the kernel's HTTP surface gains
     // nothing from this family (an HTTP mint is a privilege-escalation
@@ -479,11 +479,11 @@ fn main() {
             exit(2);
         }
     }
-    // Two-token subcommand names (M3-g): "principal grant|revoke|list" are
+    // Two-token subcommand names: "principal grant|revoke|list" are
     // three rows in the ONE SUBCOMMANDS table. The dispatcher tries
     // "verb verb" FIRST — no existing name carries a space, so nothing is
     // shadowed — then falls back to the single token, byte-identical to the
-    // pre-M3-g dispatch.
+    // pre-existing dispatch.
     let (cmd, rest): (String, &[String]) = if args.len() >= 2 {
         let two = format!("{} {}", args[0], args[1]);
         let hit = SUBCOMMANDS.iter().any(|sub| sub.name == two);
@@ -6092,7 +6092,7 @@ fn truncate(s: &str, n: usize) -> String {
     }
 }
 
-// ── the plugin principal verb family (M3-g, plan 27) ─────────────────────
+// ── the plugin principal verb family ────────────────────────────────────
 // LOCAL operator acts: the roster lives in the DB this machine owns and the
 // token file lands on this machine's disk. These commands never speak HTTP
 // (no mint route exists to speak TO — that refusal is the design, recorded

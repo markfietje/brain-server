@@ -60,7 +60,7 @@ impl Action {
 /// `Jwt` covers every verified-JWT bearer (the only principal class before
 /// the opaque agent split); `AgentLoopback` is the opaque agent token resolved from the
 /// token file's second line / `AGENT_TOKEN_FILE` — the typed half of the
-/// operator/agent split. `Plugin` (M3-g, plan 27) is a minted roster bearer —
+/// operator/agent split. `Plugin` is a minted roster bearer —
 /// a `brain principal grant` credential resolved against the `principals`
 /// table, one domain, the granted role. The class is metadata: authorization
 /// runs through the SAME scope/role machinery for all three (the existing

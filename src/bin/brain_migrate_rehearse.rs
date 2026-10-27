@@ -109,7 +109,7 @@ const PARITY_TABLES: &[&str] = &[
     "case_articles",
     "crm_cases",
     "revoked_principals",
-    // the plugin principal roster (M3-g, plan 27). Row-count parity proves a
+    // the plugin principal roster. Row-count parity proves a
     // rehearsal copied the standing credentials — a rehearsal that came back
     // with zero principals would produce a server that has forgotten every
     // plugin principal it ever granted, and would say so nowhere.

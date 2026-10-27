@@ -417,7 +417,7 @@ pub async fn jwt_auth_middleware(
                 }
                 return next.run(req).await;
             }
-            // THE PLUGIN LANE (M3-g, plan 27 — see `resolve_plugin_principal`):
+            // THE PLUGIN LANE (see `resolve_plugin_principal`):
             // the bearer may be a minted ROSTER credential rather than a JWS —
             // the same fallback posture the capability arm above occupies, and
             // the reason it sits here: a JWT-mode deployment that granted a
@@ -511,13 +511,13 @@ async fn ensure_cap_principal_alive(pool: &Pool, iss: &str) -> Result<(), String
     .map_err(|e| format!("revocation store join error: {e}"))?
 }
 
-/// THE PLUGIN-PRINCIPAL LANE's resolver (M3-g, plan 27), shared by BOTH
+/// THE PLUGIN-PRINCIPAL LANE's resolver, shared by BOTH
 /// middlewares' fallback position: a bearer that is neither a verified JWS,
 /// nor an operator/agent token, nor a capability, may still be a MINTED
 /// ROSTER credential — `brain principal grant` wrote its hash into
 /// `principals` and handed the plugin a 0600 token file. `Ok(None)` = not a
 /// roster bearer (the caller's deny arm answers, byte-identical to
-/// pre-M3-g behavior); `Err(code)` = a roster bearer that failed a LIVING
+/// prior behavior); `Err(code)` = a roster bearer that failed a LIVING
 /// check (revoked/expired) — the caller 401s naming the cause, audited at
 /// its boundary. The read runs on `spawn_blocking` (pooled SQLite, the same
 /// cost profile as the agent lane's revocation read).
@@ -726,9 +726,9 @@ pub async fn auth_middleware(
         }
         next.run(req).await
     } else {
-        // THE PLUGIN-PRINCIPAL LANE before the deny (M3-g — see
+        // THE PLUGIN-PRINCIPAL LANE before the deny (see
         // `resolve_plugin_principal`): an unknown bearer falls through to the
-        // deny below byte-identical to pre-M3-g behavior; a KNOWN-but-dead
+        // deny below byte-identical to its prior behavior; a KNOWN-but-dead
         // bearer (revoked/expired) 401s naming its cause, audited here like
         // every other denial at this boundary.
         match resolve_plugin_principal(&s.pool, &presented_owned).await {
