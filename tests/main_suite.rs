@@ -24844,6 +24844,13 @@ mod r70_seams {
 /// index, and the last column is asserted separately so the two cannot drift
 /// apart again. The lesson is the one this file keeps re-learning: a recorded
 /// red-proof is a claim about a run, and the run is the proof.
+///
+/// CORRECTION, 2026-10-27: the split was raw `|`, so a row carrying a GFM
+/// escaped pipe failed as UNREADABLE at its real shape. The live red was the
+/// discovery: M3-f's Tier A registry row (`` `string \| null` `` in the Owed
+/// cell) held this suite at 350 passed / 1 failed from its own commit, and the
+/// round that found it was measuring the Tier B baseline. The parser now
+/// honors the escape — the row was never malformed.
 #[test]
 fn the_gate_law_register_rows_parse_and_carry_their_last_column() {
     let register = std::fs::read_to_string(
@@ -24906,7 +24913,18 @@ fn the_gate_law_register_rows_parse_and_carry_their_last_column() {
                 line.starts_with('|') && line.ends_with('|'),
                 "unreadable register row (does not start and end with `|`): {line}"
             );
-            let cells: Vec<&str> = line[1..line.len() - 1].split('|').map(str::trim).collect();
+            // A GFM escaped pipe (`\|`) is a LITERAL pipe inside a cell, not a
+            // separator — mask it before the split, restore it after. M3-f's
+            // Tier A registry row carries `` `string \| null` `` and the naive
+            // split read five cells where the row has four (the live red,
+            // measured 2026-10-27 at `a6ebaacf`: this test failed on that row
+            // as "the header has 4 columns and this has 5"). The row was valid
+            // GFM every renderer renders; the parser was what could not read it.
+            let masked = line[1..line.len() - 1].replace("\\|", "\u{0}");
+            let cells: Vec<String> = masked
+                .split('|')
+                .map(|c| c.trim().replace('\u{0}', "|"))
+                .collect();
             assert_eq!(
                 cells.len(),
                 4,
