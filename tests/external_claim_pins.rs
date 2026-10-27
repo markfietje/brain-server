@@ -1049,6 +1049,13 @@ fn r45_0_correction_leaves_the_audit_chain_module_byte_untouched() {
 /// Control arms kept green: `legacy_chain_still_detects_the_fields_it_commits`,
 /// `reaudit_refuses_a_broken_chain`, `hash_is_sha256_not_xxh3`, and the
 /// 129-test `--lib audit` suite.
+///
+/// Re-recorded AGAIN by the M3-g round (2026-10-27): `recent_tenant` gained
+/// an `actor` filter clause in its SQL builder — the `/audit?principal=`
+/// listing read, additive beside `kind`/`tenant`. The filter READS rows; it
+/// never re-verifies the chain differently, and no verdict, key, epoch,
+/// chain-link, or write path moved — the `--lib audit` suite and this pin's
+/// own controls stayed green alongside.
 /// RE-RECORDED 2026-10-12 (the digest moved, the chain did not). A later
 /// round's release lane went red on the `compliance-pack` job: `anchor::tests`
 /// flipped the process-global chain key without the fence the keyed tests
@@ -1101,7 +1108,7 @@ fn r45_0_correction_leaves_the_audit_chain_module_byte_untouched() {
 /// the module's own battery (keyed hash, tamper controls, genesis + head
 /// pins) is untouched and still green.
 const CHAIN_MODULE_SHA256: &str =
-    "09d1789cee87009e97119effc0c80c44c4d84833656f8abeee45a73b24e93f3d";
+    "e99349e1e4f4ee87d62ed35f2951cc244627212be754c94b7222d32af2d36915";
 
 /// E8's second half: the correction adds no key material and no audit row.
 #[test]
