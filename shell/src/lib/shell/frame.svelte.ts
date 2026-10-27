@@ -28,12 +28,31 @@
 import type { KernelFacts } from '#lib/api/kernel-facts.js';
 
 let conversationEpoch = $state(0);
+let credentialEpoch = $state(0);
 let statusContext = $state<string | null>(null);
 let kernelFacts = $state<KernelFacts | null>(null);
 
 /** The current conversation's epoch; a surface keys its transcript on it. */
 export function currentConversationEpoch(): number {
 	return conversationEpoch;
+}
+
+/**
+ * The credential epoch (M3-f, moved from the frame's inline effect): the
+ * settings token section NOTES a credential change here and the frame
+ * re-runs its three glance reads on it. A credential change is the one
+ * moment the facts can go from refused to answered (or back) — measured
+ * 2026-10-24: a token saved over a stale one left the sidebar reading
+ * "integrity not verified" until relaunch.
+ */
+export function currentCredentialEpoch(): number {
+	return credentialEpoch;
+}
+
+/** The token section's note that a credential changed (saved, rotated,
+ * pending or cleared). */
+export function noteCredentialChange(): void {
+	credentialEpoch += 1;
 }
 
 /** Start a new conversation: the chat surface drops its transcript. */

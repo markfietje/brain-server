@@ -3,6 +3,19 @@ import { join, relative } from 'node:path';
 import { expect, test } from 'vitest';
 import { shellRoot } from './fixtures';
 import { CENSUS_ROUTES, ROUTE_FLOOR } from './route-census';
+import { navEntries } from '../src/lib/extensions/registry.js';
+
+/**
+ * The census routes that are deliberately NOT sidebar nav entries — the
+ * operator listing and the two detail routes, opened from lists and
+ * citations (the frame's recorded comment, now a literal here). The registry
+ * nav set must equal the census minus exactly these.
+ */
+const DECISION_AND_DETAIL_ROUTES = [
+	'/decisions',
+	'/decisions/[id]',
+	'/recall/[trace_id]/trace'
+] as const;
 
 /**
  * II-7d — the SHELL route census, and its parity verdicts.
@@ -397,6 +410,31 @@ test('the_shell_route_census_finds_every_page_and_asserts_its_own_floor', () => 
 	// parity question gets asked rather than skipped.
 	expect(routes).toEqual([...CENSUS_ROUTES]);
 	expect(routes.length).toBe(ROUTE_FLOOR);
+
+	// ---- THE SIDEBAR'S NAV SET IS THE REGISTRY'S (M3-f, plan 26 §2) ----
+	//
+	// The frame renders `navEntries` from the extension registry — ONE
+	// source — and the census drives it both ways, fail-closed:
+	//
+	//  - every registry nav route is censused AND walked (the load guard in
+	//    `route-census.ts` refuses an uncensused route; this restates the
+	//    walk half so the red names the file's own ground truth), and
+	//  - the registry's route set is EXACTLY the census's sidebar surfaces —
+	//    the census minus the routes that are deliberately NOT nav entries
+	//    (the operator listing `/decisions`, its detail route, and the trace
+	//    detail nested under `/recall`, all reached from lists and
+	//    citations). A contribution deleted reds here NAMING the route; a
+	//    sixth nav entry invented to "complete" anything reds here too.
+	const sidebarSurfaces = (CENSUS_ROUTES as readonly string[]).filter(
+		(route) => !DECISION_AND_DETAIL_ROUTES.includes(route as (typeof DECISION_AND_DETAIL_ROUTES)[number])
+	);
+	expect(
+		navEntries.map((entry) => entry.route).sort(),
+		'the registry navEntries must be exactly the censused sidebar surfaces — a deleted contribution or an invented sixth entry reds here, naming the route'
+	).toEqual([...sidebarSurfaces].sort());
+	for (const entry of navEntries) {
+		expect(routes, `${entry.route} (${entry.id}) must be a walked route`).toContain(entry.route);
+	}
 
 	// ---- THE DERIVATION IS PROVEN, not just its output ----
 	//

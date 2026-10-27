@@ -36,7 +36,8 @@ import { shellRoot } from './fixtures';
  * 11. The flush buffer coalesces: a 200-delta burst issues one flush per
  *     frame, never per delta. Drill: flush per accept.
  * 12. The envelope law: no new dependency, no EventSource, and the built JS
- *     grows by at most 3 KiB gzipped over the measured baseline.
+ *     stays within ±0.5 KiB gzipped of the recorded baseline (the M3-f
+ *     refactor band; the 3 KiB growth law it replaced is in the register).
  */
 
 // ── fixtures ─────────────────────────────────────────────────────────────
@@ -749,12 +750,12 @@ describe('the envelope law', () => {
 		);
 	});
 
-	test('the_built_js_grows_by_at_most_three_kib_gzipped_over_the_baseline', { timeout: 180_000 }, async () => {
-		// THE 3 KiB LAW (plan 25 §3, the 505 KiB envelope's continuation), and
-		// the pin measures rather than trusts: it builds the client and gzips
-		// every emitted JS file with the SAME routine that measured the
-		// baseline below. The ceiling is a NAMED act to move — the same shape
-		// as the kernel's SQL census.
+	test('the_built_js_stays_within_half_a_kib_gzipped_of_the_r0_baseline', { timeout: 180_000 }, async () => {
+		// THE REFACTOR BAND (plan 25 §3's envelope law, renamed and re-based
+		// as a named act in M3-f), and the pin measures rather than trusts: it
+		// builds the client and gzips every emitted JS file with the SAME
+		// routine that measured the baseline below. The band is a NAMED act to
+		// move — the same shape as the kernel's SQL census.
 		const { execFileSync } = await import('node:child_process');
 		const { gzipSync } = await import('node:zlib');
 		const { readdirSync, statSync, rmSync } = await import('node:fs');
@@ -826,25 +827,27 @@ describe('the envelope law', () => {
 		}
 		// Baseline measured 2026-10-26 at the pre-round tip (9f5c5be0), 45 JS
 		// files, with this pin's own gzip routine (node zlib, default level):
-		// 203,185 bytes gzipped. Nothing imported the spine yet — the round's
-		// ceiling is this measurement plus the envelope budget.
+		// 203,185 bytes gzipped. Plan 25 §3 budgeted +3 KiB; the round's
+		// deliverable measured +5,067 bytes (the streaming states, the five-
+		// locale failure/posture copy, the web-posture fallback core, the
+		// spine), so the ceiling became the MEASUREMENT — the budget moved as
+		// a NAMED ACT (the SQL-census pattern), recorded in the register.
 		//
-		// THE BUDGET MOVED AS A NAMED ACT (the SQL-census pattern): plan 25 §3
-		// budgeted 3 KiB; the round's deliverable MEASURED 5,067 bytes — the
-		// page's streaming states (+2,880 gz), the five-locale copy for the nine
-		// named failure/posture states (+1,325 gz: ten keys × five catalogs,
-		// compiled message functions), the web-posture fallback core (+~450 gz:
-		// D1's browser half, whose bounds and mapping mirror the Rust
-		// classifier), and the spine module itself (+~120 gz). Merging or
-		// dropping copy to fit the estimate would trade the round's own law —
-		// no unnamed failure state anywhere in the composer — for a number, so
-		// the ceiling is the MEASUREMENT (+5 KiB), and the next round's budget
-		// restarts from here.
-		const BASELINE = 203_185;
-		const ENVELOPE = 5_120;
+		// THE LAW IS NOW THE REFACTOR BAND (M3-f, plan 26 §5, named act): the
+		// Tier A registry round is a REFACTOR — surface literals move from
+		// AppShell/the chat page into `lib/extensions/**` — so the envelope
+		// may move ±0.5 KiB around the R0 baseline and NOT ONE BYTE MORE, in
+		// BOTH directions (a shrink is a surface silently lost, the same
+		// failure a growth is). R0 baseline measured 2026-10-27 at 1effc85d
+		// (the repaired pin, R0a), 45 JS files, this pin's own routine:
+		// 207,772 bytes gzipped. Moving the band is a named act; the register
+		// row carries it.
+		const R0_BASELINE = 207_772;
+		const BAND = 512;
 		expect(
-			total,
-			`the built JS is ${total} bytes gzipped; the law holds it to ${BASELINE} + ${ENVELOPE}`
-		).toBeLessThanOrEqual(BASELINE + ENVELOPE);
+			Math.abs(total - R0_BASELINE),
+			`the built JS is ${total} bytes gzipped; the refactor band holds it to ` +
+				`${R0_BASELINE} ± ${BAND} — a growth or a shrink beyond the band is a surface change, not a refactor`
+		).toBeLessThanOrEqual(BAND);
 	});
 });

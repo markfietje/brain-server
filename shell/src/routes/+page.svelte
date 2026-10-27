@@ -16,8 +16,6 @@
 	// NO `{@html}` anywhere, per `eslint.config.js` and Plan 04 §3: every
 	// interpolated value below is a text node.
 	import { m } from '$paraglide/messages.js';
-	import { goto } from '$app/navigation';
-	import { resolve } from '$app/paths';
 	import {
 		recallMemory,
 		typedRecallTransport,
@@ -62,6 +60,7 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Textarea } from '#lib/components/ui/textarea/index.js';
 	import ArrowUpIcon from '@lucide/svelte/icons/arrow-up';
+	import { emptyChips } from '#lib/extensions/registry.js';
 	import { currentConversationEpoch } from '#lib/shell/frame.svelte.js';
 	import {
 		currentActiveKey,
@@ -653,41 +652,24 @@
 	{#if turns.length === 0}
 		<div class="my-auto grid gap-4 py-10 text-center" data-testid="chat-empty">
 			<p class="text-xl font-semibold tracking-tight">{m['chat.empty.greeting']()}</p>
+			<!-- The three-chip law (M3-b), now registry-backed: coreChat
+			     contributes the chips, each with its OWN act (the ask chip
+			     focuses the composer by id — the recorded jsdom discipline,
+			     kept in the manifest — the navigators go through
+			     $app/navigation), and the page renders them verbatim. The
+			     pins judge the registry: a chip removed there reds here. -->
 			<div class="flex flex-wrap justify-center gap-2">
-				<Button
-					type="button"
-					variant="outline"
-					size="sm"
-					data-testid="chat-empty-ask"
-					onclick={() => {
-						// The composer's id — the same identity its label binds
-						// to — not `composerEl`: the component-bound ref is the
-						// mount effect's channel and is not populated under
-						// jsdom, and a chip whose act only works where the ref
-						// binds would be unpinnable where pins run.
-						document.getElementById('chat-composer')?.focus();
-					}}
-				>
-					{m['chat.empty.chip.ask']()}
-				</Button>
-				<Button
-					type="button"
-					variant="outline"
-					size="sm"
-					data-testid="chat-empty-trace"
-					onclick={() => goto(resolve('/recall'))}
-				>
-					{m['chat.empty.chip.trace']()}
-				</Button>
-				<Button
-					type="button"
-					variant="outline"
-					size="sm"
-					data-testid="chat-empty-review"
-					onclick={() => goto(resolve('/review'))}
-				>
-					{m['chat.empty.chip.review']()}
-				</Button>
+				{#each emptyChips as chip (chip.id)}
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						data-testid="chat-empty-{chip.id}"
+						onclick={chip.run}
+					>
+						{m[chip.labelKey]()}
+					</Button>
+				{/each}
 			</div>
 		</div>
 	{/if}
