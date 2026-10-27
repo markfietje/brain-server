@@ -128,6 +128,8 @@
 	/* the status green holds 3.0:1 on every fill the dot is drawn on — the
 	   sidebar foot included, where the 2026-10 value measured 2.97:1 */
 	--ok: #2b9568;
+	/* the scrollbar thumb while a scroll column is live (D4) */
+	--scrollbar-thumb-live: #c3cbd8;
 
 	color-scheme: light dark;
 	font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -255,6 +257,7 @@
 		--sidebar-hover: #141920;
 		--sidebar-border: #181d25;
 		--ok: #4fc08d;
+		--scrollbar-thumb-live: #3a4350;
 	}
 
 	:root[data-platform='windows'] {
@@ -308,6 +311,28 @@ textarea {
    row already exposes to assistive tech, so emphasis cannot drift from it. */
 [data-slot='sidebar'] [aria-current] {
 	font-weight: 500;
+}
+
+/* ── quiet scrollbars (plan 24 D4) ─────────────────────────────────────
+   Thin everywhere and coloured per scheme. The frame's two scroll columns
+   (the session region and <main>) draw their thumb only while the pointer
+   is inside the column, with a ~2 s linger: a scrollbar is a pointer
+   affordance, not furniture. The column flips ONE custom property
+   (`--scrollbar-thumb`, set inline by a pointerenter/pointerleave pair)
+   between `transparent` and the scheme's live colour; nothing listens to
+   scroll. Standard properties only — a non-`auto` `scrollbar-width` or
+   `scrollbar-color` makes WebKit and Chromium drop every
+   `::-webkit-scrollbar*` rule, so the two paths are never mixed. */
+* {
+	scrollbar-width: thin;
+}
+
+:root {
+	scrollbar-color: var(--scrollbar-thumb-live) transparent;
+}
+
+[data-slot='scroll-column'] {
+	scrollbar-color: var(--scrollbar-thumb, var(--scrollbar-thumb-live)) transparent;
 }
 
 /* ── layout pieces ──────────────────────────────────────────────────── */

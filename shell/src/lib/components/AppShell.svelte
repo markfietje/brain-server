@@ -146,6 +146,51 @@
 		void goto(resolve('/'));
 	}
 
+	// ── quiet scrollbars (plan 24 D4) ─────────────────────────────────────
+	//
+	// A scroll column draws its bar only while the pointer is inside it and
+	// keeps it ~2 s after the pointer leaves (dsh's linger): the bar is a
+	// pointer affordance, not furniture. The whole state is ONE custom
+	// property the stylesheet reads into `scrollbar-color`; nothing listens
+	// to scroll — pointer presence is the affordance, not scroll position.
+	const SCROLLBAR_LINGER_MS = 2000;
+
+	function scrollColumn() {
+		let live = $state(false);
+		let linger: ReturnType<typeof setTimeout> | null = null;
+		const cancel = (): void => {
+			if (linger !== null) {
+				clearTimeout(linger);
+				linger = null;
+			}
+		};
+		return {
+			get thumb(): string {
+				return live ? 'var(--scrollbar-thumb-live)' : 'transparent';
+			},
+			enter(): void {
+				cancel();
+				live = true;
+			},
+			leave(): void {
+				cancel();
+				linger = setTimeout(() => {
+					live = false;
+					linger = null;
+				}, SCROLLBAR_LINGER_MS);
+			},
+			dispose: cancel
+		};
+	}
+
+	const sessionScroll = scrollColumn();
+	const mainScroll = scrollColumn();
+
+	$effect(() => () => {
+		sessionScroll.dispose();
+		mainScroll.dispose();
+	});
+
 	// ── the session region (plan 23 §2 D5) ────────────────────────────
 	//
 	// The dsh-shaped list between the nav and the facts foot: one row per
@@ -697,8 +742,19 @@
 		     (and any state that is not a live list) render NOTHING here — an
 		     empty rail is noise, and a refusal is not an empty list. The rail
 		     (collapsed) keeps every name in the accessible tree via sr-only
-		     rows, the R141 law. -->
-		<div class="min-h-0 flex-1 overflow-y-auto" data-testid="session-region">
+		     rows, the R141 law. The pointer pair below only flips the column's
+		     scrollbar affordance (plan 24 D4) — no behaviour rides on it and
+		     nothing a keyboard or screen-reader user needs, so the static
+		     element stays static. -->
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="min-h-0 flex-1 overflow-y-auto"
+			data-testid="session-region"
+			data-slot="scroll-column"
+			style:--scrollbar-thumb={sessionScroll.thumb}
+			onpointerenter={sessionScroll.enter}
+			onpointerleave={sessionScroll.leave}
+		>
 			{#if sessionRows.length > 0}
 				<p class="px-3 pb-1 pt-2 text-xs font-medium text-muted-foreground {collapsed ? 'sr-only' : ''}">
 					{m['chat.sessions.heading']()}
@@ -829,7 +885,13 @@
 			style="min-height: var(--titlebar-inset)"
 			data-tauri-drag-region
 		></div>
-		<main class="min-h-0 flex-1 overflow-y-auto">
+		<main
+			class="min-h-0 flex-1 overflow-y-auto"
+			data-slot="scroll-column"
+			style:--scrollbar-thumb={mainScroll.thumb}
+			onpointerenter={mainScroll.enter}
+			onpointerleave={mainScroll.leave}
+		>
 			<div class="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pt-2 pb-6">
 				{@render children()}
 			</div>

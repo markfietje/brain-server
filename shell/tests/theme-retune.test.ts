@@ -399,3 +399,67 @@ test('the_composer_and_every_text_control_compute_at_least_16px_whatever_surroun
 		.map(({ el, px }) => `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ''} computes ${px}px`);
 	expect(small, 'text controls below 16px — the no-zoom-on-focus law').toEqual([]);
 });
+
+// ── E-3 · D4: quiet scrollbars on exactly the two measured scroll columns ──
+
+const APPSHELL_SOURCE = readFileSync(
+	join(shellRoot, 'src', 'lib', 'components', 'AppShell.svelte'),
+	'utf8'
+);
+
+/**
+ * A scrollbar is a pointer affordance (plan 24 D4, the dsh linger): the two
+ * scroll columns of the frame — the session region and the main column,
+ * measured at AppShell.svelte:701 and :832 on 2026-10-27 — draw their thumb
+ * only while the pointer is inside the column and keep it ~2 s after it
+ * leaves. The state is ONE custom property (`--scrollbar-thumb`) the
+ * stylesheet reads into `scrollbar-color`; the pin asserts the property
+ * flip, never pixels (jsdom lays nothing out). Nothing listens to scroll:
+ * pointer presence is the affordance, not scroll position.
+ */
+test('the_two_scroll_columns_draw_their_bar_only_while_the_pointer_is_inside_and_linger_two_seconds', async () => {
+	const { flushSync } = await import('svelte');
+	await renderFrame();
+
+	const columns = [...document.querySelectorAll<HTMLElement>('[data-slot="scroll-column"]')];
+	expect(
+		columns.map((el) => el.getAttribute('data-testid') ?? el.tagName.toLowerCase()),
+		'exactly the two measured regions are scroll columns: the session region and <main>'
+	).toEqual(['session-region', 'main']);
+
+	const thumb = (el: HTMLElement): string => computed(el).getPropertyValue('--scrollbar-thumb').trim();
+
+	for (const column of columns) {
+		const name = column.getAttribute('data-testid') ?? column.tagName.toLowerCase();
+		expect(thumb(column), `${name}: idle, the thumb is transparent`).toBe('transparent');
+
+		column.dispatchEvent(new Event('pointerenter'));
+		flushSync();
+		expect(thumb(column), `${name}: pointer inside, the thumb is drawn`).toBe('var(--scrollbar-thumb-live)');
+
+		vi.useFakeTimers();
+		try {
+			column.dispatchEvent(new Event('pointerleave'));
+			flushSync();
+			expect(thumb(column), `${name}: just left, the bar lingers`).toBe('var(--scrollbar-thumb-live)');
+			vi.advanceTimersByTime(1999);
+			flushSync();
+			expect(thumb(column), `${name}: 1999 ms after leaving, still lingering`).toBe('var(--scrollbar-thumb-live)');
+			vi.advanceTimersByTime(1);
+			flushSync();
+			expect(thumb(column), `${name}: 2000 ms after leaving, quiet again`).toBe('transparent');
+		} finally {
+			vi.useRealTimers();
+		}
+	}
+
+	// No scroll listener anywhere in the frame — the affordance is pointer presence.
+	expect(
+		/onscroll|addEventListener\(\s*['"]scroll['"]/.test(APPSHELL_SOURCE),
+		'AppShell must register no scroll listener — plan 24 D4 forbids a scroll-driven bar'
+	).toBe(false);
+	// Both scheme blocks carry the live colour the drawn state resolves to.
+	const { light, dark } = schemeBlocks();
+	expect(light.get('--scrollbar-thumb-live'), 'the light scheme names the drawn thumb colour').toBeDefined();
+	expect(dark.get('--scrollbar-thumb-live'), 'the dark scheme names the drawn thumb colour').toBeDefined();
+});
