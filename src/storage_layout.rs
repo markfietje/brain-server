@@ -303,8 +303,9 @@ pub const SCHEMA_VERSION_V1_32_26: &str = "1.32.26";
 /// the principal names a roster identity manages, filled at grant time
 /// (`brain principal grant --manages a,b`) and resolved into the middleware's
 /// `manages` identity ONLY for `PrincipalKind::Plugin` (a colliding JWT `sub`
-/// inherits nothing — the M3-g rule). A JWT's `manages` comes from its claim
-/// alone, byte-for-byte unchanged. One additive NULLable column on the
+/// inherits nothing — the roster-lane isolation rule). A JWT's `manages`
+/// comes from its claim alone, byte-for-byte unchanged. One additive NULLable
+/// column on the
 /// operator-only roster; no column dropped, none rebuilt, no foreign key
 /// declared (the table's own no-FK house law).
 pub const SCHEMA_VERSION_V1_32_27: &str = "1.32.27";

@@ -773,7 +773,7 @@ const VALUE_FLAGS: &[&str] = &[
     "to",
     "tools",
     // `brain principal grant --manages`: the roster's reports source (the
-    // approve-action round, C2 G-6 item 2) — the lesson of this verb's own
+    // approve-action round) — the lesson of this verb's own
     // flag-vocabulary fix holds: a documented flag sits in the closed
     // vocabulary before its first run.
     "manages",

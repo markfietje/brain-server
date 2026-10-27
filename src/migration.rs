@@ -3503,7 +3503,7 @@ pub fn run_migration_with_store_dim(
          );",
     )?;
 
-    // The roster's `manages` column (the approve-action round, C2 G-6 item 2):
+    // The roster's `manages` column (the approve-action round):
     // the principal names this roster identity manages, filled at grant time
     // (`brain principal grant --manages a,b`) — the reports-visibility source
     // for a roster principal whose role carries `owner_filter: "reports"`,

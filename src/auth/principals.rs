@@ -307,7 +307,7 @@ pub fn plugin_principal_for_token(
         return Err("identity_revoked".to_string());
     }
     let domain_lc = domain.trim().to_ascii_lowercase();
-    // THE MANAGES UNION (C2 G-6 item 2). This lane builds ONLY
+    // THE MANAGES UNION (the approve-action round's register row). This lane builds ONLY
     // `PrincipalKind::Plugin` principals — that kind IS the fence, the
     // named_tools rule repeated: the roster's `manages` column resolves into
     // the identity here and nowhere else, so a JWT `sub` colliding with a

@@ -439,8 +439,9 @@ fn default_pending() -> String {
 }
 
 /// The one domain a ROSTER principal's grant names, or `None` for every
-/// other principal class. The domain-scoped proposals arm (C2 G-6 item 1)
-/// authorizes the queue read and the approve of rows in THIS domain — the
+/// other principal class. The domain-scoped proposals arm (the
+/// approve-action round's register row) authorizes the queue read and the
+/// approve of rows in THIS domain — the
 /// kind is the fence (the named_tools rule): `PrincipalKind::Plugin` only,
 /// so a JWT principal wearing the same shape rides the global leg
 /// unchanged, and a grant that somehow carries more than one scope domain
@@ -478,7 +479,7 @@ pub async fn list_proposals(
         .map(str::trim)
         .filter(|d| !d.is_empty())
         .map(str::to_string);
-    // THE DOMAIN-SCOPED ARM (C2 G-6 item 1 — the build half of C1's
+    // THE DOMAIN-SCOPED ARM (the build half of C1's
     // `the_approve_action_is_global_gated`): a ROSTER reviewer's unscoped
     // queue read is THEIR DOMAIN'S queue. The arm fires only when the
     // caller names no domain, holds `PrincipalKind::Plugin`, and the
@@ -684,11 +685,13 @@ pub async fn approve_proposal(
     Path(id): Path<i64>,
     Query(q): Query<ApproveQuery>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
-    // THE DOMAIN-SCOPED ARM (C2 G-6 item 1), beside the global leg: a roster
+    // THE DOMAIN-SCOPED ARM (the approve-action round's register row),
+    // beside the global leg: a roster
     // principal authorizes the act against the domain their GRANT names —
     // the scope that grant wrote covers it, and the row-domain re-auth below
     // still binds the act to the row's own stamp, so a foreign row refuses
-    // THERE, existence-blind (the M3-g machine, not a new one). Every other
+    // THERE, existence-blind (the roster machine's own isolation law, not a
+    // new one). Every other
     // principal class — the operator, every JWT, capability tokens — keeps
     // the global leg byte-for-byte, and the `approve` capability stays bound
     // by the same `authorize_role` for everyone.
@@ -1742,7 +1745,7 @@ pub async fn approve_proposal(
             "global",
         );
 
-        // THE OK-ACT IS ATTRIBUTED (A-3, C2 G-6): the actor is the principal
+        // THE OK-ACT IS ATTRIBUTED (the approve-action round): the actor is the principal
         // that made the decision — the roster reviewer's NAME (the existing
         // `?principal=` filter shows the approve with no wire change), not
         // the masked `api` subject that hid OK-acts from the footprint law.
