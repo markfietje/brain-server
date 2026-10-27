@@ -425,7 +425,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
         name: "principal grant",
         json: false,
         run: cmd_principal_grant,
-        usage: "brain principal grant --name N --role plugin --domain D\n                     [--tools t1,t2] [--ttl-days N] [--out PATH] [--db PATH]\n                     (mint one plugin principal: a 0600 token file + a roster\n                      row + an audit row; re-granting a name rotates it, a\n                      REVOKED name stays dead — grant a new name instead)",
+        usage: "brain principal grant --name N --role plugin --domain D\n                     [--tools t1,t2] [--manages p1,p2] [--ttl-days N] [--out PATH]\n                     [--db PATH]\n                     (mint one plugin principal: a 0600 token file + a roster\n                      row + an audit row; --manages names the principals this\n                      identity manages (the reports source a reports-role\n                      roster principal reads); re-granting a name rotates it,\n                      a REVOKED name stays dead — grant a new name instead)",
     },
     Subcommand {
         name: "principal revoke",
@@ -772,6 +772,11 @@ const VALUE_FLAGS: &[&str] = &[
     "sub-sub",
     "to",
     "tools",
+    // `brain principal grant --manages`: the roster's reports source (the
+    // approve-action round, C2 G-6 item 2) — the lesson of this verb's own
+    // flag-vocabulary fix holds: a documented flag sits in the closed
+    // vocabulary before its first run.
+    "manages",
     "ttl-days",
     "var",
     "verify",
@@ -6187,7 +6192,7 @@ fn cli_unix_now() -> i64 {
 
 fn cmd_principal_grant(args: &[String]) -> Result<(), String> {
     const USAGE: &str = "usage: brain principal grant --name N --role plugin --domain D \
-         [--tools t1,t2] [--ttl-days N] [--out PATH] [--db PATH]";
+         [--tools t1,t2] [--manages p1,p2] [--ttl-days N] [--out PATH] [--db PATH]";
     let (_positionals, flags) = parse_flags(args)?;
     let name = flags
         .get("name")
@@ -6203,6 +6208,16 @@ fn cmd_principal_grant(args: &[String]) -> Result<(), String> {
         .ok_or_else(|| format!("{USAGE}\n  --domain is required"))?;
     let tools: Vec<String> = flags
         .get("tools")
+        .and_then(|o| o.clone())
+        .map(|csv| {
+            csv.split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let manages: Vec<String> = flags
+        .get("manages")
         .and_then(|o| o.clone())
         .map(|csv| {
             csv.split(',')
@@ -6245,6 +6260,7 @@ fn cmd_principal_grant(args: &[String]) -> Result<(), String> {
         &role,
         &domain,
         &tools.iter().map(String::as_str).collect::<Vec<_>>(),
+        &manages.iter().map(String::as_str).collect::<Vec<_>>(),
         &brain_server::auth::principals::hash_token(&token),
         now,
         expires_at,
@@ -6255,13 +6271,15 @@ fn cmd_principal_grant(args: &[String]) -> Result<(), String> {
             "principal grant",
             serde_json::json!({
                 "name": name, "role": role, "domain": domain, "tools": tools,
+                "manages": manages,
                 "expires_at": expires_at, "token_file": out.display().to_string(),
             }),
         );
     }
     println!(
-        "granted {name}: role={role} domain={domain} tools={}",
-        tools.join(",")
+        "granted {name}: role={role} domain={domain} tools={} manages={}",
+        tools.join(","),
+        manages.join(",")
     );
     println!("token file: {} (0600)", out.display());
     match expires_at {
@@ -6314,7 +6332,8 @@ fn cmd_principal_list(args: &[String]) -> Result<(), String> {
             .map(|r| {
                 serde_json::json!({
                     "name": r.name, "role": r.role, "domain": r.domain,
-                    "tools": r.tools, "created_at": r.created_at,
+                    "tools": r.tools, "manages": r.manages,
+                    "created_at": r.created_at,
                     "expires_at": r.expires_at, "revoked": r.revoked,
                 })
             })
@@ -6322,8 +6341,8 @@ fn cmd_principal_list(args: &[String]) -> Result<(), String> {
         return emit_json_ok("principal list", serde_json::json!({ "principals": data }));
     }
     println!(
-        "{:<24} {:<12} {:<16} {:<28} {}",
-        "name", "role", "domain", "tools", "status"
+        "{:<24} {:<12} {:<16} {:<28} {:<20} {}",
+        "name", "role", "domain", "tools", "manages", "status"
     );
     for r in &rows {
         let expires = match r.expires_at {
@@ -6336,11 +6355,12 @@ fn cmd_principal_list(args: &[String]) -> Result<(), String> {
             expires
         };
         println!(
-            "{:<24} {:<12} {:<16} {:<28} {}",
+            "{:<24} {:<12} {:<16} {:<28} {:<20} {}",
             truncate(&r.name, 22),
             truncate(&r.role, 10),
             truncate(&r.domain, 14),
             truncate(&r.tools.join(","), 26),
+            truncate(&r.manages.join(","), 18),
             status
         );
     }

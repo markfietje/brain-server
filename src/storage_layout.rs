@@ -299,6 +299,15 @@ pub const SCHEMA_VERSION_V1_32_25: &str = "1.32.25";
 /// `knowledge` parent delete are unchanged. One additive NULLable column — no
 /// column dropped, none rebuilt, no foreign key declared.
 pub const SCHEMA_VERSION_V1_32_26: &str = "1.32.26";
+/// The roster's reports source: `principals.manages` (additive, NULLable) —
+/// the principal names a roster identity manages, filled at grant time
+/// (`brain principal grant --manages a,b`) and resolved into the middleware's
+/// `manages` identity ONLY for `PrincipalKind::Plugin` (a colliding JWT `sub`
+/// inherits nothing — the M3-g rule). A JWT's `manages` comes from its claim
+/// alone, byte-for-byte unchanged. One additive NULLable column on the
+/// operator-only roster; no column dropped, none rebuilt, no foreign key
+/// declared (the table's own no-FK house law).
+pub const SCHEMA_VERSION_V1_32_27: &str = "1.32.27";
 
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
@@ -320,7 +329,7 @@ pub const SCHEMA_VERSION_V0_9_9: &str = "0.9.9";
 /// Security posture: a source DB stamped NEWER than this is refused loudly
 /// ([`refuse_newer_schema`]) — migrating *down* would silently drop columns
 /// the newer release added, i.e. data loss dressed as a migration.
-pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_26;
+pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_27;
 
 /// Numeric dotted-version compare (std-only, no semver dependency).
 /// Non-numeric components are skipped (the `schema_ge` precedent in the
@@ -778,13 +787,15 @@ mod tests {
         // the scope round moved the ceiling to 1.32.23, so the probe moved to 1.32.24, and the
         // per-domain axis round moved the ceiling to 1.32.24, so the probe moved to 1.32.25, and the
         // model-citation-key round moved the ceiling to 1.32.25, so the probe moved to 1.32.26, and the
-        // proposal-edge round moved the ceiling to 1.32.26, so the probe moved to 1.32.27.
+        // proposal-edge round moved the ceiling to 1.32.26, so the probe moved to 1.32.27, and the
+        // approve-action round (the roster `manages` column) moved the ceiling to 1.32.27, so the
+        // probe moved to 1.32.28.
         // A probe
         // pinned AT the ceiling silently tests `Equal`, not `Greater` — the assertion
         // would keep passing while a NEWER-schema database was blessed instead of
         // refused, which is the one failure this function exists to prevent.
-        assert!(is_newer_than_known(Some("1.32.27")));
-        assert!(!is_newer_than_known(Some("1.32.26")));
+        assert!(is_newer_than_known(Some("1.32.28")));
+        assert!(!is_newer_than_known(Some("1.32.27")));
         assert!(!is_newer_than_known(Some("1.32.9")));
         assert!(!is_newer_than_known(Some("1.28.9")));
     }

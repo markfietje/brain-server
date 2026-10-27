@@ -3378,6 +3378,34 @@ fn grant_plugin_on(srv: &TestServer, name: &str, domain: &str, token: &str) {
         "plugin",
         domain,
         &[],
+        &[],
+        &brain_server::auth::principals::hash_token(token),
+        1_000,
+        None,
+    )
+    .expect("grant must land");
+}
+
+/// Grant one roster principal on an ARBITRARY preset role, with the manages
+/// set named at grant time (the approve-action round: the C1 rehearsal
+/// mounts the support vertical's staff postures — `supervisor`,
+/// `qa-specialist` — on the roster).
+fn grant_roster_on(
+    srv: &TestServer,
+    name: &str,
+    role: &str,
+    domain: &str,
+    manages: &[&str],
+    token: &str,
+) {
+    let conn = srv.state.pool.get().expect("pool");
+    brain_server::auth::principals::grant(
+        &conn,
+        name,
+        role,
+        domain,
+        &[],
+        manages,
         &brain_server::auth::principals::hash_token(token),
         1_000,
         None,
@@ -3676,6 +3704,7 @@ fn a_plugin_principals_tool_reach_is_exactly_the_roster_row() {
             "plugin",
             "education",
             &["ump.recall"],
+            &[],
             &brain_server::auth::principals::hash_token("unused-here"),
             1_000,
             None,
@@ -3719,6 +3748,114 @@ fn a_plugin_principals_tool_reach_is_exactly_the_roster_row() {
         brain_server::handlers::authorize_tool(&Some(colliding), &pool, "ump.recall").is_err(),
         "a JWT sub that collides with a roster name must not wear the plugin's \
          named tools — the roster arm consults kind == Plugin only"
+    );
+}
+
+/// THE `--manages` FLAG, THROUGH THE REAL BINARY (the approve-action round,
+/// C2 G-6 item 2): `brain principal grant --manages a,b` lands the roster
+/// column and `principal list` reads it back — the same round-trip law the
+/// grant verb's first pins held, now over the reports source. The lane-level
+/// union has its own unit pins; this pin holds the OPERATOR DOOR: the flag
+/// parses, the column lands, the audit detail names it.
+#[test]
+fn the_grant_manages_flag_lands_the_roster_column_and_the_list_shows_it() {
+    let bin = env!("CARGO_BIN_EXE_brain");
+    let dir = tempfile::TempDir::new().expect("tmp");
+    let db = dir.path().join("brain.db");
+    {
+        brain_server::register_sqlite_vec::register_sqlite_vec();
+        let mut c = rusqlite::Connection::open(&db).expect("open");
+        brain_server::migration::run_migration(&mut c, 0).expect("migration");
+    }
+    let out_file = dir.path().join("support-supervisor.token");
+    let out = std::process::Command::new(bin)
+        .args([
+            "principal",
+            "grant",
+            "--name",
+            "support-supervisor",
+            "--role",
+            "plugin",
+            "--domain",
+            "support",
+            "--manages",
+            "support-agent,support-agent-2",
+            "--out",
+        ])
+        .arg(&out_file)
+        .args(["--db"])
+        .arg(&db)
+        .output()
+        .expect("the brain binary must run");
+    assert!(
+        out.status.success(),
+        "grant with --manages must succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("manages=support-agent,support-agent-2"),
+        "the grant's own receipt names the manages set: {stdout}"
+    );
+
+    // the roster holds the set, and `principal list` reads it back.
+    let out = std::process::Command::new(bin)
+        .args(["--json", "principal", "list", "--db"])
+        .arg(&db)
+        .output()
+        .expect("the brain binary must run");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"manages\":[\"support-agent\",\"support-agent-2\"]"),
+        "the roster carries the manages set: {stdout}"
+    );
+
+    // and the grant left its audited act (columns carry hashes — the
+    // plaintext detail lives only in the chain's input, so count + actor +
+    // kind are what a test reads back, the roster round-trip's own law).
+    {
+        let c = rusqlite::Connection::open(&db).expect("open");
+        let rows: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind='auth' AND actor='operator'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the grant's audit row");
+        assert_eq!(rows, 1, "the grant wrote one audited act");
+    }
+
+    // a manages entry that is not a principal name is REFUSED — the flag's
+    // vocabulary is the principal charset, through the real binary.
+    let out = std::process::Command::new(bin)
+        .args([
+            "principal",
+            "grant",
+            "--name",
+            "bad-grant",
+            "--role",
+            "plugin",
+            "--domain",
+            "support",
+            "--manages",
+            "Not A Name",
+            "--out",
+        ])
+        .arg(dir.path().join("bad.token"))
+        .args(["--db"])
+        .arg(&db)
+        .output()
+        .expect("the brain binary must run");
+    assert!(
+        !out.status.success(),
+        "a bad manages entry must refuse: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("invalid manages entry"),
+        "the refusal names the law: {stderr}"
     );
 }
 

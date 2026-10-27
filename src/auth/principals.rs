@@ -39,6 +39,12 @@ pub struct RosterRow {
     pub role: String,
     pub domain: String,
     pub tools: Vec<String>,
+    /// The principal names this identity manages (the reports-visibility
+    /// source for a roster principal whose role carries
+    /// `owner_filter: "reports"` — where a JWT reads its `manages` claim).
+    /// Filled at grant time (`--manages a,b`); empty = manages nothing
+    /// (deny-by-default: a reports role with no manages set reads nothing).
+    pub manages: Vec<String>,
     pub created_at: i64,
     pub expires_at: Option<i64>,
     pub revoked: bool,
@@ -76,6 +82,7 @@ pub fn validate_grant(
     role: &str,
     domain: &str,
     tools: &[&str],
+    manages: &[&str],
 ) -> Result<(), String> {
     if !crate::storage_layout::is_valid_domain(name) {
         return Err(format!(
@@ -99,6 +106,18 @@ pub fn validate_grant(
             return Err(format!("tool name '{t}' invalid (1..=63 chars)"));
         }
     }
+    // Each manages entry names a PRINCIPAL (it becomes an owner-filter
+    // allowlist key), so it carries the same charset law the principal name
+    // does. Empty = manages nothing — the deny-by-default a reports role
+    // already applies; there is no wildcard and none is wanted.
+    for m in manages {
+        if !crate::storage_layout::is_valid_domain(m) {
+            return Err(format!(
+                "invalid manages entry '{m}' (lowercase alnum + hyphen, max 63 — \
+                 each entry names a principal)"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -115,18 +134,20 @@ pub fn grant(
     role: &str,
     domain: &str,
     tools: &[&str],
+    manages: &[&str],
     token_hash: &str,
     now: i64,
     expires_at: Option<i64>,
 ) -> Result<(), String> {
-    validate_grant(conn, name, role, domain, tools)?;
+    validate_grant(conn, name, role, domain, tools, manages)?;
     conn.execute(
-        "INSERT INTO principals(name, role, domain, tools, token_hash, created_at, expires_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "INSERT INTO principals(name, role, domain, tools, manages, token_hash, created_at, expires_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(name) DO UPDATE SET
              role = excluded.role,
              domain = excluded.domain,
              tools = excluded.tools,
+             manages = excluded.manages,
              token_hash = excluded.token_hash,
              created_at = excluded.created_at,
              expires_at = excluded.expires_at",
@@ -135,6 +156,11 @@ pub fn grant(
             role,
             domain,
             tools.join(","),
+            if manages.is_empty() {
+                None
+            } else {
+                Some(manages.join(","))
+            },
             token_hash,
             now,
             expires_at
@@ -148,8 +174,9 @@ pub fn grant(
         &format!("principal:{name}"),
         crate::audit::AuditStatus::Ok,
         &format!(
-            "grant: role={role} domain={domain} tools={}",
-            tools.join(",")
+            "grant: role={role} domain={domain} tools={} manages={}",
+            tools.join(","),
+            manages.join(",")
         ),
     );
     Ok(())
@@ -196,7 +223,7 @@ pub fn revoke_grant(
 pub fn list(conn: &Connection) -> Result<Vec<RosterRow>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT p.name, p.role, p.domain, p.tools, p.created_at, p.expires_at,
+            "SELECT p.name, p.role, p.domain, p.tools, p.manages, p.created_at, p.expires_at,
                     EXISTS(SELECT 1 FROM revoked_principals r WHERE r.principal = p.name)
              FROM principals p ORDER BY p.created_at, p.name",
         )
@@ -204,6 +231,7 @@ pub fn list(conn: &Connection) -> Result<Vec<RosterRow>, String> {
     let rows = stmt
         .query_map([], |r| {
             let tools_csv: String = r.get(3)?;
+            let manages_csv: Option<String> = r.get(4)?;
             Ok(RosterRow {
                 name: r.get(0)?,
                 role: r.get(1)?,
@@ -214,9 +242,16 @@ pub fn list(conn: &Connection) -> Result<Vec<RosterRow>, String> {
                     .filter(|s| !s.is_empty())
                     .map(String::from)
                     .collect(),
-                created_at: r.get(4)?,
-                expires_at: r.get(5)?,
-                revoked: r.get::<_, i64>(6)? != 0,
+                manages: manages_csv
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect(),
+                created_at: r.get(5)?,
+                expires_at: r.get(6)?,
+                revoked: r.get::<_, i64>(7)? != 0,
             })
         })
         .map_err(|e| format!("principals table: {e}"))?;
@@ -246,20 +281,21 @@ pub fn plugin_principal_for_token(
     let token_hash = hash_token(presented);
     let row = conn
         .query_row(
-            "SELECT name, role, domain, expires_at FROM principals WHERE token_hash = ?1",
+            "SELECT name, role, domain, manages, expires_at FROM principals WHERE token_hash = ?1",
             params![token_hash],
             |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
-                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
                 ))
             },
         )
         .optional()
         .map_err(|e| format!("principal store error: {e}"))?;
-    let Some((name, role, domain, expires_at)) = row else {
+    let Some((name, role, domain, manages_csv, expires_at)) = row else {
         return Ok(None);
     };
     if expires_at.is_some_and(|exp| exp < now) {
@@ -271,6 +307,20 @@ pub fn plugin_principal_for_token(
         return Err("identity_revoked".to_string());
     }
     let domain_lc = domain.trim().to_ascii_lowercase();
+    // THE MANAGES UNION (C2 G-6 item 2). This lane builds ONLY
+    // `PrincipalKind::Plugin` principals — that kind IS the fence, the
+    // named_tools rule repeated: the roster's `manages` column resolves into
+    // the identity here and nowhere else, so a JWT `sub` colliding with a
+    // roster name inherits nothing (a JWT's `manages` comes from its claim
+    // alone, byte-for-byte as before this column existed). Empty/NULL =
+    // manages nothing — the deny-by-default a reports role already applies.
+    let manages = manages_csv
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
     Ok(Some(Principal {
         sub: name,
         tenant: crate::audit::DEFAULT_TENANT.to_string(),
@@ -281,7 +331,7 @@ pub fn plugin_principal_for_token(
         }],
         jti: "plugin".to_string(),
         roles: vec![role],
-        manages: vec![],
+        manages,
         kind: PrincipalKind::Plugin,
     }))
 }
@@ -326,6 +376,7 @@ mod tests {
             "plugin",
             "education",
             &["ump.recall", "ump.get"],
+            &[],
             &hash_token(token),
             1_000,
             None,
@@ -379,6 +430,7 @@ mod tests {
             "edu-plugin",
             "plugin",
             "education",
+            &[],
             &[],
             &hash_token("bearer-two"),
             2_000,
@@ -437,6 +489,7 @@ mod tests {
             "plugin",
             "education",
             &[],
+            &[],
             &hash_token("expiring"),
             1_000,
             Some(2_000),
@@ -466,6 +519,7 @@ mod tests {
             "plugin",
             "education",
             &[],
+            &[],
             &hash_token("bearer-two"),
             3_000,
             None,
@@ -481,16 +535,26 @@ mod tests {
     fn validate_refuses_an_unknown_role_and_bad_names() {
         let conn = db();
         // the role must exist — `plugin` ships, `root` does not
-        assert!(validate_grant(&conn, "edu-plugin", "plugin", "education", &[]).is_ok());
+        assert!(validate_grant(&conn, "edu-plugin", "plugin", "education", &[], &[]).is_ok());
         assert!(
-            validate_grant(&conn, "edu-plugin", "root", "education", &[])
+            validate_grant(&conn, "edu-plugin", "root", "education", &[], &[])
                 .unwrap_err()
                 .contains("not in the roles store")
         );
-        assert!(validate_grant(&conn, "Bad Name", "plugin", "education", &[]).is_err());
-        assert!(validate_grant(&conn, "edu-plugin", "plugin", "no such domain", &[]).is_err());
-        assert!(validate_grant(&conn, "edu-plugin", "plugin", "education", &[""]).is_err());
-        assert!(validate_grant(&conn, "edu-plugin", "plugin", "education", &["ok-tool"]).is_ok());
+        assert!(validate_grant(&conn, "Bad Name", "plugin", "education", &[], &[]).is_err());
+        assert!(validate_grant(&conn, "edu-plugin", "plugin", "no such domain", &[], &[]).is_err());
+        assert!(validate_grant(&conn, "edu-plugin", "plugin", "education", &[""], &[]).is_err());
+        assert!(
+            validate_grant(
+                &conn,
+                "edu-plugin",
+                "plugin",
+                "education",
+                &["ok-tool"],
+                &[]
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -502,5 +566,157 @@ mod tests {
             vec!["ump.recall".to_string(), "ump.get".to_string()]
         );
         assert!(named_tools(&conn, "no-such-principal").unwrap().is_empty());
+    }
+
+    // ── the manages union (C2 G-6 item 2) ───────────────────────────────
+
+    /// The roster's `manages` column resolves into the identity the plugin
+    /// lane builds — and this lane is the ONLY site that does it, because it
+    /// is the only site that builds `PrincipalKind::Plugin`. The kind is the
+    /// fence (the named_tools rule): a JWT `sub` colliding with a roster
+    /// name inherits nothing, and a JWT's `manages` stays its claim alone.
+    #[test]
+    fn the_roster_manages_union_resolves_into_the_plugin_identity() {
+        let conn = db();
+        grant(
+            &conn,
+            "support-supervisor",
+            "plugin",
+            "support",
+            &[],
+            &["support-agent"],
+            &hash_token("sup-bearer"),
+            1_000,
+            None,
+        )
+        .expect("grant");
+        let p = plugin_principal_for_token(&conn, "sup-bearer", 2_000)
+            .unwrap()
+            .expect("a live grant resolves");
+        assert_eq!(p.kind, PrincipalKind::Plugin);
+        assert_eq!(
+            p.manages,
+            vec!["support-agent".to_string()],
+            "the roster value IS the resolved identity's manages set"
+        );
+
+        // a grant WITHOUT manages resolves empty — deny-by-default, the
+        // reports role's own floor; NULL on the row reads as nothing.
+        grant_fixture(&conn, "bare-bearer");
+        let bare = plugin_principal_for_token(&conn, "bare-bearer", 2_000)
+            .unwrap()
+            .expect("resolves");
+        assert!(
+            bare.manages.is_empty(),
+            "no manages named at grant time = manages nothing"
+        );
+    }
+
+    /// The migration is replay-safe: a DB that already carries granted rows
+    /// gains the column without losing them, and re-running the migration
+    /// changes nothing (the presence-guarded ALTER is idempotent).
+    #[test]
+    fn the_manages_migration_is_replay_safe_and_keeps_rows() {
+        let mut conn = db();
+        grant(
+            &conn,
+            "support-supervisor",
+            "plugin",
+            "support",
+            &[],
+            &["support-agent", "support-agent-2"],
+            &hash_token("replay-bearer"),
+            1_000,
+            None,
+        )
+        .expect("grant");
+        // THE REPLAY: the same DB migrated again — what the migrate-rehearse
+        // and every boot does. The presence-guarded ALTER must be idempotent
+        // and the granted rows must survive untouched.
+        crate::migration::run_migration(&mut conn, 0).expect("a second migration run");
+        crate::migration::run_migration(&mut conn, 0).expect("a third migration run");
+        let p = plugin_principal_for_token(&conn, "replay-bearer", 2_000)
+            .unwrap()
+            .expect("the row survived the replay");
+        assert_eq!(
+            p.manages,
+            vec!["support-agent".to_string(), "support-agent-2".to_string()],
+            "a rehearsal that replays the migration forgets no credential"
+        );
+    }
+
+    /// Each manages entry names a PRINCIPAL (it becomes an owner-filter
+    /// allowlist key), so it carries the principal-name charset law; there
+    /// is no wildcard and none is wanted.
+    #[test]
+    fn a_bad_manages_entry_is_refused() {
+        let conn = db();
+        assert!(validate_grant(&conn, "sup", "plugin", "support", &[], &["ok-name"]).is_ok());
+        assert!(validate_grant(&conn, "sup", "plugin", "support", &[], &["Bad Name"]).is_err());
+        let too_long = "a".repeat(64);
+        assert!(validate_grant(&conn, "sup", "plugin", "support", &[], &[&too_long]).is_err());
+    }
+
+    /// A re-grant rotates the manages set with the rest of the row — the
+    /// roster is identity, the audit chain is history.
+    #[test]
+    fn regrant_rotates_the_manages_set() {
+        let conn = db();
+        grant(
+            &conn,
+            "support-supervisor",
+            "plugin",
+            "support",
+            &[],
+            &["support-agent"],
+            &hash_token("rot-bearer"),
+            1_000,
+            None,
+        )
+        .expect("grant");
+        grant(
+            &conn,
+            "support-supervisor",
+            "plugin",
+            "support",
+            &[],
+            &[],
+            &hash_token("rot-bearer"),
+            2_000,
+            None,
+        )
+        .expect("re-grant");
+        let row = list(&conn).unwrap().remove(0);
+        assert!(
+            row.manages.is_empty(),
+            "the re-grant's empty set replaced the old one"
+        );
+        let p = plugin_principal_for_token(&conn, "rot-bearer", 3_000)
+            .unwrap()
+            .expect("resolves");
+        assert!(p.manages.is_empty());
+    }
+
+    /// THE JWT CLAIM IS THE ONLY JWT SOURCE (structural). The middleware's
+    /// JWT arm fills `manages` from the CLAIM — `manages: claims.manages` —
+    /// and no roster SQL lives in the middleware file: the roster is read
+    /// ONLY through the plugin lane in `principals.rs`, so a JWT sub that
+    /// collides with a roster name cannot inherit its manages set (the
+    /// kind-is-the-fence law, held where the reader can see it).
+    #[test]
+    fn the_jwt_manages_source_is_its_claim_alone() {
+        let auth_src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server/router/auth.rs"),
+        )
+        .expect("read the middleware source");
+        assert!(
+            auth_src.contains("manages: claims.manages"),
+            "the JWT principal's manages comes from the claim"
+        );
+        assert!(
+            !auth_src.contains("FROM principals"),
+            "no roster SQL in the middleware — the roster is read only through \
+             the plugin lane, so a JWT cannot consult it"
+        );
     }
 }

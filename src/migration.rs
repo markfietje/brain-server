@@ -3216,8 +3216,8 @@ pub fn run_migration_with_store_dim(
     }
 
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.26')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.26';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.27')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.27';",
         [],
     )?;
 
@@ -3496,11 +3496,34 @@ pub fn run_migration_with_store_dim(
             role       TEXT NOT NULL,
             domain     TEXT NOT NULL,
             tools      TEXT NOT NULL DEFAULT '',
+            manages    TEXT,
             token_hash TEXT NOT NULL DEFAULT '',
             created_at INTEGER NOT NULL,
             expires_at INTEGER
          );",
     )?;
+
+    // The roster's `manages` column (the approve-action round, C2 G-6 item 2):
+    // the principal names this roster identity manages, filled at grant time
+    // (`brain principal grant --manages a,b`) — the reports-visibility source
+    // for a roster principal whose role carries `owner_filter: "reports"`,
+    // where a JWT reads its `manages` claim. NULL = manages nothing (every
+    // pre-existing row). Presence-guarded ALTER so a DB created before the
+    // column replay-safely gains it; the CREATE TABLE above covers fresh DBs.
+    {
+        let col = "manages";
+        let present: bool = db
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('principals') WHERE name='{col}'"),
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(&format!("ALTER TABLE principals ADD COLUMN {col} TEXT"), [])?;
+        }
+    }
 
     // ── the installed-pack register (plan 28 §4) ─────────────────
     // One row per installed pack: the roster door's neighborhood (the
