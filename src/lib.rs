@@ -171,6 +171,17 @@ pub mod integrity;
 pub mod legal_hold;
 pub mod linker;
 pub mod loom;
+/// the Tier C pack format (plan 28 §4): a minisign-signed archive carrying
+/// ONLY data and declarations for one vertical — domain, roles, procedures,
+/// taxonomy, rules, i18n, a Tier A UI manifest. This module is the format as
+/// VALIDATION, pure and I/O-free: the file-set allowlist IS the format, every
+/// declaration validates against the machinery that will consume it (the
+/// role parser, the registered wizard-pack schema, the rules tables' shape,
+/// the domain-create path's requirements, the five-catalog parity law), and
+/// any executable content is a refusal naming the file. Signature
+/// verification lives beside it in [`packs::signature`]; the installer that
+/// composes the doors is `brain plugin install`.
+pub mod packs;
 pub mod ph;
 pub mod procedural;
 pub mod qa;
