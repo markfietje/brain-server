@@ -158,6 +158,13 @@ pub enum AuditKind {
     /// the chain stores hashes of target + detail, so no session key and no
     /// turn text rides the chain raw.
     Chat,
+    /// governance-profile rule rows (the `rules` tables' ONE door — C2 G-3,
+    /// closing C1's `the_rules_insert_door_is_missing`): every insert and
+    /// revision through `brain rules` or the pack installer hashes one row.
+    /// A dedicated kind (the `Procedure` precedent) so kind-filtered
+    /// consumers find jurisdiction-law writes without detail-hash mining;
+    /// the body rides the chain as a hash only.
+    Rules,
 }
 
 impl AuditKind {
@@ -183,6 +190,7 @@ impl AuditKind {
             AuditKind::Forget => "forget",
             AuditKind::Procedure => "procedure",
             AuditKind::Chat => "chat",
+            AuditKind::Rules => "rules",
         }
     }
 }

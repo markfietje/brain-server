@@ -439,6 +439,29 @@ const SUBCOMMANDS: &[Subcommand] = &[
         run: cmd_principal_list,
         usage: "brain principal list [--db PATH]",
     },
+    // The rules door (C2 G-3) — C1's named finding `the_rules_insert_door_
+    // is_missing`, closed. LOCAL operator acts on the DB the operator names,
+    // never HTTP (a wire writer would let any JWT-bearing principal mint
+    // jurisdiction law; the roster door's posture is the authority). One
+    // audit row per insert; a replay of the same revision is refused, only a
+    // HIGHER revision revises law. The fixture rows that C1 had to land by
+    // direct SQL are the door's first regression fixtures.
+    Subcommand {
+        name: "rules insert",
+        json: false,
+        run: cmd_rules_insert,
+        usage: "brain rules insert --jurisdiction J --subject S --rule-key K\n \
+                     --body \"<the rule>\" --source-ref R --revision N\n \
+                     [--effective-at T] [--reviewed-at T] [--expires-at T] [--db PATH]\n \
+                     (insert or revise ONE governance rule row: a higher revision\n \
+                      replaces the row in place, the same or lower revision is refused)",
+    },
+    Subcommand {
+        name: "rules list",
+        json: true,
+        run: cmd_rules_list,
+        usage: "brain rules list [--db PATH]",
+    },
 ];
 
 fn main() {
@@ -728,6 +751,17 @@ const VALUE_FLAGS: &[&str] = &[
     "var",
     "verify",
     "webhook-secret-file",
+    // `brain rules insert` (C2 G-3): the row's columns as flags. The lesson
+    // of `principal grant` (M3-g's daebe7fe) holds — a verb's OWN documented
+    // flags must sit in this closed vocabulary before its first run.
+    "rule-key",
+    "subject",
+    "body",
+    "source-ref",
+    "effective-at",
+    "reviewed-at",
+    "expires-at",
+    "revision",
 ];
 
 /// Exit-code discipline: parse/flag misuse is a usage error (2), distinct from
@@ -6280,6 +6314,98 @@ fn cmd_principal_list(args: &[String]) -> Result<(), String> {
             truncate(&r.domain, 14),
             truncate(&r.tools.join(","), 26),
             status
+        );
+    }
+    Ok(())
+}
+
+// ── the rules door (C2 G-3) ──────────────────────────────────────────────
+
+fn cmd_rules_insert(args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage: brain rules insert --jurisdiction J --subject S --rule-key K\n \
+         --body \"<the rule>\" --source-ref R --revision N\n \
+         [--effective-at T] [--reviewed-at T] [--expires-at T] [--db PATH]";
+    let (_positionals, flags) = parse_flags(args)?;
+    let text = |name: &str| -> Result<String, String> {
+        flags
+            .get(name)
+            .and_then(|o| o.clone())
+            .ok_or_else(|| usage(format!("{USAGE}\n  --{name} is required")))
+    };
+    let int = |name: &str| -> Result<Option<i64>, String> {
+        flags
+            .get(name)
+            .and_then(|o| o.clone())
+            .map(|raw| {
+                raw.parse::<i64>()
+                    .map_err(|_| usage(format!("--{name} must be an integer")))
+            })
+            .transpose()
+    };
+    let row = brain_server::packs::RuleRow {
+        jurisdiction: text("jurisdiction")?,
+        subject: text("subject")?,
+        rule_key: text("rule-key")?,
+        body: text("body")?,
+        source_ref: text("source-ref")?,
+        effective_at: int("effective-at")?.unwrap_or_else(cli_unix_now),
+        reviewed_at: int("reviewed-at")?,
+        expires_at: int("expires-at")?,
+        revision: int("revision")?.ok_or_else(|| {
+            usage(format!(
+                "{USAGE}\n  --revision is required (the door revises only FORWARD)"
+            ))
+        })?,
+    };
+    let conn = principal_db_conn(&flags)?;
+    let id = brain_server::service::rules::insert(&conn, "operator", &row)?;
+    if json_mode() {
+        return emit_json_ok(
+            "rules insert",
+            serde_json::json!({
+                "id": id, "jurisdiction": row.jurisdiction, "subject": row.subject,
+                "rule_key": row.rule_key, "revision": row.revision,
+            }),
+        );
+    }
+    println!(
+        "rule '{}:{}:{}' revision {} landed as row {id} (one audit row on the chain)",
+        row.jurisdiction, row.subject, row.rule_key, row.revision
+    );
+    Ok(())
+}
+
+fn cmd_rules_list(args: &[String]) -> Result<(), String> {
+    let (_positionals, flags) = parse_flags(args)?;
+    let conn = principal_db_conn(&flags)?;
+    let rows = brain_server::service::rules::list(&conn)?;
+    if json_mode() {
+        let data: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id, "jurisdiction": r.jurisdiction, "subject": r.subject,
+                    "rule_key": r.rule_key, "body": r.body, "source_ref": r.source_ref,
+                    "effective_at": r.effective_at, "reviewed_at": r.reviewed_at,
+                    "expires_at": r.expires_at, "revision": r.revision,
+                })
+            })
+            .collect();
+        return emit_json_ok("rules list", serde_json::json!({ "rules": data }));
+    }
+    println!(
+        "{:<6} {:<8} {:<20} {:<22} {:<9} {}",
+        "id", "jurisd.", "subject", "rule_key", "revision", "source_ref"
+    );
+    for r in &rows {
+        println!(
+            "{:<6} {:<8} {:<20} {:<22} {:<9} {}",
+            r.id,
+            truncate(&r.jurisdiction, 6),
+            truncate(&r.subject, 18),
+            truncate(&r.rule_key, 20),
+            r.revision,
+            truncate(&r.source_ref, 48),
         );
     }
     Ok(())
