@@ -411,6 +411,15 @@ pub fn effective_filter(sub: &str, manages: &[String], roles: &[Role]) -> Retrie
 /// `dsar_export` verb, the capacity/connector/queue/breach board) are verb
 /// gates, not memory-row reads, so they read their own rows like any other
 /// principal.
+///
+/// `plugin` is deliberately ABSENT (M3-g, plan 27): a plugin that reads the
+/// shared pool is the `agent` preset wearing a costume — the whole point of
+/// the kernel-side plugin principal is that its reach is the rows it wrote in
+/// its own domain, and the shared-pool read is precisely the capability the
+/// preset narrows away. This row is the reviewer's tripwire: putting
+/// `plugin` on the list is a decision that needs its own recorded reason and
+/// a plan to amend, never a convenience; granting the capability without the
+/// row reds `only_declared_roles_widen_the_owner_fence` on the preset.
 pub const SHARED_POOL_ROLES: &[&str] = &["admin", "solo", "controller", "agent", "client-auditor"];
 
 // ── the 10 ship-with roles (curated from USE_CASES.md) ─────────────────
@@ -475,6 +484,17 @@ pub const PRESETS_RAW: &[(&str, &str)] = &[
         "bpo-ops",
         r#"{"name":"bpo-ops","description":"BPO operations: read-only capacity/connector/queue/breach board across all clients","scopes":["private","domain","team"],"owner_filter":"self","can":["read"],"panels_default":["overview","health"],"panels_hidden":["subjects"],"tools_allowed":["ump.recall"]}"#,
     ),
+    // The 14th preset (M3-g, plan 27): the KERNEL-SIDE PLUGIN PRINCIPAL.
+    // Exactly plan 27 §2.1's JSON — a NARROWING of `agent` along every
+    // dimension the agent names. One domain, rows it wrote, scoped read/write;
+    // `tools_allowed: []` is EMPTY BY LAW: no UMP/MCP tool until the operator
+    // names one (`brain principal grant --tools`). `the_plugin_preset_starts_
+    // able_to_do_nothing` pins the day-zero posture arm by arm against the
+    // agent preset it narrows.
+    (
+        "plugin",
+        r#"{"name":"plugin","description":"A kernel-side plugin principal: one domain's data, explicit tools, no shared pool, no approvals","scopes":["domain"],"owner_filter":"self","can":["read","write"],"tools_allowed":[]}"#,
+    ),
 ];
 
 /// The parsed view of the ship-with roles (`PRESETS_RAW`), used by tests. A
@@ -513,7 +533,19 @@ mod tests {
     #[test]
     fn all_presets_parse_and_validate() {
         let all = presets();
-        assert_eq!(all.len(), PRESETS_RAW.len(), "13 ship-with roles");
+        assert_eq!(
+            all.len(),
+            PRESETS_RAW.len(),
+            "every ship-with preset parses"
+        );
+        assert_eq!(
+            all.len(),
+            14,
+            "14 ship-with roles — the 14th is `plugin` (M3-g, plan 27): the kernel-side \
+             plugin principal, a NARROWING of `agent` (one domain, own rows, no shared \
+             pool, no tools until the operator names them). A named act, not a silent \
+             bump — the next preset round moves this count the same way."
+        );
         for r in &all {
             validate(r).unwrap_or_else(|e| panic!("role {} invalid: {e}", r.name));
         }
@@ -760,5 +792,100 @@ mod tests {
         let agent = presets().into_iter().find(|r| r.name == "agent").unwrap();
         assert!(agent.can_tool("ump.recall"));
         assert!(!agent.can_tool("ump.remember"));
+    }
+
+    /// THE ANTI-`agent` PIN (M3-g, plan 27 §2.1). The `plugin` preset is the
+    /// 14th ship-with role and a NARROWING of `agent` along EVERY dimension
+    /// the agent preset names — the machine-client posture a third-party
+    /// plugin holds WITHOUT inheriting the gateway's shared-pool read. Day
+    /// zero it can do nothing beyond scoped read/write of its own rows in its
+    /// own domain; every widening (a tool, a second scope, the pool, the
+    /// owner fence) is an explicit operator act, and each arm below is one
+    /// such act.
+    ///
+    /// Red-first, arm by arm (drills RUN and reverted 2026-10-27):
+    /// adding `shared_pool` to the preset's `can` reds
+    /// `only_declared_roles_widen_the_owner_fence` (the absence is recorded
+    /// on [`SHARED_POOL_ROLES`]); adding a tool to `tools_allowed` reds the
+    /// empty-set arm below; adding `private` to `scopes` reds the scope arm.
+    /// The fence arm has NO independent owner_filter red, measured: flipping
+    /// the preset's `owner_filter` to `all` leaves the gate GREEN, because
+    /// `effective_filter` consults the `shared_pool` capability, not the
+    /// field — that is the fail-closed direction the module header pins, and
+    /// a gate-level regression (restoring the old `owner_filter == "all"`
+    /// shortcut) reds `dpo_owner_filter_all_does_not_widen`. So the fence
+    /// this pin holds is guarded by the shared_pool enumeration one level up;
+    /// the arm below holds its READ (`Some([caller])`, domain-scope only) so
+    /// the pin fails if the gate ever stops narrowing this role.
+    #[test]
+    fn the_plugin_preset_starts_able_to_do_nothing() {
+        let plugin = presets().into_iter().find(|r| r.name == "plugin").unwrap();
+        let agent = presets().into_iter().find(|r| r.name == "agent").unwrap();
+
+        // TOOLS. The agent carries three UMP verbs; the plugin carries NONE.
+        // `Some(empty)` is "exactly this set: nothing" — not the unrestricted
+        // `None` a role that never declares the field gets.
+        assert_eq!(
+            plugin.tools_allowed,
+            Some(Vec::new()),
+            "a plugin starts with NO tools — every UMP/MCP tool is an explicit \
+             operator grant, never an inherited set"
+        );
+        assert_eq!(
+            agent.tools_allowed,
+            Some(vec![
+                "ump.recall".to_string(),
+                "ump.get".to_string(),
+                "ump.feedback".to_string()
+            ]),
+            "fixture: the agent preset is the breadth this role narrows"
+        );
+
+        // THE SHARED POOL. The agent reads across owners; the plugin must not.
+        assert!(
+            !plugin.can("shared_pool"),
+            "no shared pool for a plugin — its reach is the rows it wrote in its \
+             own domain, and the absence is recorded on SHARED_POOL_ROLES"
+        );
+        assert!(
+            agent.can("shared_pool"),
+            "fixture: the agent is the widening this preset refuses"
+        );
+
+        // SCOPES. The agent reads all three scope classes; the plugin sees the
+        // domain scope only — no `private` rows, no `team` rows.
+        assert_eq!(plugin.scopes, vec!["domain".to_string()]);
+        assert_eq!(
+            agent.scopes,
+            vec![
+                "private".to_string(),
+                "domain".to_string(),
+                "team".to_string()
+            ],
+            "fixture: the agent's scope breadth is the anti-template"
+        );
+
+        // THE FENCE, through the REAL record gate: `self` keeps the owner
+        // predicate where the agent's `all` + shared_pool drops it.
+        let plugin_gate = effective_filter("plugin-x", &[], std::slice::from_ref(&plugin));
+        assert_eq!(
+            plugin_gate.owner_in,
+            Some(vec!["plugin-x".to_string()]),
+            "the plugin reads only rows it owns — the owner fence holds"
+        );
+        assert_eq!(
+            plugin_gate.access_scopes,
+            Some(vec!["domain".to_string()]),
+            "and only within the domain scope it was granted"
+        );
+        let agent_gate = effective_filter("agent-x", &[], std::slice::from_ref(&agent));
+        assert_eq!(
+            agent_gate.owner_in, None,
+            "fixture: the agent's fence is the dropped one"
+        );
+
+        // VERBS. Read and write, nothing else — no approve, no purge, no
+        // console, no workflow.
+        assert_eq!(plugin.can, vec!["read".to_string(), "write".to_string()]);
     }
 }
