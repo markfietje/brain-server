@@ -3941,3 +3941,258 @@ async fn the_audit_principal_filter_filters_rows_and_leaves_the_verdict_unchange
         "the chain verdict is byte-identical across a principal-filtered call"
     );
 }
+
+// ── the domain-scoped approve arm (A-2, C2 G-6 item 1) ─────────────────────
+//
+// THE C1 REHEARSAL'S SHAPE, AS PINS. C1 measured the vertical's own
+// supervisor 403ing at a globally-gated queue (`the_approve_action_is_
+// global_gated` — the review page's own header names the machine: "the
+// kernel's write verbs stay behind the approve/reject roles"). The arm:
+// a roster principal whose `role.can` holds `approve` and whose grant names
+// ONE domain is authorized for the LISTING (their domain's queue) and the
+// APPROVE of rows in their domain. Everything else is the existing machine:
+// the operator's global leg byte-for-byte, a no-`approve` caller refused,
+// a JWT principal on the same shape still on the global leg (the arm is
+// Plugin-kind only — the fence every roster arm consults).
+
+/// Seed the ship-with staff presets the support vertical mounts on (the
+/// presets are not auto-seeded; the tool-reach pin upserts its own).
+fn seed_staff_roles(srv: &TestServer) {
+    let conn = srv.state.pool.get().expect("pool");
+    for name in ["supervisor", "qa-specialist", "agent"] {
+        let role = brain_server::role::presets()
+            .into_iter()
+            .find(|r| r.name == name)
+            .unwrap_or_else(|| panic!("the {name} preset ships"));
+        brain_server::role::upsert(&conn, &role).expect("seed the staff preset");
+    }
+}
+
+fn queue_rows(text: &str) -> Vec<serde_json::Value> {
+    serde_json::from_str(text).expect("the queue answers a JSON array")
+}
+
+#[tokio::test]
+async fn a_support_supervisor_reads_their_domain_queue_unscoped() {
+    let srv = build_server();
+    seed_staff_roles(&srv);
+    grant_roster_on(
+        &srv,
+        "support-supervisor",
+        "supervisor",
+        "support",
+        &["support-agent"],
+        "sup-bearer",
+    );
+    grant_roster_on(
+        &srv,
+        "support-agent",
+        "agent",
+        "support",
+        &[],
+        "agent-bearer",
+    );
+    // The operator stand-in: the ROLE-HELD admin class. A roles-empty JWT
+    // hits the role-less approval guard at the shared queue (the machine's
+    // own law) — the operator carries a role, always has.
+    let admin = mint(
+        &srv,
+        "admin-jti",
+        "ops-admin",
+        "global",
+        &["admin:*/*"],
+        &["matrix-role"],
+    );
+
+    // THE VERTICAL'S TRAFFIC: the agent proposes into their own domain (the
+    // write scope their grant wrote); the operator proposes into a foreign
+    // one. The queue after this holds one support row and one finance row.
+    let (st, body) = send_body(
+        &srv,
+        Some("agent-bearer"),
+        "/ingest/proposal",
+        "POST",
+        r#"{"content":"the bench wiring is lead-safe and labelled","domain":"support"}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "the agent proposes into support: {body}"
+    );
+    let (st, body) = send_body(
+        &srv,
+        Some(&admin),
+        "/ingest/proposal",
+        "POST",
+        r#"{"content":"quarterly ledger reconciliation finance","domain":"finance"}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "the operator proposes into finance: {body}"
+    );
+
+    // THE C1 SHAPE: the supervisor's UNSCOPED queue read — the read the
+    // shell makes — answered 403 at the globally-gated queue before the arm
+    // (measured 2026-10-27, the C1 rehearsal). After it: 200, and the rows
+    // are THEIR DOMAIN'S only — the finance row is not in the answer.
+    let (st, text) = send_body(&srv, Some("sup-bearer"), "/proposals", "GET", "").await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "the supervisor reads their domain's queue unscoped: {text}"
+    );
+    let rows = queue_rows(&text);
+    assert!(
+        !rows.is_empty(),
+        "the queue is the supervisor's OWN traffic — an empty here would make \
+         the domain-only arm vacuous"
+    );
+    for row in &rows {
+        assert_eq!(
+            row["domain"].as_str(),
+            Some("support"),
+            "a roster reviewer's unscoped queue is their domain's rows only: {row}"
+        );
+    }
+
+    // the operator's global leg is UNCHANGED: the same unscoped read answers
+    // with BOTH domains' rows — the global queue, byte-for-byte the
+    // pre-arm machine.
+    let (st, text) = send_body(&srv, Some(&admin), "/proposals", "GET", "").await;
+    assert_eq!(st, StatusCode::OK, "{text}");
+    let rows = queue_rows(&text);
+    let domains: Vec<&str> = rows.iter().filter_map(|r| r["domain"].as_str()).collect();
+    assert!(
+        domains.contains(&"support") && domains.contains(&"finance"),
+        "the operator sees every domain's queue, unchanged: {domains:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_foreign_domain_approve_is_refused_existence_blind() {
+    let srv = build_server();
+    seed_staff_roles(&srv);
+    grant_roster_on(
+        &srv,
+        "support-supervisor",
+        "supervisor",
+        "support",
+        &["support-agent"],
+        "sup-bearer",
+    );
+    let admin = mint(
+        &srv,
+        "admin-jti",
+        "ops-admin",
+        "global",
+        &["admin:*/*"],
+        &["matrix-role"],
+    );
+
+    // Two pending proposals OUTSIDE the supervisor's domain — one in a
+    // domain that exists, one in a name that does not. Same owner posture,
+    // same queue.
+    let mut ids = Vec::new();
+    for domain in ["finance", "no-such-domain-x"] {
+        let (st, body) = send_body(
+            &srv,
+            Some(&admin),
+            "/ingest/proposal",
+            "POST",
+            &format!(r#"{{"content":"ledger reconciliation for {domain}","domain":"{domain}"}}"#),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        let resp: serde_json::Value = serde_json::from_str(&body).unwrap();
+        ids.push(resp["id"].as_i64().expect("proposal id"));
+    }
+
+    // THE ARM BESIDE THE GLOBAL LEG: the supervisor's approve attempt rides
+    // THEIR domain's machine, loads the row, and the ROW-DOMAIN re-auth —
+    // the pre-existing fence — refuses it naming the ROW's domain. A
+    // foreign domain that exists and one that does not are refused by the
+    // SAME arm with bodies identical but for the echoed name: no oracle,
+    // the M3-g machine unchanged.
+    let (st_fin, text_fin) = send_body(
+        &srv,
+        Some("sup-bearer"),
+        &format!("/proposals/{}/approve", ids[0]),
+        "POST",
+        "",
+    )
+    .await;
+    let (st_none, text_none) = send_body(
+        &srv,
+        Some("sup-bearer"),
+        &format!("/proposals/{}/approve", ids[1]),
+        "POST",
+        "",
+    )
+    .await;
+    assert_eq!(st_fin, StatusCode::FORBIDDEN, "{text_fin}");
+    assert_eq!(st_none, StatusCode::FORBIDDEN, "{text_none}");
+    // The refusal SPEAKS THE ROW'S DOMAIN (the fence that decided), and the
+    // two refusals differ by nothing but the name the row carries.
+    assert!(
+        text_fin.contains("finance"),
+        "the refusal echoes the row's domain — the row-domain re-auth decided \
+         it, not the global leg: {text_fin}"
+    );
+    assert_eq!(
+        text_fin.replace("finance", "no-such-domain-x"),
+        text_none,
+        "existence-blind: an existing foreign domain and a nonexistent one \
+         refuse identically"
+    );
+}
+
+#[tokio::test]
+async fn a_qa_specialist_still_403s_at_the_queue() {
+    let srv = build_server();
+    seed_staff_roles(&srv);
+    grant_roster_on(
+        &srv,
+        "support-qa",
+        "qa-specialist",
+        "support",
+        &["support-agent"],
+        "qa-bearer",
+    );
+    // No `approve` in `can`: the queue is a reviewer surface, and the arm
+    // grants the reviewer surface only — the existing machine's refusal
+    // stands (the global leg the scope cannot read).
+    let (st, _text) = send_body(&srv, Some("qa-bearer"), "/proposals", "GET", "").await;
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "no approve in can → the queue stays refused"
+    );
+}
+
+#[tokio::test]
+async fn a_jwt_supervisor_rides_the_global_leg_unchanged() {
+    let srv = build_server();
+    seed_staff_roles(&srv);
+    // A JWT principal with the SAME shape — role `supervisor`, one domain's
+    // write scope, a manages claim. The arm is Plugin-kind only: a JWT's
+    // queue read stays on the global leg, byte-for-byte the pre-arm machine
+    // (the claim path composes; it does not widen).
+    let jwt_sup = mint(
+        &srv,
+        "sup-jti",
+        "jwt-supervisor",
+        "global",
+        &["write:*/support"],
+        &["supervisor"],
+    );
+    let (st, _text) = send_body(&srv, Some(&jwt_sup), "/proposals", "GET", "").await;
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "a JWT supervisor's unscoped queue read stays on the global leg — the \
+         domain-scoped arm is the roster's, never the claim's"
+    );
+}

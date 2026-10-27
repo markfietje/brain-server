@@ -438,6 +438,28 @@ fn default_pending() -> String {
     "pending".to_string()
 }
 
+/// The one domain a ROSTER principal's grant names, or `None` for every
+/// other principal class. The domain-scoped proposals arm (C2 G-6 item 1)
+/// authorizes the queue read and the approve of rows in THIS domain — the
+/// kind is the fence (the named_tools rule): `PrincipalKind::Plugin` only,
+/// so a JWT principal wearing the same shape rides the global leg
+/// unchanged, and a grant that somehow carries more than one scope domain
+/// resolves to nothing (fail closed — the lane mints exactly one).
+fn roster_domain(principal: &Option<crate::auth::Principal>) -> Option<String> {
+    let p = principal.as_ref()?;
+    if p.kind != crate::auth::PrincipalKind::Plugin {
+        return None;
+    }
+    let mut domains: Vec<String> = p.scopes.iter().map(|s| s.domain.clone()).collect();
+    domains.sort();
+    domains.dedup();
+    if domains.len() == 1 {
+        Some(domains.remove(0))
+    } else {
+        None
+    }
+}
+
 /// `GET /proposals?status=pending&limit=` — the human review queue. Each item
 /// carries its score components so the decision is evidence-based.
 pub async fn list_proposals(
@@ -450,12 +472,30 @@ pub async fn list_proposals(
     // can work its queue; a foreign domain is a loud 403). Absent → the
     // legacy global gate + unscoped query. Either way the JWT principal is
     // clamped to domains they may read — the clamp can only narrow.
-    let domain_filter: Option<String> = q
+    let mut domain_filter: Option<String> = q
         .domain
         .as_deref()
         .map(str::trim)
         .filter(|d| !d.is_empty())
         .map(str::to_string);
+    // THE DOMAIN-SCOPED ARM (C2 G-6 item 1 — the build half of C1's
+    // `the_approve_action_is_global_gated`): a ROSTER reviewer's unscoped
+    // queue read is THEIR DOMAIN'S queue. The arm fires only when the
+    // caller names no domain, holds `PrincipalKind::Plugin`, and the
+    // EXISTING `can` vocabulary approves of them — the resolved roles must
+    // hold `approve` (the same `authorize_role` seam every reviewer gate
+    // spends). Every other shape falls through to the machine below
+    // UNCHANGED: the arm only ever widens a roster reviewer to their own
+    // domain's queue — it never refuses anything the global leg admitted.
+    if domain_filter.is_none() {
+        if let Some(d) = roster_domain(&principal.0) {
+            if let Ok(their_pool) = super::resolve_domain_pool(&state.registry, Some(&d)) {
+                if super::authorize_role(&principal.0, &their_pool, "approve").is_ok() {
+                    domain_filter = Some(d);
+                }
+            }
+        }
+    }
     let authz_domain = domain_filter.as_deref().unwrap_or("global");
     super::authorize(&principal.0, crate::auth::Action::Read, "", authz_domain)?;
     let status = q.status.trim().to_string();
@@ -644,9 +684,17 @@ pub async fn approve_proposal(
     Path(id): Path<i64>,
     Query(q): Query<ApproveQuery>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
-    let domain = "global";
-    super::authorize(&principal.0, crate::auth::Action::Write, "", domain)?;
-    let pool = super::resolve_domain_pool(&state.registry, Some(domain))?;
+    // THE DOMAIN-SCOPED ARM (C2 G-6 item 1), beside the global leg: a roster
+    // principal authorizes the act against the domain their GRANT names —
+    // the scope that grant wrote covers it, and the row-domain re-auth below
+    // still binds the act to the row's own stamp, so a foreign row refuses
+    // THERE, existence-blind (the M3-g machine, not a new one). Every other
+    // principal class — the operator, every JWT, capability tokens — keeps
+    // the global leg byte-for-byte, and the `approve` capability stays bound
+    // by the same `authorize_role` for everyone.
+    let domain = roster_domain(&principal.0).unwrap_or_else(|| "global".to_string());
+    super::authorize(&principal.0, crate::auth::Action::Write, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, Some(&domain))?;
     super::authorize_role(&principal.0, &pool, "approve")?;
     let model = Arc::clone(&state.model);
     let alert_state = Arc::clone(&state);
