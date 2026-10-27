@@ -4,6 +4,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/svelte';
 import { shellRoot } from './fixtures';
 import { CENSUS_ROUTES, type CensusRoute } from './route-census';
+import { APP_CSS, forcedDarkCss, schemeBlocks } from './theme-css';
 
 /**
  * III-0c — axe AA BREADTH, census-driven: one sweep per census route.
@@ -463,6 +464,120 @@ for (const route of CENSUS_ROUTES) {
 				labels,
 				`${route}: every input/select/textarea must resolve an accessible name through label[for], a wrapping label, aria-label, or aria-labelledby`
 			).toEqual([]);
+		}
+	);
+}
+
+/**
+ * ## The forced-DARK arm (M3-e, plan 24) — the same census, the dark scheme
+ *
+ * The light sweep above proves the census routes' a11y structure ONCE; the
+ * DOM is scheme-independent (theming is CSS-only), so a second structural
+ * axe pass would alone prove little. What a dark sweep CAN prove — and what
+ * this arm does — is sweep with the dark scheme ACTUALLY IN EFFECT, so any
+ * violation that a dark-only DOM state could introduce is caught, and the
+ * sheet's dark block is proven to parse and apply:
+ *
+ *   1. The OS preference is FORCED to dark — `matchMedia` (undefined under
+ *      jsdom) is installed and answers `(prefers-color-scheme: dark)` with
+ *      `matches: true`, so any scheme-aware JS on any route takes the dark
+ *      path.
+ *   2. The dark block's declarations are applied UNCONDITIONALLY as one
+ *      unlayered `:root` rule (`forcedDarkCss()` over the parsed CSSOM) —
+ *      the media gate pried open, since jsdom never enters
+ *      `prefers-color-scheme` media.
+ *   3. The anti-vacuity assertion reads the computed `--bg` and requires the
+ *      DARK block's value: a sweep over the light tokens is not a dark
+ *      sweep, and this arm fails with its own words if that is what it did.
+ *
+ * The axe profile, the proof arm and the label walk are byte-identical to
+ * the light sweep. The AA *numbers* for both schemes (4.5 text / 3.0 UI)
+ * are carried by the WCAG arithmetic over the token pairs in
+ * `theme-retune.test.ts` — under jsdom axe's `color-contrast` reports
+ * `incomplete`, never a violation, and this file's header says why that is
+ * the exact shape of the gate that must not be trusted for colour math.
+ */
+for (const route of CENSUS_ROUTES) {
+	test(
+		`every_census_route_passes_axe_aa_under_a_forced_dark_scheme — ${route}`,
+		{ timeout: 15000 },
+		async () => {
+			const recipe = RECIPES[route];
+			expect(recipe, `no sweep arm for ${route}`).toBeDefined();
+			if (!recipe) return;
+
+			// (1) the forced preference; restored by hand — unstubAllGlobals()
+			// would also tear out the module-level fetch stub.
+			const originalMatchMedia = window.matchMedia;
+			window.matchMedia = ((query: string) => ({
+				matches: /prefers-color-scheme:\s*dark/.test(query),
+				media: query,
+				onchange: null,
+				addListener: () => {},
+				removeListener: () => {},
+				addEventListener: () => {},
+				removeEventListener: () => {},
+				dispatchEvent: () => false
+			})) as unknown as typeof window.matchMedia;
+			// (2) the dark declarations, unconditionally in effect
+			const forced = document.createElement('style');
+			forced.textContent = `${APP_CSS}\n${forcedDarkCss()}`;
+			document.head.append(forced);
+
+			try {
+				recipe.prepare();
+				const module = await recipe.load();
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				render(module.default as any);
+
+				await waitFor(
+					() => {
+						const seen =
+							recipe.proof.kind === 'testid'
+								? screen.queryAllByTestId(recipe.proof.value).length > 0
+								: screen.queryByText(recipe.proof.value) !== null;
+						expect(
+							seen,
+							`${route} (dark): the render proof "${recipe.proof.value}" never appeared — a route that renders nothing must FAIL here, never sweep clean`
+						).toBe(true);
+					},
+					{ timeout: 4000 }
+				);
+
+				// (3) the force took: the dark tokens are what the document computes.
+				const { dark } = schemeBlocks();
+				const computedBg = window
+					.getComputedStyle(document.documentElement)
+					.getPropertyValue('--bg')
+					.trim();
+				expect(
+					computedBg,
+					`${route} (dark): the forced-dark arm computed --bg = "${computedBg}", not the dark block's "${dark.get('--bg')}" — this sweep measured the LIGHT scheme and is not a dark arm`
+				).toBe(dark.get('--bg'));
+
+				const { default: axe } = await import('axe-core');
+				const results = await axe.run(document.body, {
+					runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa'] }
+				});
+				const violations = results.violations.map(
+					(violation) => `${violation.id} (${violation.nodes.length} node(s))`
+				);
+				expect(
+					violations,
+					`${route} (dark): axe AA violations under the forced dark scheme — fix the surface or record a named exception (route + id + reason)`
+				).toEqual([]);
+				expect(
+					labelFindings(),
+					`${route} (dark): every input/select/textarea must resolve an accessible name`
+				).toEqual([]);
+			} finally {
+				forced.remove();
+				if (originalMatchMedia) {
+					window.matchMedia = originalMatchMedia;
+				} else {
+					delete (window as { matchMedia?: unknown }).matchMedia;
+				}
+			}
 		}
 	);
 }

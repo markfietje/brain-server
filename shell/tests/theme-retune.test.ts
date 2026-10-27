@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { afterEach, expect, test, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/svelte';
 import { shellRoot } from './fixtures';
+import { APP_CSS, schemeBlocks, type Tokens } from './theme-css';
 
 /**
  * M3-e — THE THEME RETUNE (plan `24_THEME_DSH_FAITHFUL`): the pins.
@@ -42,8 +43,6 @@ import { shellRoot } from './fixtures';
  * No screenshot, no snapshot, no new dependency: the CSSOM parser is jsdom's
  * own, and the contrast math is the standard formula written out.
  */
-
-const APP_CSS = readFileSync(join(shellRoot, 'src', 'app.css'), 'utf8');
 
 // ── the render harness ───────────────────────────────────────────────────
 //
@@ -104,60 +103,6 @@ async function renderHome(): Promise<void> {
 }
 
 const computed = (el: Element): CSSStyleDeclaration => window.getComputedStyle(el);
-
-// ── the parsed stylesheet ────────────────────────────────────────────────
-
-type Tokens = Map<string, string>;
-
-/** Every `--custom-property` a declaration block carries, name → value. */
-function customProperties(style: CSSStyleDeclaration): Tokens {
-	const tokens: Tokens = new Map();
-	for (let i = 0; i < style.length; i += 1) {
-		const name = style[i];
-		if (name !== undefined && name.startsWith('--')) {
-			tokens.set(name, style.getPropertyValue(name).trim());
-		}
-	}
-	return tokens;
-}
-
-function isDarkMedia(rule: CSSRule): rule is CSSMediaRule {
-	return (
-		rule instanceof CSSMediaRule &&
-		rule.media.mediaText.replace(/\s+/g, '').includes('prefers-color-scheme:dark')
-	);
-}
-
-/**
- * The two scheme blocks of `app.css`, read through the CSSOM: the light
- * scheme is every TOP-LEVEL `:root {}` rule; the dark scheme is every
- * `:root {}` rule inside a TOP-LEVEL `@media (prefers-color-scheme: dark)`.
- * The platform flavours (`:root[data-platform=…]`) and the nested macOS
- * reduced-transparency fallbacks are deliberately NOT the scheme blocks —
- * they are the platform layer, which this round leaves alone.
- */
-function schemeBlocks(): { light: Tokens; dark: Tokens } {
-	const style = document.createElement('style');
-	style.textContent = APP_CSS;
-	document.head.append(style);
-	const sheet = style.sheet;
-	if (!sheet) throw new Error('app.css did not parse into a stylesheet');
-	const light: Tokens = new Map();
-	const dark: Tokens = new Map();
-	for (const rule of sheet.cssRules) {
-		if (rule instanceof CSSStyleRule && rule.selectorText === ':root') {
-			for (const [k, v] of customProperties(rule.style)) light.set(k, v);
-		} else if (isDarkMedia(rule)) {
-			for (const inner of rule.cssRules) {
-				if (inner instanceof CSSStyleRule && inner.selectorText === ':root') {
-					for (const [k, v] of customProperties(inner.style)) dark.set(k, v);
-				}
-			}
-		}
-	}
-	style.remove();
-	return { light, dark };
-}
 
 // ── colour arithmetic (WCAG 2.x) ─────────────────────────────────────────
 
