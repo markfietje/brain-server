@@ -417,6 +417,28 @@ pub async fn jwt_auth_middleware(
                 }
                 return next.run(req).await;
             }
+            // THE PLUGIN LANE (M3-g, plan 27 — see `resolve_plugin_principal`):
+            // the bearer may be a minted ROSTER credential rather than a JWS —
+            // the same fallback posture the capability arm above occupies, and
+            // the reason it sits here: a JWT-mode deployment that granted a
+            // plugin principal must still admit it, and a dead one (revoked /
+            // expired) 401s naming its cause. An unknown bearer falls through
+            // to the deny below with the ORIGINAL verification code.
+            match resolve_plugin_principal(&s.pool, &raw_for_fallback).await {
+                Ok(Some(principal)) => {
+                    req.extensions_mut().insert(principal);
+                    let resp = next.run(req).await;
+                    if resp.status() == axum::http::StatusCode::FORBIDDEN {
+                        audit_auth_failure(&s.db_path, &path_owned, "plugin_forbidden").await;
+                    }
+                    return resp;
+                }
+                Ok(None) => {} // not a roster bearer — deny with the JWS code
+                Err(deny) => {
+                    audit_auth_failure(&s.db_path, &path_owned, &deny).await;
+                    return unauthorized_response(&deny);
+                }
+            }
             audit_auth_failure(&s.db_path, &path_owned, &code).await;
             unauthorized_response(&code)
         }
@@ -487,6 +509,39 @@ async fn ensure_cap_principal_alive(pool: &Pool, iss: &str) -> Result<(), String
     })
     .await
     .map_err(|e| format!("revocation store join error: {e}"))?
+}
+
+/// THE PLUGIN-PRINCIPAL LANE's resolver (M3-g, plan 27), shared by BOTH
+/// middlewares' fallback position: a bearer that is neither a verified JWS,
+/// nor an operator/agent token, nor a capability, may still be a MINTED
+/// ROSTER credential — `brain principal grant` wrote its hash into
+/// `principals` and handed the plugin a 0600 token file. `Ok(None)` = not a
+/// roster bearer (the caller's deny arm answers, byte-identical to
+/// pre-M3-g behavior); `Err(code)` = a roster bearer that failed a LIVING
+/// check (revoked/expired) — the caller 401s naming the cause, audited at
+/// its boundary. The read runs on `spawn_blocking` (pooled SQLite, the same
+/// cost profile as the agent lane's revocation read).
+async fn resolve_plugin_principal(
+    pool: &Pool,
+    presented: &str,
+) -> Result<Option<auth::Principal>, String> {
+    if presented.is_empty() {
+        return Ok(None);
+    }
+    let pool = pool.clone();
+    let presented = presented.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = pool
+            .get()
+            .map_err(|e| format!("principal store unavailable: {e}"))?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        crate::auth::principals::plugin_principal_for_token(&conn, &presented, now)
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("principal store join error: {e}")))
 }
 
 /// Write an audit row for a failed JWT verification. Best-effort (opens a
@@ -671,6 +726,26 @@ pub async fn auth_middleware(
         }
         next.run(req).await
     } else {
+        // THE PLUGIN-PRINCIPAL LANE before the deny (M3-g — see
+        // `resolve_plugin_principal`): an unknown bearer falls through to the
+        // deny below byte-identical to pre-M3-g behavior; a KNOWN-but-dead
+        // bearer (revoked/expired) 401s naming its cause, audited here like
+        // every other denial at this boundary.
+        match resolve_plugin_principal(&s.pool, &presented_owned).await {
+            Ok(Some(principal)) => {
+                req.extensions_mut().insert(principal);
+                let resp = next.run(req).await;
+                if resp.status() == axum::http::StatusCode::FORBIDDEN {
+                    audit_auth_failure(&s.db_path, &path, "plugin_forbidden").await;
+                }
+                return resp;
+            }
+            Ok(None) => {} // not a roster bearer — the deny arm's world
+            Err(code) => {
+                audit_auth_failure(&s.db_path, &path, &code).await;
+                return unauthorized_response(&code);
+            }
+        }
         // audit denied auth attempts at the trust boundary. The
         // middleware has no pool, so open a fresh connection on
         // `spawn_blocking` (never block the async runtime thread on a

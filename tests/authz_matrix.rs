@@ -40,6 +40,7 @@ use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 use std::path::Path;
 use std::sync::Arc;
 use tower::ServiceExt;
+use zerocopy::IntoBytes;
 
 // ── server fixture ──────────────────────────────────────────────────────
 
@@ -3361,4 +3362,362 @@ async fn delivery_attestation_read_refuses_with_409_on_a_keyless_host() {
     // The guard restores `BRAIN_UMP_KEY_DIR` on the way out, INCLUDING on a
     // panic — a leak here would silently keyless every later test in the
     // process.
+}
+
+// ── the plugin principal, live (M3-g, plan 27) ──────────────────────────────
+
+/// Grant a plugin principal through the SAME lib fns the
+/// `brain principal grant` CLI drives, on the server's own pool — the CLI is
+/// a thin shell over these (arg parsing + the token file), so what the
+/// operator runs is what the matrix exercises.
+fn grant_plugin_on(srv: &TestServer, name: &str, domain: &str, token: &str) {
+    let conn = srv.state.pool.get().expect("pool");
+    brain_server::auth::principals::grant(
+        &conn,
+        name,
+        "plugin",
+        domain,
+        &[],
+        &brain_server::auth::principals::hash_token(token),
+        1_000,
+        None,
+    )
+    .expect("grant must land");
+}
+
+/// Seed one `domain`-scope row owned by the named principal (the row the
+/// plugin preset can actually see: `access_scope` matches its declared
+/// scopes, `owner` matches its `owner_filter: "self"`).
+fn seed_domain_row(pool: &brain_server::Pool, domain: &str, owner: &str, content: &str) {
+    let conn = pool.get().unwrap();
+    conn.execute(
+        "INSERT INTO knowledge (title, content, content_hash, source, domain, owner, access_scope)
+         VALUES (?1, ?2, ?3, 'structured', ?4, ?5, 'domain')",
+        rusqlite::params![
+            content,
+            content,
+            format!("h-{domain}-{content}"),
+            domain,
+            owner
+        ],
+    )
+    .unwrap();
+    let kid = conn.last_insert_rowid();
+    let v = vec![0.5f32; 512];
+    conn.execute(
+        "INSERT INTO vec_knowledge (knowledge_id, embedding_int8, embedding_bit, source, created_at)
+         VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'structured', datetime('now'))",
+        rusqlite::params![kid, v.as_bytes()],
+    )
+    .unwrap();
+}
+
+/// THE ROUND TRIP, LIVE (the 2026-09-09 shape, minted this time by the
+/// kernel's own grant): the minted bearer PASSES authentication on a real
+/// composed app (the /recall leg runs the plugin lane — hash → roster →
+/// expiry → kill-switch — and reaches the handler, which answers its own
+/// 200 on the query); then `revoke` writes the kill-switch row, and the
+/// SAME bearer 401s `identity_revoked` on the next call, byte-exact. The
+/// pre-revoke leg is asserted NOT-401 (the handler's 200/422 vocabulary is
+/// the route's business, not authN's) and the roster + audit rows are
+/// asserted directly.
+#[tokio::test]
+async fn plugin_principal_round_trip_grant_to_401_is_live() {
+    let srv = build_server();
+    grant_plugin_on(&srv, "edu-plugin", "education", "minted-bearer-one");
+
+    // the roster row + the audit row the grant owes
+    {
+        let conn = srv.state.pool.get().expect("pool");
+        let roster = brain_server::auth::principals::list(&conn).expect("roster");
+        assert_eq!(roster.len(), 1, "one granted principal");
+        assert_eq!(roster[0].name, "edu-plugin");
+        assert_eq!(roster[0].role, "plugin");
+        assert_eq!(roster[0].domain, "education");
+        assert!(!roster[0].revoked);
+        let audited: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind='auth' AND actor='operator'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("audit read");
+        assert_eq!(audited, 1, "the grant wrote one audited act");
+    }
+
+    // PRE-REVOCATION: the minted bearer authenticates (the plugin lane
+    // resolves it; the handler speaks its own vocabulary — anything but the
+    // middleware's 401 is an authenticated call).
+    let (st, _) = send_body(
+        &srv,
+        Some("minted-bearer-one"),
+        "/recall",
+        "POST",
+        r#"{"query":"education"}"#,
+    )
+    .await;
+    assert_ne!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "a granted, unrevoked plugin bearer must pass authentication"
+    );
+
+    // REVOKE — the same kill-switch write the CLI makes.
+    {
+        let conn = srv.state.pool.get().expect("pool");
+        brain_server::auth::principals::revoke_grant(
+            &conn,
+            "edu-plugin",
+            "operator revoke",
+            "operator",
+            2_000,
+        )
+        .expect("revoke must land");
+    }
+
+    // POST-REVOCATION: 401 identity_revoked, byte-exact — the live proof.
+    let (st, text) = send_body(
+        &srv,
+        Some("minted-bearer-one"),
+        "/recall",
+        "POST",
+        r#"{"query":"education"}"#,
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "the revoked bearer must die");
+    assert_eq!(text, revoked_body("identity_revoked"));
+
+    // an UNKNOWN bearer never authenticates as anything. JWT mode answers
+    // with the JWS verifier's own code for a non-JWS bearer — the lane read
+    // Ok(None) and the deny kept the original verification code.
+    let (st, text) = send_body(
+        &srv,
+        Some("never-minted-bearer"),
+        "/recall",
+        "POST",
+        r#"{"query":"education"}"#,
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert_eq!(text, revoked_body("malformed_token"));
+}
+
+/// CROSS-DOMAIN IS REFUSED, NOT REACHED (no oracle). The plugin holds
+/// education only; a finance row EXISTS and is even the plugin's OWN (only
+/// the domain gate can be what hides it). The positive control proves the
+/// recall path itself works for this principal: the explicit own-domain
+/// request reads the row. Every cross-domain shape is refused
+/// EXISTENCE-BLIND — the explicit foreign-domain recall 403s with a body
+/// byte-identical to the one for a domain that does not exist, and the
+/// domain-LESS sweep 403s too (the gate authorizes the default `global`
+/// leg, which a domain-scoped principal cannot read), so there is no call
+/// that fishes across pools and no answer that names where the walls are.
+/// MEASURED DEVIATION from plan 27's draft wording ("recall across domains
+/// → empty, not an error"), recorded 2026-10-27: the shipped machine is
+/// STRICTER than an empty result — it refuses — and the pin holds the
+/// machine, not the plan's memory.
+#[tokio::test]
+async fn a_plugin_never_reaches_another_domain() {
+    let srv = build_server();
+    grant_plugin_on(&srv, "edu-plugin", "education", "minted-bearer-two");
+    seed_domain_row(
+        &srv.state.pool,
+        "education",
+        "edu-plugin",
+        "bignay antioxidant profile education",
+    );
+    seed_domain_row(
+        &srv.state.pool,
+        "finance",
+        "edu-plugin",
+        "quarterly ledger reconciliation finance",
+    );
+
+    // OWN domain: the owned, domain-scoped row is readable — hits come back.
+    let (st, text) = send_body(
+        &srv,
+        Some("minted-bearer-two"),
+        "/recall",
+        "POST",
+        r#"{"query":"bignay antioxidant","domain":"education"}"#,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "own-domain recall answers 200: {text}");
+    let body: serde_json::Value = serde_json::from_str(&text).expect("recall answers JSON");
+    let hits = body["hits"].as_array().expect("hits array");
+    assert!(
+        !hits.is_empty(),
+        "POSITIVE CONTROL: the plugin reads its own domain's owned row — an empty \
+         here would make the cross-domain arms below vacuous: {body}"
+    );
+
+    // CROSS-DOMAIN IS REFUSED, EXISTENCE-BLIND — measured (the plan's draft
+    // said "empty, not an error"; the machine is STRICTER, and this pin
+    // holds the machine). An explicit foreign-domain recall 403s through the
+    // route gate, and the body for a domain that EXISTS is byte-identical to
+    // the body for one that DOES NOT — the caller learns its own grant
+    // boundary and nothing about the world. A domain-LESS recall (the
+    // cross-domain sweep) is refused too: the route gate authorizes the
+    // default `global` leg, which a domain-scoped principal cannot read —
+    // there is no call shape that fishes across every pool. The only recall
+    // that answers is the named own-domain one (the positive control above),
+    // which is the recipe the doc states.
+    let (st_fin, text_fin) = send_body(
+        &srv,
+        Some("minted-bearer-two"),
+        "/recall",
+        "POST",
+        r#"{"query":"ledger","domain":"finance"}"#,
+    )
+    .await;
+    let (st_none, text_none) = send_body(
+        &srv,
+        Some("minted-bearer-two"),
+        "/recall",
+        "POST",
+        r#"{"query":"ledger","domain":"no-such-domain-x"}"#,
+    )
+    .await;
+    assert_eq!(st_fin, StatusCode::FORBIDDEN, "{text_fin}");
+    assert_eq!(st_none, StatusCode::FORBIDDEN, "{text_none}");
+    // The 403 ECHOES the requested domain name in its details — the caller's
+    // own input, not a fact about the world. Existence-blindness is the
+    // property that the two refusals are the SAME shape once the echoed
+    // input is swapped: the refusal for a domain that exists and one that
+    // does not differ by nothing but the name the caller itself sent.
+    assert_eq!(
+        text_fin.replace("finance", "no-such-domain-x"),
+        text_none,
+        "the refusal must not reveal whether the domain exists"
+    );
+    let (st_fed, text_fed) = send_body(
+        &srv,
+        Some("minted-bearer-two"),
+        "/recall",
+        "POST",
+        r#"{"query":"bignay antioxidant ledger reconciliation"}"#,
+    )
+    .await;
+    assert_eq!(
+        st_fed,
+        StatusCode::FORBIDDEN,
+        "a domain-scoped principal cannot sweep across pools: {text_fed}"
+    );
+}
+
+/// THE REFUSAL IS A FACT ABOUT THE TREE: no `/principal` HTTP route exists.
+/// Minting is an operator act on the machine that owns the token files; an
+/// HTTP mint would be a privilege-escalation surface with zero measured
+/// need. The scan reads the router sources (where every route registration
+/// lives) and asserts the path never appears — with the anti-vacuity arm
+/// proving the scan sees real registrations.
+#[test]
+fn no_principal_http_route_exists() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server/router");
+    let mut corpus = String::new();
+    let mut entries: Vec<_> = std::fs::read_dir(&dir)
+        .expect("router dir")
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .collect();
+    entries.sort();
+    assert!(
+        entries.len() >= 5,
+        "the router tree moved — re-derive this scan (found {} files)",
+        entries.len()
+    );
+    for p in &entries {
+        corpus.push_str(&std::fs::read_to_string(p).unwrap_or_default());
+    }
+    // ANTI-VACUITY: the scan must see real registrations.
+    for real in [
+        ".route(\"/audit\"",
+        ".route(\"/roles\"",
+        ".route(\"/recall\"",
+    ] {
+        assert!(
+            corpus.contains(real),
+            "the scan corpus lost `{real}` — the scanner is broken, not the tree"
+        );
+    }
+    assert!(
+        !corpus.contains(".route(\"/principal"),
+        "a /principal HTTP route appeared — the mint refusal is a NAMED decision \
+         (plan 27 §2.2): revert it or amend the law in the open, never by drift"
+    );
+}
+
+/// THE TOOLS ARM IS THE OPERATOR'S NAMED SET (M3-g). A plugin principal's
+/// UMP tool reach is exactly the roster row's `tools` column — the `plugin`
+/// preset ships `tools_allowed: []` (the day-zero floor denies every tool),
+/// a named tool is allowed, an unnamed one is refused through the SAME
+/// `authorize_tool` seam every principal passes. And the roster arm consults
+/// `kind` first: a JWT `sub` that COLLIDES with a roster name inherits
+/// nothing — the kind is the fence, so a drive-by sub cannot wear a plugin's
+/// grants.
+#[test]
+fn a_plugin_principals_tool_reach_is_exactly_the_roster_row() {
+    let dir = tempfile::TempDir::new().expect("tmp");
+    let db_path = dir.path().join("brain.db");
+    brain_server::register_sqlite_vec::register_sqlite_vec();
+    let mgr = SqliteConnectionManager::file(&db_path);
+    let pool: brain_server::Pool = r2d2::Pool::builder().max_size(2).build(mgr).expect("pool");
+    brain_server::migration::run_migration(&mut pool.get().expect("conn"), 0).expect("migration");
+    {
+        let conn = pool.get().expect("conn");
+        let plugin = brain_server::role::presets()
+            .into_iter()
+            .find(|r| r.name == "plugin")
+            .expect("the plugin preset ships");
+        brain_server::role::upsert(&conn, &plugin).expect("seed the role");
+        brain_server::auth::principals::grant(
+            &conn,
+            "edu-plugin",
+            "plugin",
+            "education",
+            &["ump.recall"],
+            &brain_server::auth::principals::hash_token("unused-here"),
+            1_000,
+            None,
+        )
+        .expect("grant");
+    }
+    let plugin_principal = brain_server::auth::Principal {
+        sub: "edu-plugin".to_string(),
+        tenant: "global".to_string(),
+        scopes: vec![brain_server::auth::Scope::parse("write:*/education").unwrap()],
+        jti: "plugin".to_string(),
+        roles: vec!["plugin".to_string()],
+        manages: vec![],
+        kind: brain_server::auth::PrincipalKind::Plugin,
+    };
+
+    // the NAMED tool passes; the unnamed one is refused by the preset's
+    // empty set (the day-zero floor) with only the roster row as the widening
+    assert!(
+        brain_server::handlers::authorize_tool(
+            &Some(plugin_principal.clone()),
+            &pool,
+            "ump.recall"
+        )
+        .is_ok(),
+        "the operator named ump.recall at grant time"
+    );
+    assert!(
+        brain_server::handlers::authorize_tool(&Some(plugin_principal.clone()), &pool, "ump.get")
+            .is_err(),
+        "ump.get was never named — the preset's empty set refuses it"
+    );
+
+    // A colliding JWT sub inherits nothing.
+    let colliding = brain_server::auth::Principal {
+        kind: brain_server::auth::PrincipalKind::Jwt,
+        jti: "jwt-bearer".to_string(),
+        ..plugin_principal
+    };
+    assert!(
+        brain_server::handlers::authorize_tool(&Some(colliding), &pool, "ump.recall").is_err(),
+        "a JWT sub that collides with a roster name must not wear the plugin's \
+         named tools — the roster arm consults kind == Plugin only"
+    );
 }

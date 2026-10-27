@@ -212,6 +212,57 @@ pub fn check_secret_permissions(path: &std::path::Path) -> Result<(), String> {
     }
 }
 
+/// Write one owner-only secret file — the writer-side twin of
+/// [`read_owner_only_token`], and the writer `brain principal grant` uses
+/// (M3-g): the 0600 law held at CREATION rather than by a chmod after the
+/// bytes land, so no window exists in which a minted bearer sits on disk
+/// group/world-readable.
+///
+/// * **Create-new only.** An existing file is REFUSED: a re-grant must never
+///   silently clobber a live credential — rotate by revoking and re-granting
+///   (a new name, a new file).
+/// * **Parent dirs 0700**, best-effort at creation, so the default roster
+///   directory (`~/.config/brain-server/principals/`) does not list its
+///   tenants to every local user.
+/// * Non-Unix: the mode is unchecked (no POSIX modes to read), the same
+///   posture as the readers.
+pub fn write_owner_only_secret(path: &std::path::Path, secret: &str) -> Result<(), String> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                format!(
+                    "secret file {} already exists — refusing to overwrite a live \
+                     credential (revoke, then re-grant under a new name and file)",
+                    path.display()
+                )
+            } else {
+                format!("cannot create {}: {e}", path.display())
+            }
+        })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("cannot chmod {}: {e}", path.display()))?;
+    }
+    file.write_all(secret.as_bytes())
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,5 +391,46 @@ mod tests {
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).expect("chmod");
         let err = read_owner_only_token(&p).expect_err("a wide token file must refuse");
         assert!(err.contains("group/world-accessible"), "{err}");
+    }
+
+    /// THE WRITER HOLDS THE 0600 LAW AT CREATION AND NEVER CLOBBERS (M3-g).
+    /// The file lands owner-only BEFORE the first byte is written, the mode
+    /// reads back clean through the reader's own law, and a second write to
+    /// the same path is REFUSED — a re-grant must never silently overwrite a
+    /// live credential. Red-first: dropping the `create_new` arm or moving
+    /// the chmod after the write reopens a world-readable window or a
+    /// clobber; both refuse here by name.
+    #[cfg(unix)]
+    #[test]
+    fn the_writer_creates_owner_only_and_refuses_a_clobber() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().expect("tmp");
+        let p = dir.path().join("principals").join("edu-plugin.token");
+
+        write_owner_only_secret(&p, "minted-bearer").expect("first write");
+        let mode = std::fs::metadata(&p).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "the minted file is owner-only at creation"
+        );
+        assert_eq!(
+            check_secret_permissions(&p),
+            Ok(()),
+            "the reader's law agrees"
+        );
+        assert_eq!(
+            read_owner_only_token(&p).expect("round trip"),
+            "minted-bearer"
+        );
+
+        let err = write_owner_only_secret(&p, "second-bearer").expect_err("no clobber");
+        assert!(
+            err.contains("refusing to overwrite"),
+            "the refusal names the act: {err}"
+        );
+        // and the live credential survived the refused write
+        assert_eq!(read_owner_only_token(&p).unwrap(), "minted-bearer");
+        let _ = std::fs::remove_file(&p);
     }
 }

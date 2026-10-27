@@ -24,6 +24,7 @@
 pub mod jwks;
 pub mod jwt;
 pub mod policy;
+pub mod principals;
 pub mod revocation;
 
 /// a secret file is only acceptable when
@@ -47,6 +48,8 @@ pub use policy::{
     AGENT_DOMAINS_ENV, AGENT_LOOPBACK_SUB, Action, OPERATOR_LOOPBACK_LABEL, Principal,
     PrincipalKind, Scope, agent_domains, client_authorized_domains, is_authorized,
 };
+#[allow(unused_imports)]
+pub use principals::{RosterRow, grant, hash_token, list, mint_token};
 #[allow(unused_imports)]
 pub use revocation::{RevocationCache, purge_expired, revoke, revoke_chain};
 

@@ -412,6 +412,33 @@ const SUBCOMMANDS: &[Subcommand] = &[
         run: cmd_ropa,
         usage: "brain ropa list\n  brain ropa add --activity A --controller C --processor P --lawful-basis B\n               [--categories S] [--recipients S] [--retention-days N]\n               [--security-measures S] [--transfers S]",
     },
+    // The plugin principal verb family (M3-g, plan 27). LOCAL operator acts
+    // on the DB the server owns + the token files this machine holds — never
+    // HTTP: there is NO mint route and the kernel's HTTP surface gains
+    // nothing from this family (an HTTP mint is a privilege-escalation
+    // surface with zero measured need). `grant` writes the 0600 token file
+    // (secret_file's writer twin of the 0600 reader law), the `principals`
+    // roster row (token HASH only — the raw bearer never lands in the DB),
+    // and an audit row; `revoke` writes the kill-switch row + audit, and the
+    // minted token 401s identity_revoked on the next call.
+    Subcommand {
+        name: "principal grant",
+        json: false,
+        run: cmd_principal_grant,
+        usage: "brain principal grant --name N --role plugin --domain D\n                     [--tools t1,t2] [--ttl-days N] [--out PATH] [--db PATH]\n                     (mint one plugin principal: a 0600 token file + a roster\n                      row + an audit row; re-granting a name rotates it, a\n                      REVOKED name stays dead — grant a new name instead)",
+    },
+    Subcommand {
+        name: "principal revoke",
+        json: false,
+        run: cmd_principal_revoke,
+        usage: "brain principal revoke --name N [--reason R] [--db PATH]\n                     (the kill-switch: a revoked_principals row + an audit\n                      row; the minted token 401s on the next call)",
+    },
+    Subcommand {
+        name: "principal list",
+        json: true,
+        run: cmd_principal_list,
+        usage: "brain principal list [--db PATH]",
+    },
 ];
 
 fn main() {
@@ -452,11 +479,25 @@ fn main() {
             exit(2);
         }
     }
-    let cmd = args[0].as_str();
-    let _ = ENVELOPE_CMD.set(cmd.to_string());
-    let rest = &args[1..];
+    // Two-token subcommand names (M3-g): "principal grant|revoke|list" are
+    // three rows in the ONE SUBCOMMANDS table. The dispatcher tries
+    // "verb verb" FIRST — no existing name carries a space, so nothing is
+    // shadowed — then falls back to the single token, byte-identical to the
+    // pre-M3-g dispatch.
+    let (cmd, rest): (String, &[String]) = if args.len() >= 2 {
+        let two = format!("{} {}", args[0], args[1]);
+        let hit = SUBCOMMANDS.iter().any(|sub| sub.name == two);
+        if hit {
+            (two, &args[2..])
+        } else {
+            (args[0].clone(), &args[1..])
+        }
+    } else {
+        (args[0].clone(), &args[1..])
+    };
+    let _ = ENVELOPE_CMD.set(cmd.clone());
 
-    let result = match cmd {
+    let result = match cmd.as_str() {
         "-h" | "--help" | "help" => {
             print_usage();
             Ok(())
@@ -6049,6 +6090,195 @@ fn truncate(s: &str, n: usize) -> String {
         let t: String = s.chars().take(n).collect();
         format!("{t}...")
     }
+}
+
+// ── the plugin principal verb family (M3-g, plan 27) ─────────────────────
+// LOCAL operator acts: the roster lives in the DB this machine owns and the
+// token file lands on this machine's disk. These commands never speak HTTP
+// (no mint route exists to speak TO — that refusal is the design, recorded
+// in the usage lines and the register).
+
+fn principal_db_conn(flags: &FlagMap) -> Result<rusqlite::Connection, String> {
+    let db = flags
+        .get("db")
+        .and_then(|o| o.clone())
+        .map(PathBuf::from)
+        .unwrap_or_else(default_db_path);
+    if !db.exists() {
+        return Err(format!(
+            "no DB at {db:?} — pass --db PATH or set BRAIN_DB_PATH"
+        ));
+    }
+    rusqlite::Connection::open(&db).map_err(|e| format!("open {db:?}: {e}"))
+}
+
+fn cli_unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn cmd_principal_grant(args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage: brain principal grant --name N --role plugin --domain D \
+         [--tools t1,t2] [--ttl-days N] [--out PATH] [--db PATH]";
+    let (_positionals, flags) = parse_flags(args)?;
+    let name = flags
+        .get("name")
+        .and_then(|o| o.clone())
+        .ok_or_else(|| format!("{USAGE}\n  --name is required"))?;
+    let role = flags
+        .get("role")
+        .and_then(|o| o.clone())
+        .ok_or_else(|| format!("{USAGE}\n  --role is required (the ship-with posture: plugin)"))?;
+    let domain = flags
+        .get("domain")
+        .and_then(|o| o.clone())
+        .ok_or_else(|| format!("{USAGE}\n  --domain is required"))?;
+    let tools: Vec<String> = flags
+        .get("tools")
+        .and_then(|o| o.clone())
+        .map(|csv| {
+            csv.split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let ttl_days: Option<i64> = flags
+        .get("ttl-days")
+        .and_then(|o| o.clone())
+        .map(|raw| {
+            raw.parse()
+                .map_err(|_| "--ttl-days must be an integer (days)".to_string())
+        })
+        .transpose()?;
+    let conn = principal_db_conn(&flags)?;
+    let out = flags
+        .get("out")
+        .and_then(|o| o.clone())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs_home()
+                .join(".config/brain-server/principals")
+                .join(format!("{name}.token"))
+        });
+
+    let token = brain_server::auth::principals::mint_token();
+    let now = cli_unix_now();
+    let expires_at = ttl_days.map(|d| now + d * 86_400);
+    // The roster row FIRST (its hash covers this exact token), the file
+    // second: if the file write fails, the roster holds a hash no file
+    // carries — a dead credential, never a live leak — and a re-run recovers
+    // cleanly (the row upserts, the file creates new). The reverse order
+    // would strand a live bearer file for a principal no roster row admits,
+    // and the create-new refusal would block the re-run.
+    brain_server::auth::principals::grant(
+        &conn,
+        &name,
+        &role,
+        &domain,
+        &tools.iter().map(String::as_str).collect::<Vec<_>>(),
+        &brain_server::auth::principals::hash_token(&token),
+        now,
+        expires_at,
+    )?;
+    brain_server::secret_file::write_owner_only_secret(&out, &token)?;
+    if json_mode() {
+        return emit_json_ok(
+            "principal grant",
+            serde_json::json!({
+                "name": name, "role": role, "domain": domain, "tools": tools,
+                "expires_at": expires_at, "token_file": out.display().to_string(),
+            }),
+        );
+    }
+    println!(
+        "granted {name}: role={role} domain={domain} tools={}",
+        tools.join(",")
+    );
+    println!("token file: {} (0600)", out.display());
+    match expires_at {
+        Some(exp) => println!("expires: unix {exp}"),
+        None => println!("expires: never"),
+    }
+    println!(
+        "the plugin authenticates with `Authorization: Bearer <token>`; the raw bearer\n\
+         is in the file only — it is never printed, never stored in the DB (hash only)"
+    );
+    Ok(())
+}
+
+fn cmd_principal_revoke(args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage: brain principal revoke --name N [--reason R] [--db PATH]";
+    let (_positionals, flags) = parse_flags(args)?;
+    let name = flags
+        .get("name")
+        .and_then(|o| o.clone())
+        .ok_or_else(|| format!("{USAGE}\n  --name is required"))?;
+    let reason = flags
+        .get("reason")
+        .and_then(|o| o.clone())
+        .unwrap_or_else(|| "operator revoke".to_string());
+    let conn = principal_db_conn(&flags)?;
+    brain_server::auth::principals::revoke_grant(
+        &conn,
+        &name,
+        &reason,
+        "operator",
+        cli_unix_now(),
+    )?;
+    if json_mode() {
+        return emit_json_ok(
+            "principal revoke",
+            serde_json::json!({ "name": name, "reason": reason }),
+        );
+    }
+    println!("revoked {name} ({reason}) — the minted token 401s identity_revoked on the next call");
+    Ok(())
+}
+
+fn cmd_principal_list(args: &[String]) -> Result<(), String> {
+    let (_positionals, flags) = parse_flags(args)?;
+    let conn = principal_db_conn(&flags)?;
+    let rows = brain_server::auth::principals::list(&conn)?;
+    if json_mode() {
+        let data: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "name": r.name, "role": r.role, "domain": r.domain,
+                    "tools": r.tools, "created_at": r.created_at,
+                    "expires_at": r.expires_at, "revoked": r.revoked,
+                })
+            })
+            .collect();
+        return emit_json_ok("principal list", serde_json::json!({ "principals": data }));
+    }
+    println!(
+        "{:<24} {:<12} {:<16} {:<28} {}",
+        "name", "role", "domain", "tools", "status"
+    );
+    for r in &rows {
+        let expires = match r.expires_at {
+            Some(exp) => format!("expires {exp}"),
+            None => "no expiry".to_string(),
+        };
+        let status = if r.revoked {
+            "REVOKED".to_string()
+        } else {
+            expires
+        };
+        println!(
+            "{:<24} {:<12} {:<16} {:<28} {}",
+            truncate(&r.name, 22),
+            truncate(&r.role, 10),
+            truncate(&r.domain, 14),
+            truncate(&r.tools.join(","), 26),
+            status
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

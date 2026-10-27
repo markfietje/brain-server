@@ -164,6 +164,10 @@ pub(crate) const fn principal_kind_string(kind: PrincipalKind) -> &'static str {
     match kind {
         PrincipalKind::Jwt => "human",
         PrincipalKind::AgentLoopback => "agent",
+        // M3-g (plan 27): a minted roster bearer is neither human nor the
+        // gateway agent — a third class with its own name, so a run created
+        // through a plugin credential reads as what it is.
+        PrincipalKind::Plugin => "plugin",
     }
 }
 
@@ -173,6 +177,7 @@ pub(crate) fn principal_kind_from_stored(raw: &str) -> Option<PrincipalKind> {
     match raw {
         "human" => Some(PrincipalKind::Jwt),
         "agent" => Some(PrincipalKind::AgentLoopback),
+        "plugin" => Some(PrincipalKind::Plugin),
         _ => None,
     }
 }

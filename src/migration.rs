@@ -3469,6 +3469,39 @@ pub fn run_migration_with_store_dim(
              ON chat_turns(session_id, seq);",
     )?;
 
+    // ── the plugin principal roster (M3-g, plan 27) ─────────────────────
+    // One row per GRANTED principal: the roster the auth middleware's plugin
+    // lane resolves a minted bearer against, and the surface `brain principal
+    // grant|revoke|list` writes. Minting is an operator act on the machine
+    // that owns the token files — there is NO HTTP mint route and NO write
+    // route for this table (an HTTP mint is a privilege-escalation surface
+    // with zero measured need), so the CLI is the only writer. The raw token
+    // NEVER lands here — only its SHA-256 (the token is 64 hex chars of
+    // random, so the hash is not brute-forceable and the bearer lives only
+    // in the 0600 token file the grant writes). `tools` is the operator's
+    // named UMP/MCP allowlist (comma-separated; ENFORCED by the
+    // authorize_tool roster arm — the `plugin` preset ships an EMPTY set, so
+    // a row's tools column is exactly what the operator named, nothing
+    // inherited). `expires_at` NULL = no expiry — an operator who wants one
+    // names it. A revoked name stays dead across a re-grant:
+    // `revoked_principals` is the kill-switch and wins; revive nothing,
+    // re-grant under a new name. No FK, house style. Additive only — the
+    // chat-session posture (no version-const bump; the rehearse parity list
+    // carries the table because a rehearsal that came back with zero
+    // principals would produce a server that has forgotten every plugin
+    // credential it ever granted, and would say so nowhere).
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS principals(
+            name       TEXT PRIMARY KEY,
+            role       TEXT NOT NULL,
+            domain     TEXT NOT NULL,
+            tools      TEXT NOT NULL DEFAULT '',
+            token_hash TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER
+         );",
+    )?;
+
     // ── Parity check: assert vec0 absorbed all valid legacy vectors ──────
     // A silent partial backfill (e.g. skipped non-512-dim rows) would otherwise
     // leave the index incomplete with no signal. We log a warning for any

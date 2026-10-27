@@ -654,6 +654,21 @@ pub fn authorize_tool(
         return Ok(());
     }
     let conn = pool.get().map_err(HandlerError::db_down)?;
+    // THE PLUGIN ROSTER ARM (M3-g, plan 27). A plugin principal's tool set is
+    // EXACTLY what the operator named at grant time — the roster row, not the
+    // role store. The role's own set (the `plugin` preset ships
+    // `tools_allowed: []`) stays in the union below as the day-zero floor;
+    // the named tools are the only widening, and each one is an audited
+    // operator act (`brain principal grant --tools`). Consulted ONLY for
+    // `PrincipalKind::Plugin`: a JWT `sub` that happens to collide with a
+    // roster name must not inherit its grants — the kind is the fence.
+    if p.kind == crate::auth::PrincipalKind::Plugin {
+        let named = crate::auth::principals::named_tools(&conn, &p.sub)
+            .map_err(|e| HandlerError::internal(format!("principal store: {e}")))?;
+        if named.iter().any(|t| t == tool) {
+            return Ok(());
+        }
+    }
     let roles = crate::role::resolve(&conn, &p.roles)
         .map_err(|e| HandlerError::internal(format!("role store: {e}")))?;
     // A role that does not declare the field is UNRESTRICTED, so a principal

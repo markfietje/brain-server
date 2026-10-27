@@ -125,6 +125,9 @@ on the HTTP API or the client console.
 | `brain valet add "what" --at <iso\|HH:MM\|unix>` `[--repeat none\|daily\|weekly]` `[--domain D]` | Add a valet reminder |
 | `brain valet due [--now <unix>]` \| `brain valet brief` \| `brain valet consent grant\|revoke` | Due items, the brief, and consent state |
 | `brain ropa list` \| `brain ropa add --activity A --controller C --processor P --lawful-basis B` `[--categories S] [--recipients S] [--retention-days N] [--security-measures S] [--transfers S]` | Records-of-processing register (read + propose an activity row) |
+| `brain principal grant --name N --role plugin --domain D` `[--tools t1,t2] [--ttl-days N] [--out PATH] [--db PATH]` | Mint one **plugin principal** (M3-g, plan 27): a 0600 token file (the bearer NEVER touches stdout or the DB — the roster stores its SHA-256), a `principals` roster row, and a hash-chained audit row. The granted role must EXIST in the roles store; `plugin` ships able to do nothing beyond scoped read/write of its own rows in its own domain, and `--tools` is the ONLY widening (each name an explicit operator act, enforced by the `authorize_tool` roster arm). Re-granting a name rotates it; a REVOKED name stays dead — grant a new name instead. NO HTTP mint route exists: minting is an operator act on the machine that owns the token files |
+| `brain principal revoke --name N` `[--reason R] [--db PATH]` | The kill-switch: a `revoked_principals` row (same upsert the mesh writes — latest wins) + an audit row. The minted token 401s `identity_revoked` on the next call — the live proof shape of the 2026-09-09 agent-token enforcement |
+| `brain principal list` `[--db PATH]` | The roster: name, role, domain, tools, created, expiry, and each row's kill-switch state (`--json` for the machine envelope) |
 
 ## Backup & restore
 
