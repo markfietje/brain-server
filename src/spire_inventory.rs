@@ -1230,11 +1230,10 @@ fn license_header_present() {
         notice.contains("Copyright 2026 Mark Fietje"),
         "NOTICE must carry the copyright attribution"
     );
-    let licenses =
-        std::fs::read_to_string(root.join("LICENSES.md")).expect(
-            "LICENSES.md must exist at repo root — it ships in the image at \
+    let licenses = std::fs::read_to_string(root.join("LICENSES.md")).expect(
+        "LICENSES.md must exist at repo root — it ships in the image at \
              /usr/share/doc/brain-server/ and is the distribution licence table",
-        );
+    );
     assert!(
         licenses.contains("Apache-2.0"),
         "LICENSES.md must name the kernel's Apache-2.0"
