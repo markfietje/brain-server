@@ -104,6 +104,14 @@
 	--text: #161c28;
 	--text-muted: #4a5668;
 	--border: #d2d9e4;
+	/* D1 (plan 24 §3, M3-e): the Brain teal STAYS. One accent, used exactly
+	   as the dsh harness uses its blue — primary actions, the active nav
+	   tick, the focus ring, links — and nothing decorative; the status
+	   colours (--ok, --error, --warn-*) stay reserved for status. The dsh
+	   design LANGUAGE is adopted here; the DeepSeek BRAND (its mark, its
+	   name, its blue) is not, and no --dsw-static-* value is copied. An
+	   operator overrule to blue moves exactly these two tokens (--accent,
+	   --focus, both schemes) to an OWN oklch blue — never the dsh literal. */
 	--accent: #1f7f6c;
 	--warn-bg: #fff8e1;
 	--warn-border: #b58a00;
