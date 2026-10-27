@@ -29,6 +29,13 @@ holds it; the new licence applies from this change forward.
 - `LICENSE` — the canonical Apache License 2.0 text with the
   `Copyright 2026 Mark Fietje` notice.
 - `NOTICE` — new: the §4(d) attribution file.
+- `LICENSES.md` — new: the distribution licence table (what ships under
+  which licence, per surface), the Signal stack's pinned-rev AGPL
+  ground truth, and the three standing rules — process boundary, §13
+  public-source rule, no-App-Store. The Dockerfile copies it, with
+  `LICENSE` and `NOTICE`, to `/usr/share/doc/brain-server/`; the
+  `.dockerignore` gains the `!LICENSES.md` exception; the spire pin
+  checks its presence and content.
 - `Cargo.toml` (root), `crates/Cargo.toml`, `crates/brain-care-core`,
   `crates/brain-aftersales-core`, `tools/steward-harness`,
   `tools/channel-bridge`, `shell/src-tauri/Cargo.toml`,

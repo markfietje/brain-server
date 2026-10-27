@@ -1196,9 +1196,11 @@ fn cli_reference_covers_subcommands() {
 
 /// The license identity pin: `LICENSE` carries the Apache License 2.0 text
 /// with the explicit `Copyright 2026 Mark Fietje` notice (relicensed from
-/// MIT on 2026-10-27), `Cargo.toml` declares `license = "Apache-2.0"`, and
-/// the `NOTICE` file exists. A missing or altered header fails the
-/// build — provenance of ownership is machine-checked, not assumed.
+/// MIT on 2026-10-27), `Cargo.toml` declares `license = "Apache-2.0"`, the
+/// `NOTICE` file exists, and `LICENSES.md` discloses the distribution
+/// surface — including the AGPL-3.0-only Signal stack. A missing or altered
+/// header fails the build — provenance of ownership is machine-checked,
+/// not assumed.
 #[test]
 fn license_header_present() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1227,5 +1229,22 @@ fn license_header_present() {
     assert!(
         notice.contains("Copyright 2026 Mark Fietje"),
         "NOTICE must carry the copyright attribution"
+    );
+    let licenses =
+        std::fs::read_to_string(root.join("LICENSES.md")).expect(
+            "LICENSES.md must exist at repo root — it ships in the image at \
+             /usr/share/doc/brain-server/ and is the distribution licence table",
+        );
+    assert!(
+        licenses.contains("Apache-2.0"),
+        "LICENSES.md must name the kernel's Apache-2.0"
+    );
+    assert!(
+        licenses.contains("AGPL-3.0-only"),
+        "LICENSES.md must disclose the Signal stack's AGPL-3.0-only terms"
+    );
+    assert!(
+        licenses.contains("signal-gateway"),
+        "LICENSES.md must cover signal-gateway as a component"
     );
 }

@@ -665,5 +665,8 @@ It is **infrastructure for governed, reproducible AI-agent memory and decision s
 
 Brain Server is released under the [Apache License, Version 2.0](LICENSE)
 (relicensed from MIT on 2026-10-27; prior tagged releases remain MIT).
+The distribution licence table — what ships under which licence, including
+the AGPL-3.0-only Signal stack when `signal-gateway` is added — is
+[LICENSES.md](LICENSES.md).
 
 Copyright © 2026 Mark Fietje.

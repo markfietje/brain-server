@@ -17,3 +17,4 @@ research
 docs
 *.md
 !README.md
+!LICENSES.md

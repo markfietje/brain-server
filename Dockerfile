@@ -82,6 +82,13 @@ COPY --from=builder /build/target/release/brain       /usr/local/bin/brain
 COPY --from=builder /build/target/release/mcp         /usr/local/bin/mcp
 COPY --from=builder /build/target/release/brain-connector-stub /usr/local/bin/brain-connector-stub
 
+# The licence disclosure ships with the binaries: LICENSES.md is the
+# component table (Apache-2.0 kernel, AGPL-3.0-only Signal stack when the
+# gateway is added at deployment), LICENSE + NOTICE the kernel's own terms.
+# Presence in the image is machine-checked by the spire
+# license_header_present pin (the LICENSES.md half).
+COPY LICENSE LICENSES.md NOTICE /usr/share/doc/brain-server/
+
 # Fail-safe defaults (loopback-only). Public exposure is an explicit opt-in
 # (BIND_PUBLIC=1) so a misconfigured port mapping cannot silently expose data.
 ENV BIND_HOST=127.0.0.1 \
