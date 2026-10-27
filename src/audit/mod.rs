@@ -165,6 +165,13 @@ pub enum AuditKind {
     /// consumers find jurisdiction-law writes without detail-hash mining;
     /// the body rides the chain as a hash only.
     Rules,
+    /// pack lifecycle (C2 G-4, plan 28 §4): one row per pack IMPORT act —
+    /// the signed chain's terminal witness (verify → validate → import,
+    /// each per-row act audited under ITS kind; this row names the pack:
+    /// id, version, hashes in the detail). The register row
+    /// (`installed_packs`) carries the plaintext id/version; this row is
+    /// the chain's evidence that the import HAPPENED.
+    Plugin,
 }
 
 impl AuditKind {
@@ -191,6 +198,7 @@ impl AuditKind {
             AuditKind::Procedure => "procedure",
             AuditKind::Chat => "chat",
             AuditKind::Rules => "rules",
+            AuditKind::Plugin => "plugin",
         }
     }
 }

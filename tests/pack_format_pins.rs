@@ -21,8 +21,8 @@ fn packs_dir() -> PathBuf {
 
 #[test]
 fn the_pack_format_module_is_pure_no_fs_no_net_no_clock() {
-    let source = std::fs::read_to_string(packs_dir().join("mod.rs"))
-        .expect("the pack format module exists");
+    let source =
+        std::fs::read_to_string(packs_dir().join("mod.rs")).expect("the pack format module exists");
     let code: String = source
         .lines()
         .filter(|l| {
@@ -41,8 +41,8 @@ fn the_pack_format_module_is_pure_no_fs_no_net_no_clock() {
 
 #[test]
 fn pack_procedures_ride_the_registered_wizard_schema_not_a_second_one() {
-    let source = std::fs::read_to_string(packs_dir().join("mod.rs"))
-        .expect("the pack format module exists");
+    let source =
+        std::fs::read_to_string(packs_dir().join("mod.rs")).expect("the pack format module exists");
     assert!(
         source.contains("crate::workflow::wizard::validate_wizard_pack"),
         "a pack's procedures/ must validate through the registered wizard-pack \
@@ -75,8 +75,7 @@ fn pack_procedures_ride_the_registered_wizard_schema_not_a_second_one() {
 fn the_file_set_allowlist_is_the_format_the_plan_names() {
     // plan 28 §4's tree, one line each — an entry added or dropped here
     // without the plan is a format change, and format changes are named acts
-    let source =
-        std::fs::read_to_string(packs_dir().join("mod.rs")).expect("the format module");
+    let source = std::fs::read_to_string(packs_dir().join("mod.rs")).expect("the format module");
     for name in [
         "\"manifest.json\"",
         "\"domain.json\"",

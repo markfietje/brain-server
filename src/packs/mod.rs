@@ -33,6 +33,10 @@ use std::collections::BTreeMap;
 
 use crate::role;
 
+pub mod archive;
+pub mod install;
+pub mod signature;
+
 // ── the allowlist ───────────────────────────────────────────────────────────
 
 pub const MANIFEST: &str = "manifest.json";
@@ -565,6 +569,13 @@ pub fn engine_matches(range: &str, version: &str) -> bool {
             _ => kernel == bound,
         }
     })
+}
+
+/// The version tuple behind [`engine_matches`] and the installer's
+/// register law — X.Y.Z compared numerically, never lexically (0.10.0 is
+/// NOT below 0.9.0).
+pub(crate) fn parse_version_tuple(version: &str) -> Option<(u64, u64, u64)> {
+    parse_version(version)
 }
 
 fn parse_version(version: &str) -> Option<(u64, u64, u64)> {

@@ -3502,6 +3502,30 @@ pub fn run_migration_with_store_dim(
          );",
     )?;
 
+    // ── the installed-pack register (C2 G-4, plan 28 §4) ─────────────────
+    // One row per installed pack: the roster door's neighborhood (the
+    // global/global-named DB, beside `principals`), because the audit chain
+    // carries HASHES — a `plugin list` cannot reconstruct id/version from
+    // hashed rows, so the register holds them plaintext: id (unique — one
+    // living row per pack, the newest version wins), version, the kind
+    // list, the manifest + archive hashes (blake3), the file count, and the
+    // import act's audit row id. The installer owns the re-install law:
+    // same id+version REFUSED (a tampered re-offer must not silently pass
+    // as idempotent success); a higher version updates the row.
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS installed_packs(
+            id              INTEGER PRIMARY KEY,
+            pack_id         TEXT NOT NULL UNIQUE,
+            version         TEXT NOT NULL,
+            kinds           TEXT NOT NULL,
+            manifest_hash   TEXT NOT NULL,
+            archive_hash    TEXT NOT NULL,
+            file_count      INTEGER NOT NULL,
+            import_audit_id INTEGER,
+            imported_at     INTEGER NOT NULL
+        );",
+    )?;
+
     // ── Parity check: assert vec0 absorbed all valid legacy vectors ──────
     // A silent partial backfill (e.g. skipped non-512-dim rows) would otherwise
     // leave the index incomplete with no signal. We log a warning for any

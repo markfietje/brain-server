@@ -46,9 +46,27 @@ pub struct StoredRule {
     pub revision: i64,
 }
 
-/// Insert (or revise) one rule row: the natural-key law above, then the
-/// audit row. Returns the row id.
-pub fn insert(conn: &Connection, actor: &str, row: &RuleRow) -> Result<i64, String> {
+/// What one insert act did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertOutcome {
+    /// The row landed (new or revised): the audit row is written.
+    Landed(i64),
+    /// The natural key already lives at THIS revision: nothing landed, no
+    /// audit row — the C1 fixture's replay law ("a replay over an
+    /// already-mounted fixture inserts nothing"). The DIRECT CLI verb
+    /// surfaces this as a refusal (an operator re-running the same law
+    /// should be told, not silently nodded at); the PACK INSTALLER treats
+    /// it as the skip it is, so a pack upgrade carrying unchanged rules
+    /// imports cleanly.
+    Current,
+}
+
+/// Insert (or revise) one rule row, reporting what happened.
+pub fn insert_outcome(
+    conn: &Connection,
+    actor: &str,
+    row: &RuleRow,
+) -> Result<InsertOutcome, String> {
     let existing: Option<(i64, i64)> = conn
         .query_row(
             "SELECT id, revision FROM rules
@@ -61,11 +79,14 @@ pub fn insert(conn: &Connection, actor: &str, row: &RuleRow) -> Result<i64, Stri
 
     let id = match existing {
         Some((id, stored_revision)) => {
-            if row.revision <= stored_revision {
+            if row.revision == stored_revision {
+                return Ok(InsertOutcome::Current);
+            }
+            if row.revision < stored_revision {
                 return Err(format!(
                     "rule '{}:{}:{}' is already present at revision {stored_revision} \
-                     (offered {}) — only a HIGHER revision revises law, and a replay \
-                     of the same revision is refused",
+                     (offered {}) — only a HIGHER revision revises law, and a stale \
+                     write cannot clobber fresh law",
                     row.jurisdiction, row.subject, row.rule_key, row.revision
                 ));
             }
@@ -109,9 +130,10 @@ pub fn insert(conn: &Connection, actor: &str, row: &RuleRow) -> Result<i64, Stri
         }
     };
 
-    // one audit row per insert act — kind-filtered consumers find
+    // one audit row per LANDED act — kind-filtered consumers find
     // jurisdiction-law writes without mining; the body rides the chain as a
-    // hash only.
+    // hash only. A skipped replay writes no evidence, because nothing
+    // happened.
     crate::audit::record(
         conn,
         crate::audit::AuditKind::Rules,
@@ -120,7 +142,20 @@ pub fn insert(conn: &Connection, actor: &str, row: &RuleRow) -> Result<i64, Stri
         crate::audit::AuditStatus::Ok,
         &format!("revision:{}", row.revision),
     );
-    Ok(id)
+    Ok(InsertOutcome::Landed(id))
+}
+
+/// The DIRECT verb's insert: strict — a same-revision replay is a refusal
+/// naming the law, not a silent skip.
+pub fn insert(conn: &Connection, actor: &str, row: &RuleRow) -> Result<i64, String> {
+    match insert_outcome(conn, actor, row)? {
+        InsertOutcome::Landed(id) => Ok(id),
+        InsertOutcome::Current => Err(format!(
+            "rule '{}:{}:{}' is already present at revision {} — only a HIGHER \
+             revision revises law, and a replay of the same revision is refused",
+            row.jurisdiction, row.subject, row.rule_key, row.revision
+        )),
+    }
 }
 
 /// The door's list: every living row, natural-key ordered.

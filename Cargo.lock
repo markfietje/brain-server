@@ -429,6 +429,7 @@ dependencies = [
  "dirs 7.0.0",
  "ed25519-dalek 3.0.0",
  "fastembed",
+ "flate2",
  "hex",
  "hmac 0.13.0",
  "jsonwebtoken",

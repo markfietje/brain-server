@@ -32,7 +32,7 @@
 
 use blake2::Blake2b512;
 use blake2::Digest;
-use ed25519_dalek::{SIGNATURE_LENGTH, Signature, Signer, VerifyingKey};
+use ed25519_dalek::{SIGNATURE_LENGTH, Signature, VerifyingKey};
 
 /// A signature-chain refusal. Every arm names what it saw — a refusal that
 /// cannot say whether the chain was absent, malformed, foreign, or broken
@@ -219,7 +219,7 @@ pub fn pack_pubkey_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::{Signer, SigningKey};
 
     fn b64(data: &[u8]) -> String {
         use base64::Engine as _;

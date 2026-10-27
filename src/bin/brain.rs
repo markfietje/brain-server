@@ -462,6 +462,31 @@ const SUBCOMMANDS: &[Subcommand] = &[
         run: cmd_rules_list,
         usage: "brain rules list [--db PATH]",
     },
+    // The pack installer (C2 G-4, plan 28 §4) — the signed chain, R137's
+    // shape: verify against the PINNED pack key (a SECOND key from the
+    // updater's — a pack signed by the updater key is a REFUSAL) → DRY-RUN
+    // is the default surface (nothing writes without --yes, the `brain
+    // client add --yes` convention) → import through the EXISTING doors
+    // (domain bind, role upsert, the procedure door's internals, the rules
+    // door), one audit row per act → one register row naming id + version
+    // + content hashes. Packs are DATA: there is no code to load, no
+    // restart, no runtime import. The re-install law (chosen, recorded):
+    // same id+version REFUSED; a higher version is the upgrade path.
+    Subcommand {
+        name: "plugin install",
+        json: false,
+        run: cmd_plugin_install,
+        usage: "brain plugin install <pack.tar.gz> [--dry-run] [--yes] [--sig PATH]
+                      [--db PATH]
+                      (verify → dry-run → import one signed DATA pack; without --yes
+                       this IS a dry-run: every row that WOULD land, nothing written)",
+    },
+    Subcommand {
+        name: "plugin list",
+        json: true,
+        run: cmd_plugin_list,
+        usage: "brain plugin list [--db PATH]",
+    },
 ];
 
 fn main() {
@@ -762,6 +787,9 @@ const VALUE_FLAGS: &[&str] = &[
     "reviewed-at",
     "expires-at",
     "revision",
+    // `brain plugin install` (C2 G-4): the detached signature's path
+    // (default: beside the archive, minisign's own convention).
+    "sig",
 ];
 
 /// Exit-code discipline: parse/flag misuse is a usage error (2), distinct from
@@ -6406,6 +6434,182 @@ fn cmd_rules_list(args: &[String]) -> Result<(), String> {
             truncate(&r.rule_key, 20),
             r.revision,
             truncate(&r.source_ref, 48),
+        );
+    }
+    Ok(())
+}
+
+// ── the pack installer (C2 G-4) ──────────────────────────────────────────
+
+fn cmd_plugin_install(args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage: brain plugin install <pack.tar.gz> [--dry-run] [--yes] \
+[--sig PATH] [--db PATH]";
+    let (positionals, flags) = parse_flags(args)?;
+    let pack_path = require_positional(&positionals, "pack.tar.gz")?;
+    let dry_run = flags.contains_key("dry-run");
+    let yes = flags.contains_key("yes");
+    if positionals.len() > 1 {
+        return Err(usage(format!("{USAGE}\n  one pack per install")));
+    }
+
+    // the archive bytes + the detached signature beside it (minisign's own
+    // convention), overridable with --sig
+    let archive = std::fs::read(&pack_path).map_err(|e| format!("read {pack_path}: {e}"))?;
+    let sig_path = flags
+        .get("sig")
+        .and_then(|o| o.clone())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let mut p = PathBuf::from(&pack_path);
+            let name = p.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+            p.pop();
+            p.push(format!("{}.minisig", name.to_string_lossy()));
+            p
+        });
+    let sig = std::fs::read_to_string(&sig_path).map_err(|_| {
+        format!(
+            "no signature beside the pack: {} is missing — unsigned packs are refused",
+            sig_path.display()
+        )
+    })?;
+    let pubkey = pack_pubkey_path(
+        std::env::var("BRAIN_PACK_PUBKEY").ok().as_deref(),
+        &data_root(&flags)?,
+    );
+    let pubkey_file = std::fs::read_to_string(&pubkey).map_err(|_| {
+        format!(
+            "the pack key is not pinned: {} is missing — mint the pack keypair with \
+             minisign -G, keep the private half in operator custody, and pin this \
+             public half (BRAIN_PACK_PUBKEY or pack.pub beside the data root)",
+            pubkey.display()
+        )
+    })?;
+
+    // 1 · VERIFY — the two-key law's enforcement point
+    let keynum = brain_server::packs::signature::verify(&archive, &sig, &pubkey_file)
+        .map_err(|e| format!("signature refused: {e}"))?;
+
+    // 2 · PARSE + VALIDATE — the format, arm by arm
+    let entries = brain_server::packs::archive::read_archive(&archive)
+        .map_err(|e| format!("archive refused: {e}"))?;
+    let erefs: Vec<(&str, Vec<u8>)> = entries
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.clone()))
+        .collect();
+    let pack = brain_server::packs::validate(&erefs).map_err(|e| format!("pack refused: {e}"))?;
+    if !brain_server::packs::engine_matches(&pack.manifest.engine, env!("CARGO_PKG_VERSION")) {
+        return Err(format!(
+            "pack refused: {}@{} needs engine {}, this kernel is {}",
+            pack.manifest.id,
+            pack.manifest.version,
+            pack.manifest.engine,
+            env!("CARGO_PKG_VERSION")
+        ));
+    }
+
+    // 3 · the PLAN — the same rows the import will land, count for count
+    let plan = brain_server::packs::install::plan(&pack);
+    let archive_hash = brain_server::packs::install::content_hash(&archive);
+    let manifest_hash = brain_server::packs::install::content_hash(
+        &erefs
+            .iter()
+            .find(|(p, _)| *p == "manifest.json")
+            .map(|(_, b)| b.clone())
+            .unwrap_or_default(),
+    );
+
+    if dry_run || !yes {
+        println!(
+            "pack {}@{} (kinds: {}) — signed by pinned key {keynum}, {} files:",
+            pack.manifest.id,
+            pack.manifest.version,
+            pack.manifest
+                .kinds
+                .iter()
+                .map(|k| k.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+            entries.len()
+        );
+        for row in &plan {
+            println!(
+                "  would land: {}",
+                brain_server::packs::install::plan_line(row)
+            );
+        }
+        if !yes {
+            println!("dry-run: nothing written — pass --yes to import");
+        }
+        return Ok(());
+    }
+
+    // 4 · IMPORT — one tx, the acts in the law's order, every act audited
+    let mut conn = principal_db_conn(&flags)?;
+    let receipt = brain_server::packs::install::apply(
+        &mut conn,
+        &pack,
+        &archive_hash,
+        &manifest_hash,
+        entries.len(),
+        cli_unix_now(),
+    )
+    .map_err(|e| e.to_string())?;
+    println!(
+        "installed {}@{}: {} rows landed, register row {}, audit rows {}",
+        pack.manifest.id,
+        pack.manifest.version,
+        receipt.rows_landed,
+        receipt.register_id,
+        receipt.audit_refs.len(),
+    );
+    Ok(())
+}
+
+fn pack_pubkey_path(env_value: Option<&str>, data_root: &std::path::Path) -> PathBuf {
+    brain_server::packs::signature::pack_pubkey_path(env_value, data_root)
+}
+
+fn data_root(flags: &FlagMap) -> Result<PathBuf, String> {
+    let db = flags
+        .get("db")
+        .and_then(|o| o.clone())
+        .map(PathBuf::from)
+        .unwrap_or_else(default_db_path);
+    db.parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| format!("the DB path {db:?} has no parent directory"))
+}
+
+fn cmd_plugin_list(args: &[String]) -> Result<(), String> {
+    let (_positionals, flags) = parse_flags(args)?;
+    let conn = principal_db_conn(&flags)?;
+    let rows = brain_server::packs::install::list_installed(&conn)?;
+    if json_mode() {
+        let data: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.pack_id, "version": r.version, "kinds": r.kinds,
+                    "manifest_hash": r.manifest_hash, "archive_hash": r.archive_hash,
+                    "files": r.file_count, "import_audit_id": r.import_audit_id,
+                    "imported_at": r.imported_at,
+                })
+            })
+            .collect();
+        return emit_json_ok("plugin list", serde_json::json!({ "packs": data }));
+    }
+    println!(
+        "{:<20} {:<8} {:<28} {:<18} {}",
+        "id", "version", "kinds", "archive_hash", "imported_at"
+    );
+    for r in &rows {
+        println!(
+            "{:<20} {:<8} {:<28} {:<18} {}",
+            truncate(&r.pack_id, 18),
+            truncate(&r.version, 6),
+            truncate(&r.kinds.join(","), 26),
+            truncate(&r.archive_hash, 16),
+            r.imported_at
         );
     }
     Ok(())

@@ -204,6 +204,12 @@ argon2 = "0.6"
 # declared directly so the verifier's primitive cannot silently move under a
 # transitive bump. No new crate enters the lock.
 blake2 = "0.11.0"
+# The pack archive's gzip framing (C2 G-4, plan 28 §4): a pack is a
+# gzipped ustar tar, read by the in-house closed-subset reader in
+# src/packs/archive.rs. Already a transitive dep; declared directly so the
+# framing primitive cannot silently move under a transitive bump. No new
+# crate enters the lock.
+flate2 = "1"
 # Hex encoding for HMAC signature roundtrips in webhook verification + tests.
 hex = "0.4"
 chrono = "0.4.45"
