@@ -1194,9 +1194,10 @@ fn cli_reference_covers_subcommands() {
     );
 }
 
-/// The license identity pin: `LICENSE` carries the MIT text with the
-/// explicit `Copyright (c) 2026 Mark Fietje` header, and `Cargo.toml`
-/// declares `license = "MIT"`. A missing or altered header fails the
+/// The license identity pin: `LICENSE` carries the Apache License 2.0 text
+/// with the explicit `Copyright 2026 Mark Fietje` notice (relicensed from
+/// MIT on 2026-10-27), `Cargo.toml` declares `license = "Apache-2.0"`, and
+/// the `NOTICE` file exists. A missing or altered header fails the
 /// build — provenance of ownership is machine-checked, not assumed.
 #[test]
 fn license_header_present() {
@@ -1204,16 +1205,27 @@ fn license_header_present() {
     let license =
         std::fs::read_to_string(root.join("LICENSE")).expect("LICENSE must exist at repo root");
     assert!(
-        license.contains("MIT License"),
-        "LICENSE must carry the MIT text"
+        license.contains("Apache License"),
+        "LICENSE must carry the Apache License text"
     );
     assert!(
-        license.contains("Copyright (c) 2026 Mark Fietje"),
+        license.contains("Version 2.0, January 2004"),
+        "LICENSE must carry the Apache 2.0 version line"
+    );
+    assert!(
+        license.contains("Copyright 2026 Mark Fietje"),
         "LICENSE must carry the explicit copyright header"
     );
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("Cargo.toml must exist");
     assert!(
-        manifest.contains("license = \"MIT\""),
-        "Cargo.toml must declare the MIT license"
+        manifest.contains("license = \"Apache-2.0\""),
+        "Cargo.toml must declare the Apache-2.0 license"
+    );
+    let notice_path = root.join("NOTICE");
+    let notice = std::fs::read_to_string(&notice_path)
+        .expect("NOTICE must exist at repo root (Apache-2.0 §4(d))");
+    assert!(
+        notice.contains("Copyright 2026 Mark Fietje"),
+        "NOTICE must carry the copyright attribution"
     );
 }

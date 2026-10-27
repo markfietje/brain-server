@@ -30,7 +30,7 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
     <img alt="Documentation" src="https://img.shields.io/badge/docs-brain--server-1f6feb.svg">
   </a>
   <a href="https://github.com/markfietje/brain-server/blob/main/LICENSE">
-    <img alt="MIT license" src="https://img.shields.io/github/license/markfietje/brain-server.svg">
+    <img alt="Apache 2.0 license" src="https://img.shields.io/github/license/markfietje/brain-server.svg">
   </a>
 
 </p>
@@ -663,6 +663,7 @@ It is **infrastructure for governed, reproducible AI-agent memory and decision s
 
 ## License
 
-Brain Server is released under the [MIT License](LICENSE).
+Brain Server is released under the [Apache License, Version 2.0](LICENSE)
+(relicensed from MIT on 2026-10-27; prior tagged releases remain MIT).
 
 Copyright © 2026 Mark Fietje.

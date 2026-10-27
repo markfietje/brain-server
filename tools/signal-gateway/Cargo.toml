@@ -7,7 +7,15 @@ version = "0.99.0"
 edition = "2024"
 rust-version = "1.98"
 description = "Lightweight Signal daemon edge for brain-server Switchboard"
-license = "MIT OR Apache-2.0"
+# AGPL-3.0-only, not the workspace's Apache-2.0: the presage →
+# libsignal-service → libsignal stack this binary links is AGPL-3.0-only
+# end to end (verified in the pinned checkouts, 2026-10-27), so the only
+# buildable artifact of this crate is a combined AGPL work — the crate
+# declares that rather than a label no redistributor could honour.
+# First-party code stays the author's to relicense. The gateway ships in
+# neither the release workflow nor the signed shell, so the AGPL's duties
+# bind whoever redistributes it, not the operator's own builds.
+license = "AGPL-3.0-only"
 
 [dependencies]
 # Pinned by rev, never by branch: a branch pointer re-resolves to whatever

@@ -3,7 +3,7 @@ name = "brain-care-core"
 version = "1.28.33"
 edition.workspace = true
 rust-version = "1.98"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 description = "The care engine core: inquiry/account dialogs over interview-core machinery, zero new concepts."
 publish = false
 

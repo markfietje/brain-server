@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 description = "Governed-edge channel bridges (WhatsApp/Slack/Teams) for brain-server Switchboard"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 
 [dependencies]
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "time", "signal", "fs"], default-features = false }

@@ -13,6 +13,50 @@ measured. Those records are kept as they were written (this file is
 append-only), and their heading says `Unreleased` because that is what they
 were when the round landed — not because the work is still unreleased.
 
+## [Unreleased] — the relicence: Apache-2.0 across the tree (2026-10-27)
+
+brain-server relicensed from MIT to Apache-2.0 — a commercial-hygiene
+decision (2026-10-27): Apache-2.0 carries the explicit contributor patent
+grant and its retaliation clause, which MIT lacks, and §6 of the licence
+expressly grants no trademark rights, which keeps the MemorySteward brand
+the company's. It is deliberately NOT filed as a compliance or protection
+move: the DepEd Order 003 s. 2026 mapping turns on governance machinery,
+not the licence, and the loop architecture's protection remains the
+open-core boundary (the loops live in the private IP repo), not any public
+licence. Every tagged release before 2026-10-27 remains MIT for whoever
+holds it; the new licence applies from this change forward.
+
+- `LICENSE` — the canonical Apache License 2.0 text with the
+  `Copyright 2026 Mark Fietje` notice.
+- `NOTICE` — new: the §4(d) attribution file.
+- `Cargo.toml` (root), `crates/Cargo.toml`, `crates/brain-care-core`,
+  `crates/brain-aftersales-core`, `tools/steward-harness`,
+  `tools/channel-bridge`, `shell/src-tauri/Cargo.toml`,
+  `plugin/package.json` — `license` normalised to `"Apache-2.0"` (the
+  four that declared `MIT OR Apache-2.0` settle on the one licence; the
+  `license.workspace = true` members inherit).
+- `tools/signal-gateway/Cargo.toml` — the one deliberate exception:
+  `license = "AGPL-3.0-only"`, because the pinned presage →
+  libsignal-service → libsignal stack is AGPL-3.0-only end to end
+  (verified in the pinned checkouts, 2026-10-27 — the 2019 Signal blog's
+  GPLv3 + App-Store permission covers the old C library, not the Rust
+  stack). The crate's only buildable artifact is a combined AGPL work,
+  and the declaration says so instead of wearing a label no
+  redistributor could honour. The gateway ships in neither the release
+  workflow nor the signed shell — the AGPL binds redistribution, not
+  operator builds.
+- `README.md` — badge alt text and the License section, with the relicence
+  date and the prior-releases-remain-MIT note.
+- `COMPLIANCE.md` §6.6.1 — the Art 2(12) paragraph names Apache-2.0 and the
+  relicence date; the analysis itself does not move (OSI-approved FOSS
+  either way; the recital-103 monetisation trigger is untouched by a
+  licence-name change).
+- `src/spire_inventory.rs` — the `license_header_present` pin re-aims:
+  LICENSE must carry the Apache text, version line, and copyright;
+  `Cargo.toml` must declare `"Apache-2.0"`; `NOTICE` must exist and carry
+  the attribution. The MIT-era pin would have failed this build —
+  provenance stays machine-checked.
+
 ## [1.29.34] — 2026-10-26 — the chat answers live: the streaming composer, grounded on your memory
 
 The chat spine (v1.29.32) answered in one block after a pause; this round

@@ -8,7 +8,7 @@ edition = "2024"
 # stable and is this repo's floor everywhere else, so the shell matches the
 # rest of the tree rather than carrying its own lower number.
 rust-version = "1.99"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/markfietje/brain-server"
 readme = "../README.md"
 keywords = ["tauri", "shell", "wizard", "desktop"]

@@ -3,7 +3,7 @@ name = "brain-aftersales-core"
 version = "1.28.33"
 edition.workspace = true
 rust-version = "1.98"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 description = "The aftersales engine core: entitlement/window/disposition fulfillment gates on the governed-workflow substrate."
 publish = false
 

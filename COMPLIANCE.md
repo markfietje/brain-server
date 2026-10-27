@@ -486,11 +486,17 @@ from 2 August 2026 mark from day one.
 ### 6.6.1 Open-source posture — Art 2(12), Art 25(4) and recital 103 (added 2026-10-25)
 
 The provision this file never named is the one that decides the PROJECT's
-own exposure. brain-server is released under the MIT licence (`LICENSE`;
-`Cargo.toml` `license = "MIT"`), and **Article 2(12)** reads: *"This
+own exposure. brain-server is released under the Apache License, Version
+2.0 (`LICENSE`; `Cargo.toml` `license = "Apache-2.0"`; NOTICE file added;
+relicensed from MIT on 2026-10-27 — earlier tagged releases remain MIT),
+and **Article 2(12)** reads: *"This
 Regulation does not apply to AI systems released under free and open-source
 licences, unless they are placed on the market or put into service as
 high-risk AI systems or as an AI system that falls under Article 5 or 50."*
+Apache-2.0 is an OSI-approved licence on the Commission's FOSS list, so the
+licence-name change below does not move this analysis; the recital-103
+monetisation trigger (and the standing 2026-10-21 decision tied to it) is
+untouched by it.
 
 **What follows for the component as released today.**
 
