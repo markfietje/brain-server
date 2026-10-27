@@ -1196,4 +1196,57 @@ mod pins {
             );
         }
     }
+    /// `docs/plugin-principals.md` is the plugin principal's one-page recipe,
+    /// and the BOUNDARY sentence is its FIRST SCREENFUL — the claim a reader
+    /// must meet before any command. The pin holds the sentence verbatim in
+    /// its place, the recipe's anchors (the verbs an operator types, the
+    /// footprint query, the revocation vocabulary, the token-file law), and
+    /// the named mint refusal — so the doc cannot rot past the point where
+    /// it describes this tree. A doc that describes a different tree is
+    /// worse than none: it is a recipe for a privilege escalation that
+    /// cannot compile.
+    #[test]
+    fn plugin_principals_doc_carries_the_boundary_and_the_recipe() {
+        let doc = doc("docs/plugin-principals.md");
+
+        // THE BOUNDARY, verbatim, in the first screenful (the first 30
+        // lines), whitespace-collapsed so a reflow cannot defeat the check.
+        let head: String = doc.lines().take(30).collect::<Vec<_>>().join(" ");
+        let flat = head.split_whitespace().collect::<Vec<_>>().join(" ");
+        for phrase in [
+            "a plugin principal authorizes DATA access",
+            "it never authorizes code execution",
+            "the kernel does not execute caller input",
+        ] {
+            assert!(
+                flat.contains(phrase),
+                "the boundary sentence lost `{phrase}` from its first screenful — \
+                 restore it verbatim, before any command"
+            );
+        }
+
+        // THE RECIPE: what the operator types, what the plugin sends, what
+        // the operator runs when it goes wrong, and the token-file law.
+        for anchor in [
+            "brain principal grant",
+            "brain principal revoke",
+            "GET /audit?principal=",
+            "identity_revoked",
+            "identity_expired",
+            "0600",
+        ] {
+            assert!(
+                doc.contains(anchor),
+                "the plugin-principals doc lost `{anchor}` — the recipe must keep the \
+                 verbs the operator actually runs"
+            );
+        }
+
+        // THE REFUSAL, named: a law the doc does not mention reads as no law.
+        assert!(
+            doc.to_lowercase().contains("no http mint route"),
+            "the doc must name the mint refusal — the absence of the route is a \
+             decision, and an unrecorded decision reads as an oversight"
+        );
+    }
 }
