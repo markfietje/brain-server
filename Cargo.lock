@@ -416,6 +416,7 @@ dependencies = [
  "argon2",
  "axum",
  "base64 0.23.1",
+ "blake2",
  "blake3",
  "brain-consensus-core",
  "brain-delivery-core",

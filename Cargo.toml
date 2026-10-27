@@ -196,6 +196,14 @@ aes-gcm = "0.11.1"
 # `Argon2::new`/`hash_password_into` (the KDF path) intact; the 0.5 PHC
 # string API this crate never used is what moved under it.
 argon2 = "0.6"
+# The pack key's minisign-format verification (C2 G-2, plan 28 §4): the
+# primary signature signs the BLAKE2b-512 prehash of the archive — the exact
+# scheme the III-8 integration drill MEASURED against minisign's own
+# verdicts (probe-established: raw 64-byte secondary, prehashed primary,
+# secondary over sig||trusted-comment). Already a transitive dep via argon2;
+# declared directly so the verifier's primitive cannot silently move under a
+# transitive bump. No new crate enters the lock.
+blake2 = "0.11.0"
 # Hex encoding for HMAC signature roundtrips in webhook verification + tests.
 hex = "0.4"
 chrono = "0.4.45"
