@@ -1742,10 +1742,17 @@ pub async fn approve_proposal(
             "global",
         );
 
+        // THE OK-ACT IS ATTRIBUTED (A-3, C2 G-6): the actor is the principal
+        // that made the decision — the roster reviewer's NAME (the existing
+        // `?principal=` filter shows the approve with no wire change), not
+        // the masked `api` subject that hid OK-acts from the footprint law.
+        // The KCS/complaint arms in this handler already attribute exactly
+        // this way; the opaque/loopback superuser (no principal) keeps the
+        // `api` label byte-for-byte.
         crate::audit::record(
             &conn,
             crate::audit::AuditKind::Reconcile,
-            "api",
+            principal_to_owner(&principal.0).as_deref().unwrap_or("api"),
             &format!("proposal:{id}"),
             crate::audit::AuditStatus::Ok,
             // note the screen verdict as provenance in the

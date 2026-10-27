@@ -4196,3 +4196,155 @@ async fn a_jwt_supervisor_rides_the_global_leg_unchanged() {
          domain-scoped arm is the roster's, never the claim's"
     );
 }
+
+// ── the digest-bound roster approve (A-3, C2 G-6 item 1's third leg) ───────
+//
+// THE DIGEST LAW IS ABSOLUTE and the roster arm inherits it, not relaxes it:
+// a human approves the bytes they were shown, or nothing. C1 exercised the
+// law live on the operator leg (absent digest → 400 `digest_required`;
+// digest ≠ current → 409 drift); these pins prove the ROSTER arm rides the
+// SAME discipline — and that the decision's audit row is attributable to
+// the ROSTER NAME (the approve is an OK-act, so the existing `?principal=`
+// filter shows it with no wire change), not the masked `api` subject the
+// generic promote's audit row used to wear.
+
+#[tokio::test]
+async fn the_roster_approve_is_digest_bound_and_audited_under_the_roster_name() {
+    let srv = build_server();
+    seed_staff_roles(&srv);
+    grant_roster_on(
+        &srv,
+        "support-supervisor",
+        "supervisor",
+        "support",
+        &["support-agent"],
+        "sup-bearer",
+    );
+    grant_roster_on(
+        &srv,
+        "support-agent",
+        "agent",
+        "support",
+        &[],
+        "agent-bearer",
+    );
+    // The operator stand-in (the role-held admin class — see A-2's note).
+    let admin = mint(
+        &srv,
+        "admin-jti",
+        "ops-admin",
+        "global",
+        &["admin:*/*"],
+        &["matrix-role"],
+    );
+    let (st, body) = send_body(
+        &srv,
+        Some("agent-bearer"),
+        "/ingest/proposal",
+        "POST",
+        r#"{"content":"the bench wiring is lead-safe and labelled","domain":"support"}"#,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let resp: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let id = resp["id"].as_i64().expect("proposal id");
+
+    // THE QUEUE, as the roster reviewer sees it — the digest is the reviewer's
+    // copy handle, rendered on every row.
+    let (st, text) = send_body(&srv, Some("sup-bearer"), "/proposals", "GET", "").await;
+    assert_eq!(st, StatusCode::OK, "{text}");
+    let rows = queue_rows(&text);
+    let displayed_digest = rows
+        .iter()
+        .find(|r| r["id"].as_i64() == Some(id))
+        .and_then(|r| r["content_digest"].as_str())
+        .expect("the row carries the digest the reviewer was shown")
+        .to_string();
+
+    // THE LAW, ON THE ROSTER ARM: no digest → 400 `digest_required`.
+    let (st, text) = send_body(
+        &srv,
+        Some("sup-bearer"),
+        &format!("/proposals/{id}/approve"),
+        "POST",
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{text}");
+    assert!(
+        text.contains("digest_required"),
+        "the roster arm inherits the digest law, byte-for-byte: {text}"
+    );
+
+    // A digest that is not the displayed one → 409 drift — never approve
+    // bytes the reviewer did not see.
+    let stale = "b".repeat(64);
+    let (st, text) = send_body(
+        &srv,
+        Some("sup-bearer"),
+        &format!("/proposals/{id}/approve?digest={stale}"),
+        "POST",
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{text}");
+
+    // THE DISPLAYED DIGEST: the decision lands.
+    let (st, text) = send_body(
+        &srv,
+        Some("sup-bearer"),
+        &format!("/proposals/{id}/approve?digest={displayed_digest}"),
+        "POST",
+        "",
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "the roster approve binds to the displayed digest and lands: {text}"
+    );
+
+    // THE ATTRIBUTION: the approve's audit row is the ROSTER NAME, visible
+    // through the existing `?principal=` filter with no wire change — the
+    // masked `api` subject would hide an OK-act from the very filter the
+    // footprint law reads.
+    let (st, text) = send_body(
+        &srv,
+        Some(&admin),
+        "/audit?principal=support-supervisor",
+        "GET",
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{text}");
+    let audit: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let events = audit["events"].as_array().expect("events array");
+    let approve_row = events
+        .iter()
+        .find(|e| e["kind"].as_str() == Some("reconcile") && e["status"].as_str() == Some("ok"))
+        .expect("the roster approve is audited under the roster name");
+    assert_eq!(
+        approve_row["actor"].as_str(),
+        Some("support-supervisor"),
+        "the OK-act names the actor that made it: {approve_row}"
+    );
+    // And the filter is a FILTER: the other staff principal's name shows
+    // none of it.
+    let (st, text) = send_body(
+        &srv,
+        Some(&admin),
+        "/audit?principal=support-agent",
+        "GET",
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{text}");
+    let audit: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let others = audit["events"].as_array().unwrap();
+    assert!(
+        others
+            .iter()
+            .all(|e| e["kind"].as_str() != Some("reconcile")),
+        "the agent's filter shows no reconcile act — attribution is per-name"
+    );
+}
