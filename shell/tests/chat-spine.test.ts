@@ -758,11 +758,22 @@ describe('the envelope law', () => {
 		const { execFileSync } = await import('node:child_process');
 		const { gzipSync } = await import('node:zlib');
 		const { readdirSync, statSync, rmSync } = await import('node:fs');
-		// A stale `.svelte-kit/output` (a dev run's or an interrupted build's
-		// leftovers) fails the kit's postbuild analyse with a missing-module
-		// error — measured here once — so the pin clears it before building.
-		// The directory is generated intermediate state, never tracked.
-		rmSync(join(shellRoot, '.svelte-kit', 'output'), { recursive: true, force: true });
+		// THE CLEAR IS THE WHOLE GENERATED TREE (R0a, 2026-10-27): `.svelte-kit`
+		// and the adapter's `build/` are shared state, and the measured defect
+		// class is a SECOND build on the same checkout (an operator's
+		// `pnpm build`, a second suite run) clearing `.svelte-kit/output`
+		// mid-build — the loser surfaces `ENOENT: scandir
+		// '.svelte-kit/output/server'` inside `vite build` (or the ENOTEMPTY
+		// twin on `build`), both reproduced here by racing two builds. The
+		// output-only clear this pin carried before the round provably covers
+		// nothing: the kit re-runs `sync.all` and its own rm of `output`
+		// inside EVERY build (drilled: with the clear neutered, a deleted
+		// `output/server` still builds green). Every byte under both roots is
+		// generated intermediate state, never tracked.
+		const clearGenerated = (): void => {
+			rmSync(join(shellRoot, '.svelte-kit'), { recursive: true, force: true });
+			rmSync(join(shellRoot, 'build'), { recursive: true, force: true });
+		};
 		// THE BUILD MUST SEE THE LANE'S OWN ENVIRONMENT: inherited `VITEST` /
 		// `NODE_ENV=test` flip vite's resolve conditions and produce a SMALLER,
 		// DIFFERENT bundle (39 files / 226 KB vs 45 files / 203 KB — measured),
@@ -778,11 +789,25 @@ describe('the envelope law', () => {
 		// vitest worker starves the other workers' quick shell-outs (one
 		// pre-existing 5 s-bounded pin timed out beside it once — the R135
 		// class), and `nice` is the portable way to take the edge off.
-		execFileSync('nice', ['-n', '10', 'pnpm', 'exec', 'vite', 'build'], {
-			cwd: shellRoot,
-			stdio: 'pipe',
-			env: cleanEnv
-		});
+		const build = (): void => {
+			execFileSync('nice', ['-n', '10', 'pnpm', 'exec', 'vite', 'build'], {
+				cwd: shellRoot,
+				stdio: 'pipe',
+				env: cleanEnv
+			});
+		};
+		// ONE bounded retry, and only on a thrown build: a raced sibling's rm
+		// can land between this build's phases no matter what this pin clears
+		// (the race is the OTHER process's buildStart). A raced build always
+		// THROWS — it never completes into a corrupt tree — so the retry can
+		// never measure a wrong artifact: it re-clears and rebuilds alone.
+		try {
+			clearGenerated();
+			build();
+		} catch {
+			clearGenerated();
+			build();
+		}
 		const dist = join(shellRoot, 'build', '_app');
 		const jsFiles: string[] = [];
 		const walk = (dir: string): void => {
