@@ -1,22 +1,35 @@
 <script lang="ts">
-	// III-6 — the human review queue, DISPLAYED and nothing more.
+	// III-6, AS AMENDED (the approve-action round, C2 G-6): the human review
+	// queue — DISPLAY for everyone; APPROVE for the authorized, digest-bound,
+	// audited. No reject, no edit, and no other code path that posts a
+	// decision.
 	//
-	// This surface shows what is waiting for a human and what the kernel
-	// already put on the row. It never decides: there is no approve, no
-	// reject, no edit, and no code path that posts a decision. The kernel's
-	// write verbs stay behind the `approve`/`reject` roles.
+	// The amendment is an ACT, not a drift, and it is SCOPED: the review
+	// queue renders for a caller whose `GET /proposals` returned 200, and
+	// each live row carries an approve affordance whose call rides the row's
+	// DISPLAYED `content_digest` — the kernel re-derives that digest from the
+	// stored row and refuses the decision on drift, so the approval binds to
+	// the bytes the reviewer actually saw. The kernel's role gates decide who
+	// gets here at all: a 403 caller sees the refusal, never a queue, and
+	// never an affordance.
 	//
-	// The four states are DISTINCT and never share a rendering:
-	//   live    — the kernel answered with a queue
+	// What did NOT move: the four states are DISTINCT and never share a
+	// rendering —
+	//   live    — the kernel answered with a queue (the only state with the
+	//             affordance: no displayed digest, no approve)
 	//   empty   — the kernel said the queue is empty (a FACT)
 	//   offline — the kernel could not be reached; the last-known METADATA
-	//             is shown with its age (a NAMED state, never an empty queue)
+	//             is shown with its age (a NAMED state, never an empty
+	//             queue) — metadata only, so no affordance can render here
 	//   refused — the kernel refused (a REFUSAL with its reason, never an
 	//             empty queue)
+	// The write verbs other than approve stay behind the kernel's
+	// `reject`/`edit` roles — this surface has no path for them.
 	import { onMount } from 'svelte';
 	import { m } from '$paraglide/messages.js';
 	import { wireFaultMessage } from '#lib/api/wire-fault.js';
 	import type { WireFault } from '#lib/api/client.js';
+	import { approveProposal, type ApproveOutcome } from '#lib/api/approve.js';
 	import { fetchPendingQueue } from '#lib/queue/client.js';
 	import {
 		queueAgeAmount,
@@ -43,7 +56,16 @@
 		| { kind: 'refused'; status: number | null; fault: WireFault }
 		| { kind: 'malformed' };
 
+	// The approve affordance's per-row state: the row being decided, and the
+	// outcome once the kernel answered. The outcome is RENDERED — an approval
+	// is an audited act, and the surface shows the receipt (the humanGated
+	// law: a decision the surface carries is a decision the surface shows).
+	type ApproveState =
+		| { readonly id: number; readonly phase: 'busy' }
+		| { readonly id: number; readonly phase: 'done'; readonly outcome: ApproveOutcome };
+
 	let view = $state<View>({ kind: 'loading' });
+	let approveState = $state<ApproveState | null>(null);
 	let generation = 0;
 
 	function ageLabel(cachedAt: number): string {
@@ -61,6 +83,39 @@
 		if (status === 403) return m['review.refused.forbidden']();
 		if (status !== null) return m['review.refused.status']({ status: String(status) });
 		return wireFaultMessage(fault);
+	}
+
+	function approveOutcomeMessage(outcome: ApproveOutcome): string {
+		switch (outcome.kind) {
+			case 'approved':
+				return m['review.approve.done']();
+			case 'drift':
+				return m['review.approve.drift']();
+			case 'refused':
+				return outcome.status !== null
+					? m['review.approve.refused']({ status: String(outcome.status) })
+					: wireFaultMessage(outcome.fault);
+			case 'offline':
+				return m['review.approve.offline']();
+			case 'malformed':
+				return m['review.approve.malformed']();
+		}
+	}
+
+	// THE DIGEST IS THE CALL. The affordance exists only on a row that
+	// carries the digest the kernel rendered beside the content; the call
+	// passes exactly that value, and the kernel binds the decision to it.
+	async function approve(row: QueueDisplayRow): Promise<void> {
+		if (row.contentDigest === null || approveState?.phase === 'busy') return;
+		approveState = { id: row.id, phase: 'busy' };
+		const outcome = await approveProposal(row.id, row.contentDigest);
+		approveState = { id: row.id, phase: 'done', outcome };
+		if (outcome.kind === 'approved') {
+			// The row left the queue: re-read so the render is the kernel's
+			// fact, not an optimistic local one. The receipt stays until the
+			// re-read replaces the list.
+			void load();
+		}
 	}
 
 	async function load(): Promise<void> {
@@ -115,7 +170,7 @@
 	});
 </script>
 
-{#snippet queueRows(rows: readonly QueueDisplayRow[])}
+{#snippet queueRows(rows: readonly QueueDisplayRow[], live: boolean)}
 	<ul class="grid gap-3" data-testid="review-list">
 		{#each rows as row (row.id)}
 			<li class="grid gap-2 rounded-lg border p-4" data-testid="review-list-row">
@@ -188,6 +243,31 @@
 						</p>
 					</div>
 				{/if}
+				{#if live && row.contentDigest !== null}
+					<!-- THE AFFORDANCE, AND ITS LAW: it exists only on a LIVE row
+					     that carries the displayed digest — a 403 listing renders
+					     the refusal (no rows at all), the offline render holds
+					     metadata only (no digest), so neither can grow a button.
+					     The call carries THIS row's digest; the kernel binds the
+					     decision to the bytes the reviewer saw. -->
+					<div class="flex items-center gap-3">
+						<Button
+							size="sm"
+							disabled={approveState?.phase === 'busy'}
+							onclick={() => void approve(row)}
+							data-testid="review-row-approve"
+						>
+							{m['review.row.approve']()}
+						</Button>
+						{#if approveState !== null && approveState.id === row.id}
+							<p class="text-sm text-muted-foreground" data-testid="review-approve-outcome">
+								{approveState.phase === 'busy'
+									? m['review.approve.busy']()
+									: approveOutcomeMessage(approveState.outcome)}
+							</p>
+						{/if}
+					</div>
+				{/if}
 			</li>
 		{/each}
 	</ul>
@@ -245,10 +325,10 @@
 			<p role="status" data-testid="review-offline-count">
 				{m['review.count']({ count: view.rows.length })}
 			</p>
-			{@render queueRows(view.rows)}
+			{@render queueRows(view.rows, false)}
 		{/if}
 	{:else}
 		<p role="status" data-testid="review-count">{m['review.count']({ count: view.rows.length })}</p>
-		{@render queueRows(view.rows)}
+		{@render queueRows(view.rows, true)}
 	{/if}
 </div>

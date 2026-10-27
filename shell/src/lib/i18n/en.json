@@ -258,8 +258,8 @@
   "settings.update.refused": "Refused: {reason}",
   "settings.update.error": "The update check failed.",
   "review.title": "Review queue",
-  "review.subtitle": "What is waiting for a human. The kernel owns every decision; this view only shows them.",
-  "review.disclaimer": "Showing only — approving, rejecting and editing happen in the kernel, behind the reviewer's role.",
+  "review.subtitle": "What is waiting for a human. Approve here rides the kernel’s own gate — role-checked, digest-bound, audited.",
+  "review.disclaimer": "Display for everyone; approve for the authorized. The decision binds to the digest shown and is audited; reject and edit stay behind the kernel’s roles.",
   "review.loading": "Reading the review queue…",
   "review.empty": "The kernel reports no proposals waiting for review.",
   "review.count": "{count} proposals are waiting for review.",
@@ -414,5 +414,12 @@
   "chat.stream.transport": "The connection to the kernel dropped mid-answer.",
   "chat.stream.generic": "The turn ended early ({code}).",
   "common.cancel": "Cancel",
-  "support.status.context": "Support vertical adopted — grounded answers over the ticket corpus; escalations wait on a supervisor."
+  "support.status.context": "Support vertical adopted — grounded answers over the ticket corpus; escalations wait on a supervisor.",
+  "review.row.approve": "Approve",
+  "review.approve.busy": "Approving…",
+  "review.approve.done": "Approved into memory.",
+  "review.approve.drift": "This row changed since it was shown — reload the queue and decide again.",
+  "review.approve.refused": "The kernel refused the approval (HTTP {status}).",
+  "review.approve.offline": "The kernel could not be reached — nothing was approved.",
+  "review.approve.malformed": "The kernel’s answer could not be verified — nothing was approved."
 }

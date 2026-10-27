@@ -372,18 +372,23 @@ const ROUTE_PARITY: readonly RouteParity[] = [
 		dioxus: '/review',
 		because:
 			'the same path on both sides: the human review queue. The Dioxus app served it at /review ' +
-			'(it read the pending proposals) and could also approve, reject and edit them; the shell\'s ' +
-			'/review reads the SAME queue and DISPLAYS it only — the decision verbs stay behind the ' +
-			'kernel\'s own roles, and this surface has no path that posts a decision. That is the round\'s ' +
-			'law, and the operator loses the in-app approve affordance when the Dioxus app is ' +
-			'decommissioned — named as owed, not hidden.',
+			'and could approve, reject and edit rows; the shell\'s /review reads the SAME queue and — ' +
+			'as of the III-6 amendment (the approve-action round, C2 G-6) — carries EXACTLY ONE of the ' +
+			'three verbs back: the approve, for the authorized, digest-bound, audited. The affordance ' +
+			'renders only on a live (200) listing and its call carries the row\'s DISPLAYED content_digest; ' +
+			'reject and edit stay behind the kernel\'s own roles, and this surface has no path for them. ' +
+			'The amendment is an act, named here and in the register row.',
 		authz: {
-			// The queue is Read-scoped in the kernel's own table, and the
-			// kernel's `approve` ROLE gate is the kernel's business, not the
-			// shell's: the shell reads with the operator's own bearer and the
-			// kernel decides what comes back.
-			kernel: { '/proposals': 'Read' },
-			mutates: null
+			// The queue is Read-scoped in the kernel's own table, and the ONE
+			// write the amendment granted rides the kernel's `approve` role
+			// gate: the shell reads and approves with the caller's own bearer
+			// and the kernel decides both halves — who sees the queue, and
+			// whose digest-bound decision lands.
+			kernel: { '/proposals': 'Read', '/proposals/{id}/approve': 'Write' },
+			mutates: {
+				path: '/proposals/{id}/approve',
+				act: 'approves the displayed row into memory — the call carries the row\'s DISPLAYED content_digest, the kernel re-derives it and refuses on drift (409), and the decision is audited under the acting principal\'s name'
+			}
 		}
 	}
 ];
@@ -1130,7 +1135,12 @@ test('every_mutating_reach_is_enumerated_and_the_forget_affordance_is_soft_only_
 		[...writePaths].sort(),
 		'the Write-scoped paths the shell can reach are an EXHAUSTIVE fact: a new one fails here, where it ' +
 			'must be classified, rather than drifting in unlabelled'
-	).toEqual(['/ingest/proposal', '/ump/forget', '/workflow/decision-runs/{id}/replay-diff']);
+	).toEqual([
+		'/ingest/proposal',
+		'/proposals/{id}/approve',
+		'/ump/forget',
+		'/workflow/decision-runs/{id}/replay-diff'
+	]);
 
 	const mutatingRows = ROUTE_PARITY.filter((row) => row.authz.mutates !== null);
 	const namedPaths = new Set(mutatingRows.map((row) => row.authz.mutates!.path));
@@ -1164,8 +1174,9 @@ test('every_mutating_reach_is_enumerated_and_the_forget_affordance_is_soft_only_
 	// "Add memory" — a candidate for Review, never a memory.)
 	expect(
 		mutatingRows.map((r) => r.route).sort(),
-		'the set of mutating routes is exhaustive: `/` via the tombstone, `/recall` via the proposal, and nothing else'
-	).toEqual(['/', '/recall']);
+		'the set of mutating routes is exhaustive: `/` via the tombstone, `/recall` via the proposal, ' +
+			'and `/review` via the III-6 amendment\'s digest-bound approve — the amendment is an act, named here'
+	).toEqual(['/', '/recall', '/review']);
 
 	// ---- AND the [add memory] reach is a PROPOSAL at the route level ----
 	//

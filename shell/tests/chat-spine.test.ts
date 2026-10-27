@@ -851,7 +851,17 @@ describe('the envelope law', () => {
 		// R0 midpoint; +626 over the refactor's landed 208,100). The band's
 		// midpoint MOVES to the measurement, the same named act the plan-25
 		// round made; the register row carries it.
-		const R0_BASELINE = 208_726;
+		//
+		// NAMED ACT (A-4, the approve-action round, C2 G-6 — the III-6
+		// amendment, measured 2026-10-28): the review surface's ONE write —
+		// the digest-carrying approve transport (`lib/api/approve.ts`), the
+		// affordance + the rendered receipt on the live listing, the parity
+		// row's named mutate, and seven message keys × five locales — grew
+		// the built JS to 210,568 bytes gzipped (+1,842 over the M3-g
+		// midpoint). The amendment is a BUILD round, not a refactor: the
+		// surface grew by a named act, the band's midpoint moves to the
+		// measurement, and the register row carries it.
+		const R0_BASELINE = 210_568;
 		const BAND = 512;
 		expect(
 			Math.abs(total - R0_BASELINE),

@@ -258,8 +258,8 @@
   "settings.update.refused": "Refusé : {reason}",
   "settings.update.error": "La vérification de mise à jour a échoué.",
   "review.title": "File d’attente de relecture",
-  "review.subtitle": "Ce qui attend un humain. Le noyau prend chaque décision ; cette vue ne fait que les montrer.",
-  "review.disclaimer": "Affichage seul — l’approbation, le refus et la modification se font dans le noyau, derrière le rôle du relecteur.",
+  "review.subtitle": "Ce qui attend un humain. Approuver ici passe par le filtre propre du noyau — vérifié par rôle, lié à l’empreinte, audité.",
+  "review.disclaimer": "Affichage pour tous ; approbation pour les autorisés. La décision est liée à l’empreinte affichée et auditée ; le refus et la modification restent derrière les rôles du noyau.",
   "review.loading": "Lecture de la file d’attente de relecture…",
   "review.empty": "Le noyau ne signale aucune proposition en attente de relecture.",
   "review.count": "{count} propositions sont en attente de relecture.",
@@ -414,5 +414,12 @@
   "chat.stream.transport": "La connexion au noyau a été perdue en pleine réponse.",
   "chat.stream.generic": "Le tour s'est terminé prématurément ({code}).",
   "common.cancel": "Annuler",
-  "support.status.context": "Verticale support adoptée — des réponses sourcées sur le corpus de tickets ; les escalades attendent un superviseur."
+  "support.status.context": "Verticale support adoptée — des réponses sourcées sur le corpus de tickets ; les escalades attendent un superviseur.",
+  "review.row.approve": "Approuver",
+  "review.approve.busy": "Approbation…",
+  "review.approve.done": "Approuvé en mémoire.",
+  "review.approve.drift": "Cette ligne a changé depuis l’affichage — rechargez la file et décidez à nouveau.",
+  "review.approve.refused": "Le noyau a refusé l’approbation (HTTP {status}).",
+  "review.approve.offline": "Le noyau était injoignable — rien n’a été approuvé.",
+  "review.approve.malformed": "La réponse du noyau n’a pas pu être vérifiée — rien n’a été approuvé."
 }

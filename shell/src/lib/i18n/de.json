@@ -258,8 +258,8 @@
   "settings.update.refused": "Abgelehnt: {reason}",
   "settings.update.error": "Die Update-Prüfung ist fehlgeschlagen.",
   "review.title": "Prüfwarteschlange",
-  "review.subtitle": "Was auf einen Menschen wartet. Der Kernel trifft jede Entscheidung; diese Ansicht zeigt sie nur.",
-  "review.disclaimer": "Nur Anzeige — Genehmigen, Ablehnen und Bearbeiten passieren im Kernel, hinter der Rolle der prüfenden Person.",
+  "review.subtitle": "Was auf einen Menschen wartet. Genehmigen hier geht durch den eigenen Gate des Kernel — rollengeprüft, an den Digest gebunden, auditiert.",
+  "review.disclaimer": "Anzeige für alle; Genehmigen für die Berechtigten. Die Entscheidung bindet an den gezeigten Digest und wird auditiert; Ablehnen und Bearbeiten bleiben hinter den Rollen des Kernel.",
   "review.loading": "Prüfwarteschlange wird gelesen…",
   "review.empty": "Der Kernel meldet keine Vorschläge, die auf Prüfung warten.",
   "review.count": "{count} Vorschläge warten auf Prüfung.",
@@ -414,5 +414,12 @@
   "chat.stream.transport": "Die Verbindung zum Kernel wurde mitten in der Antwort unterbrochen.",
   "chat.stream.generic": "Diese Anfrage endete vorzeitig ({code}).",
   "common.cancel": "Abbrechen",
-  "support.status.context": "Support-Vertikale übernommen — begründete Antworten über den Ticket-Korpus; Eskalationen warten auf eine Supervisorin oder einen Supervisor."
+  "support.status.context": "Support-Vertikale übernommen — begründete Antworten über den Ticket-Korpus; Eskalationen warten auf eine Supervisorin oder einen Supervisor.",
+  "review.row.approve": "Genehmigen",
+  "review.approve.busy": "Genehmigen…",
+  "review.approve.done": "In den Speicher übernommen.",
+  "review.approve.drift": "Diese Zeile hat sich seit der Anzeige geändert — Liste neu laden und erneut entscheiden.",
+  "review.approve.refused": "Der Kernel hat die Genehmigung abgelehnt (HTTP {status}).",
+  "review.approve.offline": "Der Kernel war nicht erreichbar — nichts wurde genehmigt.",
+  "review.approve.malformed": "Die Antwort des Kernel konnte nicht verifiziert werden — nichts wurde genehmigt."
 }

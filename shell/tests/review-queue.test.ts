@@ -7,23 +7,35 @@ import { CENSUS_ROUTES, ROUTE_FLOOR } from './route-census';
 import { QUEUE_CACHE_KEY } from '../src/lib/queue/model.js';
 
 /**
- * III-6 — the human review queue, DISPLAYED and nothing more.
+ * III-6, AS AMENDED — the human review queue: DISPLAY for everyone; APPROVE
+ * for the authorized, digest-bound, audited. No reject, no edit.
  *
- * Six pins, and each one names the law it holds:
+ * The amendment (the approve-action round, C2 G-6) is an ACT, not a drift:
+ * the surface grew ONE write — the approve affordance on a LIVE row, whose
+ * call carries the row's DISPLAYED `content_digest`, decided by the kernel's
+ * own role gates and audit chain. The pins below hold the amended law:
  *
  *   P1  the queue renders the kernel's pending rows, with the digest visible
- *   P2  the offline render shows the last-known METADATA and NO content
- *   P3  the surface contains NO decision-posting path
- *   P4  a refused queue renders a REFUSAL, not an empty queue
+ *   P2  the offline render shows the last-known METADATA and NO content —
+ *       and NO affordance (no displayed digest, no approve)
+ *   P3  the surface carries EXACTLY ONE decision path — the digest-carrying
+ *       approve — and no reject, no edit, no other write
+ *   P4  a refused queue renders a REFUSAL, not an empty queue — and no
+ *       affordance renders on a refused listing
  *   P5  the census, the parity row, the sweep arm and the catalogs carry it
  *   P6  the parity rows for /decisions and /decisions/[id] are TRUE
+ *   P7  the affordance: authorized-listing-only, digest-carrying, and the
+ *       outcome RENDERED (the humanGated law — a decision the surface
+ *       carries is a decision the surface shows)
  *
- * **P3 is the pin that matters most.** It is the II-6 `humanGated` pattern
- * applied to a surface: the promise is that this view never decides, and a
- * promise is held by CONSTRAINING IT, not by observing it. A button that
- * posts a decision would make this a different round with a different law (a
- * human-gated write from a webview needs its own authz proof), so the scan
- * covers the route and EVERY module it imports.
+ * **P3 is still the pin that matters most** — but what it pins changed BY
+ * NAME. It is the II-6 `humanGated` pattern applied to a surface: a promise
+ * is held by CONSTRAINING IT, not by observing it. The amended promise is
+ * narrower and sharper than the old one: the ONE write that exists is the
+ * approve, the transport's contract types the digest as REQUIRED, and the
+ * scan bans every other decision verb from the route and EVERY module it
+ * imports. `reject` and `edit` did not ride along — the amendment's scope
+ * is the approve alone.
  *
  * **P2's guard is a TYPE.** The cache's row type declares `content?: never`,
  * so a row carrying the proposal text is not assignable to it; and the cache
@@ -313,31 +325,50 @@ function queueImportClosure(): string[] {
 	return [...seen].sort();
 }
 
-test('P3 the surface contains NO decision-posting path', () => {
+test('P3 the surface carries EXACTLY ONE decision path — the digest-carrying approve — and no reject, no edit, no other write', () => {
 	const files = queueImportClosure();
 
 	// ANTI-VACUITY: the scan must have found the surface at all, and the
-	// module that holds the read. A scan over zero files passes every arm.
+	// module that holds the read — plus the module that holds the ONE write.
 	expect(files.length).toBeGreaterThan(1);
 	expect(files).toContain(join(shellRoot, 'src', 'routes', 'review', '+page.svelte'));
 	expect(files).toContain(join(shellRoot, 'src', 'lib', 'queue', 'client.ts'));
+	expect(files).toContain(join(shellRoot, 'src', 'lib', 'api', 'approve.ts'));
 
 	for (const file of files) {
 		const source = codeOf(readFileSync(file, 'utf8'));
 		const label = file.slice(shellRoot.length + 1);
 
-		// The kernel's decision verbs, as paths.
-		expect(source, `${label} names a decision path`).not.toMatch(/\/(?:approve|reject|edit)\b/);
-		// The decision verbs, as the client's own write methods.
-		expect(source, `${label} can write`).not.toMatch(/\bclient\.(?:POST|PUT|PATCH|DELETE)\b/);
-		// The decision verbs, as symbols.
-		expect(source, `${label} names a decision verb`).not.toMatch(
-			/\b(?:approve|reject|edit)_proposal\b|\b(?:approve|reject|edit)Proposal\b/
+		// THE AMENDMENT'S SCOPE, HELD: the approve is the ONE decision verb
+		// this surface may name — as the typed path it rides and the symbol
+		// that carries it. `reject` and `edit` did not ride along: no path,
+		// no symbol, anywhere in the closure.
+		expect(source, `${label} names the reject path`).not.toMatch(/\/reject\b/);
+		expect(source, `${label} names the edit path`).not.toMatch(/\/edit\b/);
+		expect(source, `${label} names a reject or edit verb`).not.toMatch(
+			/\b(?:reject|edit)_proposal\b|\b(?:reject|edit)Proposal\b/
 		);
+		// The verbs the amendment did not grant, as raw client writes: the
+		// surface's writes go through the typed approve transport only.
+		expect(source, `${label} can write raw`).not.toMatch(/\bclient\.(?:PUT|PATCH|DELETE)\b/);
 	}
 
-	// And the queue's own module tree makes exactly ONE typed-wire call, and
-	// it is a READ of the queue.
+	// The ONE raw POST in the closure is the approve's, and it REQUIRES the
+	// digest: the generated contract types it required, the transport passes
+	// the caller's digest through, and a digest-less call is not expressible.
+	const approveModule = codeOf(
+		readFileSync(join(shellRoot, 'src', 'lib', 'api', 'approve.ts'), 'utf8')
+	);
+	const posts = [...approveModule.matchAll(/client\.(GET|POST|PUT|PATCH|DELETE)\(\s*'([^']+)'/g)];
+	expect(posts).toHaveLength(1);
+	expect(posts[0]![1]).toBe('POST');
+	expect(posts[0]![2]).toBe('/proposals/{id}/approve');
+	expect(approveModule).toMatch(
+		/params:\s*\{\s*path:\s*\{\s*id\s*\},\s*query:\s*\{\s*digest\s*\}/
+	);
+
+	// And the queue's own read module still makes exactly ONE typed-wire
+	// call, and it is a READ of the queue.
 	const queueModule = codeOf(readFileSync(join(shellRoot, 'src', 'lib', 'queue', 'client.ts'), 'utf8'));
 	const calls = [...queueModule.matchAll(/client\.(GET|POST|PUT|PATCH|DELETE)\(\s*'([^']+)'/g)];
 	expect(calls).toHaveLength(1);
@@ -391,13 +422,23 @@ test('P5 the census, the parity row, the sweep arm and the catalogs carry the ro
 	expect([...CENSUS_ROUTES]).toContain('/review');
 	expect(ROUTE_FLOOR).toBe(CENSUS_ROUTES.length);
 
-	// The parity row — and its SHAPE, not just its presence.
+	// The parity row — and its SHAPE, not just its presence. The amendment
+	// is IN the row: the surface now names the ONE write it carries.
 	const parity = readFileSync(join(shellRoot, 'tests', 'route-parity.test.ts'), 'utf8');
 	const row = parityRowBlock(parity, '/review');
 	expect(row).toContain("verdict: 'exact'");
 	expect(row).toContain("dioxus: '/review'");
 	expect(row).toContain("'/proposals': 'Read'");
-	expect(row).toContain('mutates: null');
+	expect(row).toContain("'/proposals/{id}/approve': 'Write'");
+	expect(row).toContain("mutates: {");
+	expect(row).toContain("path: '/proposals/{id}/approve'");
+	// The authz CLAIMS name the amendment's exact scope — the approve only.
+	// (The `because` prose MAY name reject/edit: the row states what it
+	// excludes. The claims must not grant them.)
+	const authzBlock = row.slice(row.indexOf('authz:'));
+	expect(authzBlock.toLowerCase()).not.toContain('reject');
+	expect(authzBlock).not.toContain("'/proposals/{id}/reject'");
+	expect(authzBlock).not.toContain("'/proposals/{id}/edit'");
 
 	// The sweep arm.
 	const sweep = readFileSync(join(shellRoot, 'tests', 'route-a11y.test.ts'), 'utf8');
@@ -450,4 +491,116 @@ test('P6 the parity rows for /decisions and /decisions/[id] are TRUE', () => {
 		);
 		expect(page, `${route} reads the proposal queue`).not.toContain('/proposals');
 	}
+});
+
+// ── P7 · the affordance: authorized-only, digest-carrying, receipt shown ───
+
+test('P7 the affordance renders on a live listing and the call carries the DISPLAYED digest', async () => {
+	responder = async () => jsonResponse([proposalRow()]);
+	await renderRoute();
+	await waitForTestId('review-row-approve');
+
+	// THE CALL IS THE DISPLAYED BYTES: the digest the row rendered beside the
+	// content is the digest the approve carries — the same value, captured on
+	// the wire. The displayed-digest law is a WIRE fact here, not a claim.
+	const digestTestid = screen.getByTestId('review-row-digest');
+	expect(digestTestid.textContent).toContain('a'.repeat(64));
+	const posted = fetchMock.mock.calls
+		.map(([input]) => (input instanceof Request ? input : String(input)))
+		.map((input) => String(input))
+		.filter((url) => url.includes('/proposals/42/approve'));
+	expect(posted).toHaveLength(0);
+
+	// The affordance is a BUTTON the authorized caller can act on.
+	const button = screen.getByTestId('review-row-approve') as HTMLButtonElement;
+	expect(button.disabled).toBe(false);
+	button.click();
+
+	// The wire call: POST /proposals/42/approve?digest=<the displayed digest>.
+	await waitFor(() => {
+		const calls = fetchMock.mock.calls.filter(
+			([input]) => String(input instanceof Request ? input.url : input).includes('/approve')
+		);
+		expect(calls.length).toBeGreaterThan(0);
+	});
+	const [url, init] = fetchMock.mock.calls.find(([input]) =>
+		String(input instanceof Request ? input.url : input).includes('/approve')
+	)!;
+	expect(url instanceof Request ? url.method : init?.method).toBe('POST');
+	const called = new URL(url instanceof Request ? url.url : String(url));
+	expect(called.pathname).toBe('/proposals/42/approve');
+	expect(called.searchParams.get('digest')).toBe('a'.repeat(64));
+});
+
+test('P7 the approve outcome is RENDERED — the receipt, not a silent success', async () => {
+	const posts: string[] = [];
+	responder = async (url: string, _init: RequestInit | undefined, method: string) => {
+		const u = new URL(url);
+		if (method === 'POST') {
+			posts.push(u.searchParams.get('digest') ?? '');
+			return jsonResponse({ proposal_id: 42, chunk_id: 7, status: 'approved' });
+		}
+		return jsonResponse([proposalRow()]);
+	};
+	await renderRoute();
+	await waitForTestId('review-row-approve');
+	(screen.getByTestId('review-row-approve') as HTMLButtonElement).click();
+
+	// The receipt: the outcome is NAMED on the surface (the humanGated law —
+	// a decision the surface carries is a decision the surface shows). The
+	// wait is for the DECISION, not the busy line — the affordance moves
+	// through both before the kernel answers.
+	await waitFor(
+		() => {
+			expect(screen.getByTestId('review-approve-outcome').textContent).toContain('Approved');
+		},
+		{ timeout: 3000 }
+	);
+
+	// And the digest the call carried is the one the row displayed.
+	expect(posts[0]).toBe('a'.repeat(64));
+});
+
+test('P7 a drift answer (409) is NAMED as reload-and-re-decide, never a success', async () => {
+	responder = async (_url: string, _init: RequestInit | undefined, method: string) => {
+		if (method === 'POST') {
+			return new Response(null, { status: 409 });
+		}
+		return jsonResponse([proposalRow()]);
+	};
+	await renderRoute();
+	await waitForTestId('review-row-approve');
+	(screen.getByTestId('review-row-approve') as HTMLButtonElement).click();
+	await waitFor(
+		() => {
+			expect(screen.getByTestId('review-approve-outcome').textContent).toContain('changed');
+		},
+		{ timeout: 3000 }
+	);
+	expect(screen.getByTestId('review-approve-outcome').textContent).not.toContain('Approved');
+});
+
+test('P7 a refused queue renders NO affordance — a 403 listing cannot grow a button', async () => {
+	responder = async () => jsonResponse({ error: 'forbidden' }, 403);
+	await renderRoute();
+	await waitForTestId('review-refused');
+	expect(screen.queryByTestId('review-row-approve')).toBeNull();
+	expect(screen.queryByTestId('review-approve-outcome')).toBeNull();
+});
+
+test('P7 the offline render shows NO affordance — metadata only, no displayed digest', async () => {
+	// A live read first: the cache is written from it.
+	responder = async () => jsonResponse([proposalRow()]);
+	await renderRoute();
+	await waitForTestId('review-row-approve');
+	cleanup();
+	// The kernel goes away: the offline render holds METADATA and no digest.
+	responder = async () => {
+		throw new Error('the port is dead');
+	};
+	state.wireStatus = 'unreachable';
+	await renderRoute();
+	await waitForTestId('review-offline');
+	expect(screen.queryByTestId('review-row-approve')).toBeNull();
+	expect(screen.queryByTestId('review-approve-outcome')).toBeNull();
 });

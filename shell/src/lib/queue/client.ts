@@ -1,5 +1,6 @@
 /**
- * III-6 — the review queue's ONE read, over the shell's typed wire.
+ * III-6, AS AMENDED — the review queue's ONE read, over the shell's typed
+ * wire.
  *
  * ## WHAT THIS MODULE IS
  *
@@ -10,12 +11,14 @@
  *
  * ## THE LAW THIS MODULE IS BUILT FOR
  *
- * **This module displays; it never decides.** There is no approve, no reject,
- * no edit, and no code path that posts a decision. The kernel's write verbs
- * stay where they are, behind the `approve`/`reject` roles. A button that
- * posts a decision would make this a different surface with a different law
- * (a human-gated write from a webview needs its own authz proof), so the
- * module holds exactly one verb, and a pin scans for the others.
+ * **This module reads; it never decides.** The III-6 amendment (the
+ * approve-action round, C2 G-6) moved ONE verb onto the surface — the
+ * approve, digest-bound, audited, for the authorized — and it lives in its
+ * own module (`#lib/api/approve.js`), scanned by the review surface's pins.
+ * This module still holds exactly one verb, the READ: no reject, no edit,
+ * and no second write path. The kernel's role gates decide both halves —
+ * who sees the queue and who may approve on it — and a caller they refuse
+ * sees the refusal, never a queue.
  *
  * ## THE THREE FAULTS THAT MATTER HERE
  *

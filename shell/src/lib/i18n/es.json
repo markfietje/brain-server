@@ -258,8 +258,8 @@
   "settings.update.refused": "Rechazada: {reason}",
   "settings.update.error": "La comprobación de actualizaciones falló.",
   "review.title": "Cola de revisión",
-  "review.subtitle": "Lo que espera a una persona. El kernel toma cada decisión; esta vista solo las muestra.",
-  "review.disclaimer": "Solo muestra — aprobar, rechazar y editar ocurren en el kernel, detrás del rol de quien revisa.",
+  "review.subtitle": "Lo que espera a una persona. Aprobar aquí pasa por la puerta propia del kernel — verificada por rol, ligada al resumen, auditada.",
+  "review.disclaimer": "Mostrar para todos; aprobar para quienes están autorizados. La decisión se liga al resumen mostrado y queda auditada; rechazar y editar quedan tras los roles del kernel.",
   "review.loading": "Leyendo la cola de revisión…",
   "review.empty": "El kernel informa de que no hay propuestas pendientes de revisión.",
   "review.count": "{count} propuestas están pendientes de revisión.",
@@ -414,5 +414,12 @@
   "chat.stream.transport": "La conexión con el kernel se perdió a mitad de la respuesta.",
   "chat.stream.generic": "El turno terminó antes de tiempo ({code}).",
   "common.cancel": "Cancelar",
-  "support.status.context": "Vertical de soporte adoptada — respuestas con fuentes sobre el corpus de tickets; las escalaciones esperan a un supervisor."
+  "support.status.context": "Vertical de soporte adoptada — respuestas con fuentes sobre el corpus de tickets; las escalaciones esperan a un supervisor.",
+  "review.row.approve": "Aprobar",
+  "review.approve.busy": "Aprobando…",
+  "review.approve.done": "Aprobado en la memoria.",
+  "review.approve.drift": "Esta fila cambió desde que se mostró — recarga la cola y decide de nuevo.",
+  "review.approve.refused": "El kernel rechazó la aprobación (HTTP {status}).",
+  "review.approve.offline": "No se pudo contactar al kernel — no se aprobó nada.",
+  "review.approve.malformed": "La respuesta del kernel no se pudo verificar — no se aprobó nada."
 }

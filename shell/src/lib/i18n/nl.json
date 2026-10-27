@@ -258,8 +258,8 @@
   "settings.update.refused": "Geweigerd: {reason}",
   "settings.update.error": "De updatecontrole is mislukt.",
   "review.title": "Revisierij",
-  "review.subtitle": "Wat op een mens wacht. De kernel neemt elke beslissing; deze weergave toont ze alleen.",
-  "review.disclaimer": "Alleen weergeven — goedkeuren, afwijzen en bewerken gebeuren in de kernel, achter de rol van de beoordelaar.",
+  "review.subtitle": "Wat op een mens wacht. Goedkeuren hier gaat via de eigen poort van de kernel — rolgecontroleerd, aan de digest gebonden, gecontroleerd.",
+  "review.disclaimer": "Weergave voor iedereen; goedkeuren voor de bevoegden. De beslissing bindt aan de getoonde digest en wordt gecontroleerd; afwijzen en bewerken blijven achter de rollen van de kernel.",
   "review.loading": "De revisierij wordt gelezen…",
   "review.empty": "De kernel meldt geen voorstellen die op beoordeling wachten.",
   "review.count": "{count} voorstellen wachten op beoordeling.",
@@ -414,5 +414,12 @@
   "chat.stream.transport": "De verbinding met de kernel viel weg midden in het antwoord.",
   "chat.stream.generic": "De beurt eindigde vroegtijdig ({code}).",
   "common.cancel": "Annuleren",
-  "support.status.context": "Support-verticaal overgenomen — onderbouwde antwoorden over het ticketcorpus; escalaties wachten op een supervisor."
+  "support.status.context": "Support-verticaal overgenomen — onderbouwde antwoorden over het ticketcorpus; escalaties wachten op een supervisor.",
+  "review.row.approve": "Goedkeuren",
+  "review.approve.busy": "Goedkeuren…",
+  "review.approve.done": "Goedgekeurd in het geheugen.",
+  "review.approve.drift": "Deze regel is gewijzigd sinds de weergave — laad de wachtrij opnieuw en beslis opnieuw.",
+  "review.approve.refused": "De kernel heeft de goedkeuring geweigerd (HTTP {status}).",
+  "review.approve.offline": "De kernel was niet bereikbaar — er is niets goedgekeurd.",
+  "review.approve.malformed": "Het antwoord van de kernel kon niet worden geverifieerd — er is niets goedgekeurd."
 }
