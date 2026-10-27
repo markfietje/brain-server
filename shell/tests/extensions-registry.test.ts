@@ -171,6 +171,31 @@ test('every_labelkey_the_registry_renders_exists_in_all_five_catalogs', () => {
 	}
 });
 
+// ── the adopted pack manifest (C2 G-5) ────────────────────────────────────
+
+test('the_adopted_pack_manifests_labelkeys_exist_in_all_five_catalogs', () => {
+	// G-5's own pin: a pack's ui/manifest.json is DATA until an operator
+	// translates it into lib/extensions/ — and the translation is only
+	// complete when every key it names resolves in ALL five catalogs. The
+	// compiler guarantees the key EXISTS (MessageKey); this pin guarantees
+	// the adoption is not half-translated.
+	const LOCALES = ['en', 'de', 'fr', 'es', 'nl'] as const;
+	const adopted = EXTENSIONS.filter((extension) => extension.id === 'supportPack');
+	expect(adopted.length, 'the support pack manifest is adopted exactly once').toBe(1);
+	const declared: readonly string[] = ['support.status.context'];
+	for (const locale of LOCALES) {
+		const catalog: Record<string, string> = JSON.parse(
+			readFileSync(join(shellRoot, 'src', 'lib', 'i18n', `${locale}.json`), 'utf8')
+		);
+		for (const key of declared) {
+			expect(
+				catalog[key],
+				`the adopted pack manifest renders "${key}", which the ${locale} catalog does not carry`
+			).toBeTruthy();
+		}
+	}
+});
+
 // ── the three-chip law, at the registry ───────────────────────────────────
 
 test('the_registry_contributes_exactly_the_three_acting_chips', () => {

@@ -17,6 +17,7 @@ import { coreReview } from './core-review.js';
 import { coreAudit } from './core-audit.js';
 import { coreGovernance } from './core-governance.js';
 import { coreSettings } from './core-settings.js';
+import { supportPack } from './support-pack.js';
 import type {
 	EmptyChip,
 	ExtensionManifest,
@@ -33,7 +34,8 @@ export const EXTENSIONS = [
 	coreReview,
 	coreAudit,
 	coreGovernance,
-	coreSettings
+	coreSettings,
+	supportPack
 ] as const;
 
 export interface AssembledRegistry {

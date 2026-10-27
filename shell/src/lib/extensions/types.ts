@@ -48,7 +48,11 @@ export type ExtensionId =
 	| 'coreReview'
 	| 'coreAudit'
 	| 'coreGovernance'
-	| 'coreSettings';
+	| 'coreSettings'
+	/** The support vertical's adopted pack manifest (C2 G-5): the ONE
+	 * translation of a pack's ui/manifest.json into the compiled registry —
+	 * the mechanism's proof, deliberately minimal (no nav entry). */
+	| 'supportPack';
 
 /**
  * A route a nav entry may name: the censused NAV surfaces. The census law

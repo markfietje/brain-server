@@ -413,5 +413,6 @@
   "chat.stream.cancelled": "Arrêté — ce tour a été annulé avant d'être terminé.",
   "chat.stream.transport": "La connexion au noyau a été perdue en pleine réponse.",
   "chat.stream.generic": "Le tour s'est terminé prématurément ({code}).",
-  "common.cancel": "Annuler"
+  "common.cancel": "Annuler",
+  "support.status.context": "Verticale support adoptée — des réponses sourcées sur le corpus de tickets ; les escalades attendent un superviseur."
 }

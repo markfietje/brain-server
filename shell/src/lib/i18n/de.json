@@ -413,5 +413,6 @@
   "chat.stream.cancelled": "Gestoppt — diese Anfrage wurde abgebrochen, bevor sie abgeschlossen war.",
   "chat.stream.transport": "Die Verbindung zum Kernel wurde mitten in der Antwort unterbrochen.",
   "chat.stream.generic": "Diese Anfrage endete vorzeitig ({code}).",
-  "common.cancel": "Abbrechen"
+  "common.cancel": "Abbrechen",
+  "support.status.context": "Support-Vertikale übernommen — begründete Antworten über den Ticket-Korpus; Eskalationen warten auf eine Supervisorin oder einen Supervisor."
 }

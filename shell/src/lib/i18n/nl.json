@@ -413,5 +413,6 @@
   "chat.stream.cancelled": "Gestopt — deze beurt is geannuleerd voordat deze klaar was.",
   "chat.stream.transport": "De verbinding met de kernel viel weg midden in het antwoord.",
   "chat.stream.generic": "De beurt eindigde vroegtijdig ({code}).",
-  "common.cancel": "Annuleren"
+  "common.cancel": "Annuleren",
+  "support.status.context": "Support-verticaal overgenomen — onderbouwde antwoorden over het ticketcorpus; escalaties wachten op een supervisor."
 }

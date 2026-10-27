@@ -413,5 +413,6 @@
   "chat.stream.cancelled": "Detenido: este turno se canceló antes de terminar.",
   "chat.stream.transport": "La conexión con el kernel se perdió a mitad de la respuesta.",
   "chat.stream.generic": "El turno terminó antes de tiempo ({code}).",
-  "common.cancel": "Cancelar"
+  "common.cancel": "Cancelar",
+  "support.status.context": "Vertical de soporte adoptada — respuestas con fuentes sobre el corpus de tickets; las escalaciones esperan a un supervisor."
 }

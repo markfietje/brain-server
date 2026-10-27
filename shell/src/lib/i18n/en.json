@@ -413,5 +413,6 @@
   "chat.stream.cancelled": "Stopped — this turn was cancelled before it finished.",
   "chat.stream.transport": "The connection to the kernel dropped mid-answer.",
   "chat.stream.generic": "The turn ended early ({code}).",
-  "common.cancel": "Cancel"
+  "common.cancel": "Cancel",
+  "support.status.context": "Support vertical adopted — grounded answers over the ticket corpus; escalations wait on a supervisor."
 }
