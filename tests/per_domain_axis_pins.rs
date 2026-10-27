@@ -455,7 +455,8 @@ fn r61p_migration_is_additive_and_idempotent() {
 /// never edited — the axis stamped at 1.32.24 and the const is the proof. The
 /// CEILING and STAMP assertions pin the CURRENT values, which every schema
 /// round re-pins; the model-citation-key round moved them to 1.32.25 and the
-/// proposal-edge round moved them to 1.32.26.
+/// proposal-edge round moved them to 1.32.26 and the approve-action round
+/// (the roster manages column) moved them to 1.32.27.
 #[test]
 fn r61p_schema_stamp_moved_with_the_table() {
     let layout = read("src/storage_layout.rs");
@@ -464,19 +465,19 @@ fn r61p_schema_stamp_moved_with_the_table() {
         "the new stamp must be declared"
     );
     assert!(
-        layout.contains("LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_26"),
+        layout.contains("LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_27"),
         "LATEST_KNOWN_SCHEMA must track the newest const or a newer-schema database is blessed \
          instead of refused"
     );
     let m = read("src/migration.rs");
     assert!(
-        m.contains("'schema_version', '1.32.26'"),
-        "run_migration must stamp 1.32.26"
+        m.contains("'schema_version', '1.32.27'"),
+        "run_migration must stamp 1.32.27"
     );
     // The refuse-newer probe sits ABOVE the ceiling by construction.
     assert!(
-        layout.contains(r#"assert!(is_newer_than_known(Some("1.32.27")));"#)
-            && layout.contains(r#"assert!(!is_newer_than_known(Some("1.32.26")));"#),
+        layout.contains(r#"assert!(is_newer_than_known(Some("1.32.28")));"#)
+            && layout.contains(r#"assert!(!is_newer_than_known(Some("1.32.27")));"#),
         "the refuse-newer probe must sit above the new ceiling; pinned AT it, it would silently \
          test Equal instead of Greater"
     );

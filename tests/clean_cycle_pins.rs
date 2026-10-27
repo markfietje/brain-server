@@ -369,13 +369,14 @@ fn r48_the_runbook_names_the_offsite_approval_requirement() {
 fn r48_adds_no_table_no_stamp_no_dependency() {
     let layout = read_repo("src/storage_layout.rs");
     assert!(
-        layout.contains("LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_26;"),
+        layout.contains("LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_27;"),
         "the schema stamp is untouched: R48 adds no table and no stamp (the ceiling itself is \
          re-pinned by each schema round — R57b moved it, for the trace citation, R60 moved it \
          for the disproof condition's six columns on `claims`, the scope round moved it for the \
          seventh, the per-domain axis round moved it for `knowledge_domain_versions`, the \
-         model-citation-key round moved it for `delivery_traces`' registry-key pair, and the \
-         proposal-edge round moved it last, for `proposals.promoted_chunk_id`)"
+         model-citation-key round moved it for `delivery_traces`' registry-key pair, the \
+         proposal-edge round moved it for `proposals.promoted_chunk_id`, and the \
+         approve-action round moved it last, for the roster's manages column)"
     );
     let manifest = read_repo("Cargo.toml");
     let deps = manifest
