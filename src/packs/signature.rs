@@ -214,10 +214,9 @@ pub fn pack_pubkey_path(
     env_value: Option<&str>,
     data_root: &std::path::Path,
 ) -> std::path::PathBuf {
-    match env_value {
-        Some(p) => std::path::PathBuf::from(p),
-        None => data_root.join("pack.pub"),
-    }
+    env_value
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| data_root.join("pack.pub"))
 }
 
 #[cfg(test)]

@@ -218,7 +218,7 @@ mod tests {
     /// verbatim in data — the register sentence honored: they ARE the door's
     /// first regression fixtures.
     fn c1_fixture_rows() -> Vec<RuleRow> {
-        let mount_epoch: i64 = 1_769_875_200; // the runbook's mount instant, fixed for the fixture
+        let mount_epoch = 1_769_875_200_i64; // the runbook's mount instant, fixed for the fixture
         vec![
             RuleRow {
                 jurisdiction: "ph".into(),

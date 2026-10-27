@@ -378,14 +378,17 @@ pub fn validate_pack(entries: &[(&str, Vec<u8>)]) -> Result<ValidatedPack, PackE
 
     // Arm by arm, deterministic order: domain, roles, procedures, taxonomy,
     // rules, i18n, ui.
-    let domain = match entries.iter().find(|(p, _)| *p == DOMAIN) {
-        Some((_, bytes)) => Some(parse_domain(bytes)?),
-        None => None,
-    };
-    let roles = match entries.iter().find(|(p, _)| *p == ROLES) {
-        Some((_, bytes)) => parse_roles(bytes)?,
-        None => Vec::new(),
-    };
+    let domain = entries
+        .iter()
+        .find(|(p, _)| *p == DOMAIN)
+        .map(|(_, bytes)| parse_domain(bytes))
+        .transpose()?;
+    let roles = entries
+        .iter()
+        .find(|(p, _)| *p == ROLES)
+        .map(|(_, bytes)| parse_roles(bytes))
+        .transpose()?
+        .unwrap_or_default();
     let mut procedures = Vec::new();
     for (path, bytes) in entries
         .iter()
@@ -399,19 +402,23 @@ pub fn validate_pack(entries: &[(&str, Vec<u8>)]) -> Result<ValidatedPack, PackE
         let value = parse_procedure(path, bytes)?;
         procedures.push((stem, value));
     }
-    let taxonomy = match entries.iter().find(|(p, _)| *p == TAXONOMY) {
-        Some((_, bytes)) => Some(parse_taxonomy(bytes)?),
-        None => None,
-    };
-    let rules = match entries.iter().find(|(p, _)| *p == RULES) {
-        Some((_, bytes)) => parse_rules(bytes)?,
-        None => Vec::new(),
-    };
+    let taxonomy = entries
+        .iter()
+        .find(|(p, _)| *p == TAXONOMY)
+        .map(|(_, bytes)| parse_taxonomy(bytes))
+        .transpose()?;
+    let rules = entries
+        .iter()
+        .find(|(p, _)| *p == RULES)
+        .map(|(_, bytes)| parse_rules(bytes))
+        .transpose()?
+        .unwrap_or_default();
     let i18n = parse_i18n(entries)?;
-    let ui = match entries.iter().find(|(p, _)| *p == UI_MANIFEST) {
-        Some((_, bytes)) => Some(parse_ui(bytes)?),
-        None => None,
-    };
+    let ui = entries
+        .iter()
+        .find(|(p, _)| *p == UI_MANIFEST)
+        .map(|(_, bytes)| parse_ui(bytes))
+        .transpose()?;
     // A Tier A manifest names label keys the shell renders — they resolve
     // through the five catalogs, so a manifest without them is half a
     // surface (the parity law, at the format).
@@ -910,19 +917,16 @@ fn parse_i18n(
         }
         let keys: Vec<String> = catalog.keys().cloned().collect();
         match &reference {
-            None => {
-                reference = Some(keys);
+            None => reference = Some(keys),
+            Some(expected) if keys != *expected => {
+                return Err(PackError::new(
+                    PackErrorKind::BadI18n,
+                    *path,
+                    "catalog key set differs from the other locales — the parity law \
+                     forbids a half-translated surface",
+                ));
             }
-            Some(expected) => {
-                if keys != *expected {
-                    return Err(PackError::new(
-                        PackErrorKind::BadI18n,
-                        *path,
-                        "catalog key set differs from the other locales — the parity law \
-                         forbids a half-translated surface",
-                    ));
-                }
-            }
+            _ => {}
         }
         catalogs.insert(locale.to_string(), catalog);
     }
