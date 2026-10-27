@@ -180,7 +180,7 @@ test('the_settings_saves_to_the_keychain_and_clears_it', async () => {
 		expect(vi.mocked(verifyAuditChain).mock.calls.length, 'the chain re-read after a save').toBe(chainBefore + 1);
 	});
 
-	await user.click(screen.getByRole('button', { name: 'Clear saved token' }));
+	await user.click(screen.getByRole('button', { name: 'Clear token' }));
 	await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith('clear_kernel_token'));
 	await waitFor(() => expect(keychain.stored).toBeNull());
 	expect(await screen.findByText(/No token configured/)).toBeTruthy();
@@ -207,9 +207,7 @@ test('the_settings_reports_that_the_running_kernel_took_the_token', async () => 
 	await user.click(screen.getByRole('button', { name: 'Save token' }));
 
 	expect(
-		await screen.findByText(
-			'Token saved to the login keychain, and the running kernel is using it now.'
-		)
+		await screen.findByText('Token saved; the running kernel uses it now.')
 	).toBeTruthy();
 });
 

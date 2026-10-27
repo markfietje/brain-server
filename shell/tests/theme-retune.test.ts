@@ -463,3 +463,210 @@ test('the_two_scroll_columns_draw_their_bar_only_while_the_pointer_is_inside_and
 	expect(light.get('--scrollbar-thumb-live'), 'the light scheme names the drawn thumb colour').toBeDefined();
 	expect(dark.get('--scrollbar-thumb-live'), 'the dark scheme names the drawn thumb colour').toBeDefined();
 });
+
+// ── E-4 · D5: the text audit — "not much text", five catalogs, eight families ─
+
+/**
+ * Plan 21 §3's friction law, made structural: "labels ≤ 2 words; verdicts
+ * one line". The audit (plan 24 D5) classifies EVERY key in the eight chrome
+ * families and the pin enforces the class's bound across all five catalogs:
+ *
+ *   - **label**   — visible chrome labels (nav, buttons, headings, chips,
+ *                   titles): ≤ 2 CONTENT words. Articles and prepositions do
+ *                   not count — "Palette de commandes" is a two-concept
+ *                   label in French exactly as "Command palette" is in
+ *                   English, and the law is about what the eye parses, not
+ *                   about a language's function words.
+ *   - **hint**    — placeholders, helper lines, dialog descriptions, group
+ *                   headings and accessible names: ≤ 6 words, every word.
+ *   - **verdict** — one-line state reports (saved, cleared, configured, up
+ *                   to date, the version line): ≤ 12 words.
+ *   - **law**     — refusals, faults and facts the chrome must state in
+ *                   full (the facts foot, wire faults, refusal reasons, the
+ *                   destructive-delete description): allowlisted BY NAME,
+ *                   no bound.
+ *
+ * A per-key `max` tightens a class where the design says so (the status
+ * word is ONE word: the dot already says retrieval). The table is the audit
+ * the register row carries; the two must agree, and the pin fails closed in
+ * both directions — a key in these families with no row, or a row whose key
+ * is gone, is a red with the key's name.
+ */
+type TextClass = 'label' | 'hint' | 'verdict' | 'law';
+type AuditRow = TextClass | { readonly kind: TextClass; readonly max: number };
+
+const CHROME_FAMILIES = [
+	'shell.',
+	'nav.',
+	'palette.',
+	'settings.',
+	'chat.empty.',
+	'chat.composer.',
+	'chat.sessions.',
+	'common.'
+] as const;
+
+const CLASS_BOUND: Record<Exclude<TextClass, 'law'>, number> = { label: 2, hint: 6, verdict: 12 };
+
+const TEXT_AUDIT: Readonly<Record<string, AuditRow>> = {
+	// shell.*
+	'shell.brand': 'label',
+	'shell.sidebar': 'hint',
+	'shell.nav': 'hint',
+	'shell.kernel': 'law',
+	'shell.kernel.unknown': 'law',
+	'shell.new_chat': 'label',
+	'shell.sidebar.collapse': 'hint',
+	'shell.sidebar.expand': 'hint',
+	'shell.facts.rows': 'law',
+	'shell.facts.integrity.verified': 'law',
+	'shell.facts.integrity.broken': 'law',
+	'shell.facts.integrity.unverified': 'law',
+	'shell.status.healthy': { kind: 'label', max: 1 },
+	'shell.status.model': 'law',
+	// nav.*
+	'nav.chat': 'label',
+	'nav.memory': 'label',
+	'nav.review': 'label',
+	'nav.audit': 'label',
+	'nav.governance': 'label',
+	'nav.recall': 'label',
+	'nav.decisions': 'label',
+	'nav.settings': 'label',
+	// palette.*
+	'palette.title': 'label',
+	'palette.placeholder': 'hint',
+	'palette.empty': 'hint',
+	'palette.navigate': 'label',
+	'palette.more': 'label',
+	'palette.open': 'hint',
+	// settings.*
+	'settings.title': 'label',
+	'settings.description': 'hint',
+	'settings.origin.label': 'label',
+	'settings.origin.save': 'label',
+	'settings.origin.saved': 'verdict',
+	'settings.origin.invalid': 'law',
+	'settings.origin.hint': 'hint',
+	'settings.locale.label': 'label',
+	'settings.token.heading': 'label',
+	'settings.token.label': 'label',
+	'settings.token.hint': 'hint',
+	'settings.token.save': 'label',
+	'settings.token.clear': 'label',
+	'settings.token.status.configured': 'verdict',
+	'settings.token.status.anonymous': 'verdict',
+	'settings.token.saved': 'verdict',
+	'settings.token.rotated': 'verdict',
+	'settings.token.pending': 'verdict',
+	'settings.token.stale': 'law',
+	'settings.token.cleared': 'verdict',
+	'settings.token.empty': 'law',
+	'settings.token.error': 'law',
+	'settings.update.heading': 'label',
+	'settings.update.current': 'verdict',
+	'settings.update.check': 'label',
+	'settings.update.install': 'label',
+	'settings.update.uptodate': 'verdict',
+	'settings.update.available': 'verdict',
+	'settings.update.unreachable': 'law',
+	'settings.update.refused': 'law',
+	'settings.update.error': 'law',
+	// chat.empty.*
+	'chat.empty.greeting': { kind: 'hint', max: 8 },
+	'chat.empty.chip.ask': 'label',
+	'chat.empty.chip.trace': 'label',
+	'chat.empty.chip.review': 'label',
+	// chat.composer.*
+	'chat.composer.label': 'hint',
+	'chat.composer.placeholder': 'hint',
+	'chat.composer.hint': 'hint',
+	// chat.sessions.*
+	'chat.sessions.heading': 'label',
+	'chat.sessions.unlabelled': 'label',
+	'chat.sessions.rename': 'hint',
+	'chat.sessions.rename.label': 'hint',
+	'chat.sessions.delete': 'hint',
+	'chat.sessions.delete.title': 'hint',
+	'chat.sessions.delete.description': 'law',
+	'chat.sessions.delete.confirm': 'label',
+	// common.*
+	'common.back': 'label',
+	'common.cancel': 'label',
+	'common.retry': 'label'
+};
+
+/** Function words that do not count toward a LABEL's two content words. */
+const STOP_WORDS: Readonly<Record<string, ReadonlySet<string>>> = {
+	en: new Set(['the', 'a', 'an', 'of', 'to', 'for', 'or', 'and', 'this', 'in', 'on']),
+	de: new Set([
+		'der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'einen', 'einem', 'eines',
+		'und', 'oder', 'für', 'zu', 'von', 'im', 'am', 'nach', 'auf', 'dieses', 'diese', 'dieser'
+	]),
+	fr: new Set([
+		'le', 'la', 'les', 'l', 'de', 'du', 'des', 'd', 'un', 'une', 'et', 'ou', 'à', 'au', 'aux',
+		'pour', 'en', 'ce', 'cette', 'ces', 'sur'
+	]),
+	es: new Set([
+		'el', 'la', 'los', 'las', 'un', 'una', 'de', 'del', 'y', 'o', 'a', 'al', 'para', 'en',
+		'por', 'este', 'esta', 'estos', 'estas'
+	]),
+	nl: new Set(['de', 'het', 'een', 'van', 'en', 'of', 'voor', 'op', 'te', 'in', 'aan', 'deze', 'dit', 'naar'])
+};
+
+const LOCALES = ['en', 'de', 'fr', 'es', 'nl'] as const;
+
+function catalog(locale: string): Record<string, string> {
+	return JSON.parse(readFileSync(join(shellRoot, 'src', 'lib', 'i18n', `${locale}.json`), 'utf8')) as Record<
+		string,
+		string
+	>;
+}
+
+/** A token is a word when it carries a letter, a digit or a symbol (⌘⏎ counts; a lone "·" or ";" does not). */
+const isWord = (token: string): boolean => /[\p{L}\p{N}\p{S}]/u.test(token);
+
+function wordCount(value: string, kind: TextClass, locale: string): number {
+	if (kind === 'label') {
+		const stop = STOP_WORDS[locale] ?? new Set<string>();
+		return value
+			.split(/[\s'’]+/)
+			.filter(isWord)
+			.filter((t) => !stop.has(t.toLowerCase().replace(/[.,:;!?…]+$/u, '')))
+			.length;
+	}
+	return value.split(/\s+/).filter(isWord).length;
+}
+
+test('the_chrome_text_audit_holds_in_all_five_catalogs_and_the_table_is_exhaustive', () => {
+	const en = catalog('en');
+	const chromeKeys = Object.keys(en).filter((k) => CHROME_FAMILIES.some((f) => k.startsWith(f)));
+	// Anti-vacuity: the eight families are a real population (77 measured 2026-10-27).
+	expect(chromeKeys.length, 'the eight chrome families carry fewer keys than the measured 77').toBeGreaterThanOrEqual(77);
+
+	// Exhaustive in both directions: every chrome key is classified, every row names a live key.
+	const unclassified = chromeKeys.filter((k) => !(k in TEXT_AUDIT));
+	const stale = Object.keys(TEXT_AUDIT).filter((k) => !(k in en));
+	expect(unclassified, 'chrome keys with no audit row — classify them (label / hint / verdict / law) before they ship').toEqual([]);
+	expect(stale, 'audit rows whose key no longer exists in en.json').toEqual([]);
+
+	const failures: string[] = [];
+	for (const locale of LOCALES) {
+		const values = catalog(locale);
+		for (const [key, row] of Object.entries(TEXT_AUDIT)) {
+			const kind = typeof row === 'string' ? row : row.kind;
+			if (kind === 'law') continue;
+			const max = typeof row === 'string' ? CLASS_BOUND[kind] : row.max;
+			const value = values[key];
+			if (value === undefined) {
+				failures.push(`${locale}: ${key} is missing`);
+				continue;
+			}
+			const words = wordCount(value, kind, locale);
+			if (words > max) {
+				failures.push(`${locale}: ${key} (${kind} ≤ ${max}) is ${words} words — "${value}"`);
+			}
+		}
+	}
+	expect(failures, 'chrome text over its bound — shorten the value or reclassify the key in the audit table (never silently)').toEqual([]);
+});
