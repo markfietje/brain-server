@@ -87,19 +87,24 @@
 }
 
 :root {
-	--bg: #f7f8fa;
+	/* The neutrals (M3-e, plan 24 D2): a bluish-grey ramp shaped like the
+	   dsh harness's — own values, one step cooler than the 2026-10 palette.
+	   The page sits at the ramp's step 50, the sidebar one step darker (75,
+	   R141's law), the hover wash at 100, the hairline border at 200;
+	   surfaces stay one to two steps apart. The accent stays the Brain teal. */
+	--bg: #f5f7fa;
 	--surface: #ffffff;
-	--surface-2: #eef0f4;
-	--text: #1a1a2e;
-	--text-muted: #4b5563;
-	--border: #c6cad3;
+	--surface-2: #e7ecf3;
+	--text: #161c28;
+	--text-muted: #4a5668;
+	--border: #d2d9e4;
 	--accent: #1f7f6c;
 	--warn-bg: #fff8e1;
 	--warn-border: #b58a00;
 	--focus: #1f7f6c;
 	--ring: rgba(31, 127, 108, 0.35);
-	--input-border: #d5d9e0;
-	--input-border-hover: #b9bfc9;
+	--input-border: #d2d9e4;
+	--input-border-hover: #b7c1d0;
 	--shadow-xs: 0 1px 2px rgba(10, 14, 26, 0.06);
 	--radius: 8px;
 	--radius-lg: 12px;
@@ -109,12 +114,14 @@
 	   active/hover fills; the titlebar inset is 0 except under the macOS
 	   overlay titlebar, where the sidebar's top strip clears the traffic
 	   lights (set below, keyed on data-platform + data-tauri). */
-	--sidebar: #eef1f5;
-	--sidebar-active: #dfe5ec;
-	--sidebar-hover: #e6eaf0;
-	--sidebar-border: #d6dbe3;
+	--sidebar: #edf1f6;
+	--sidebar-active: #dbe2ec;
+	--sidebar-hover: #e5eaf2;
+	--sidebar-border: #d7dde8;
 	--titlebar-inset: 0px;
-	--ok: #2f9e6e;
+	/* the status green holds 3.0:1 on every fill the dot is drawn on — the
+	   sidebar foot included, where the 2026-10 value measured 2.97:1 */
+	--ok: #2b9568;
 
 	color-scheme: light dark;
 	font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -177,20 +184,21 @@
 }
 
 /* Users who turn transparency down (the Golden Gate slider, or Reduce
-   Transparency) get opaque surfaces — readability wins. */
+   Transparency) get opaque surfaces — readability wins. These restate the
+   scheme tokens above and move with them. */
 @media (prefers-reduced-transparency: reduce) {
 	:root[data-platform='macos'] {
-		--bg: #f7f8fa;
+		--bg: #f5f7fa;
 		--surface: #ffffff;
-		--sidebar: #eef1f5;
+		--sidebar: #edf1f6;
 		--glass-blur: none;
 	}
 
 	@media (prefers-color-scheme: dark) {
 		:root[data-platform='macos'] {
-			--bg: #141a21;
-			--surface: #1b222b;
-			--sidebar: #10151b;
+			--bg: #10141a;
+			--surface: #171c23;
+			--sidebar: #0b0e13;
 		}
 	}
 }
@@ -213,29 +221,33 @@
 
 @media (prefers-color-scheme: dark) {
 	:root {
-		--bg: #141a21;
-		--surface: #1b222b;
-		--surface-2: #252e39;
-		--text: #e6ebf0;
-		--text-muted: #9aa5b2;
-		--border: #303a46;
+		/* Dark grounds are NEAR-BLACK blue-grey (the ramp's 950/875/850), not
+		   the light scheme inverted: the page is the darkest ground, cards
+		   float one step up, the hover wash one more; the sidebar stays one
+		   step darker than the page (R141). */
+		--bg: #10141a;
+		--surface: #171c23;
+		--surface-2: #1f252e;
+		--text: #e4e9ef;
+		--text-muted: #9aa6b4;
+		--border: #262d37;
 		--accent: #5fc1a8;
 		--warn-bg: #2b230c;
 		--warn-border: #d9a514;
 		--focus: #5fc1a8;
 		--ring: rgba(95, 193, 168, 0.4);
-		--input-border: #303a46;
-		--input-border-hover: #40506a;
+		--input-border: #262d37;
+		--input-border-hover: #39434f;
 		/* the shadcn aliases need NO dark overrides — each points at a
 		   token above, so they flip with the platform blocks here. The one
 		   exception is the primary button's text: teal on navy wants dark
 		   ink, white would wash out. */
 		--primary-foreground: #0d1a17;
 		--error: #ff8f93;
-		--sidebar: #10151b;
-		--sidebar-active: #1f2a34;
-		--sidebar-hover: #182028;
-		--sidebar-border: #1f2730;
+		--sidebar: #0b0e13;
+		--sidebar-active: #1b2129;
+		--sidebar-hover: #141920;
+		--sidebar-border: #181d25;
 		--ok: #4fc08d;
 	}
 
