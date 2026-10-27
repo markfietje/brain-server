@@ -9,6 +9,12 @@
    utility; the `@keyframes` it names must be top-level. */
 @theme {
 	--animate-fade-in: fade-in 150ms ease-out;
+	/* The chrome's meta step (M3-e, plan 24 D3): 13px, the dsh language's
+	   secondary size, in place of Tailwind's 12px — one value, so every
+	   `text-xs` in the chrome (facts foot, status bar, hints, relative
+	   times) moves together. Primary chrome stays `text-sm` (14px). */
+	--text-xs: 0.8125rem;
+	--text-xs--line-height: calc(18 / 13);
 }
 
 @keyframes fade-in {
@@ -282,11 +288,26 @@ h2 {
    Button component (no element-level styling anymore); the wizard's
    custom switch/segment controls carry their full class specs below. */
 
+/* The 16px law: every text control computes 1rem whatever surrounds it.
+   This rule is deliberately UNLAYERED — an unlayered declaration beats any
+   `@layer utilities` class regardless of specificity, so the design
+   system's `md:text-sm` on Input/Textarea can never lower a control below
+   the no-zoom-on-focus size. `textarea` joined the list in M3-e: measured,
+   the composer computed 14px on a desktop viewport without it. */
 button,
 select,
-input {
+input,
+textarea {
 	font: inherit;
 	font-size: 1rem;
+}
+
+/* The 500 law (plan 24 D3): the current row — the surface in the nav, the
+   open conversation in the history — is the one place the sidebar carries
+   the emphasis weight; every other row is regular. Keyed on the state the
+   row already exposes to assistive tech, so emphasis cannot drift from it. */
+[data-slot='sidebar'] [aria-current] {
+	font-weight: 500;
 }
 
 /* ── layout pieces ──────────────────────────────────────────────────── */

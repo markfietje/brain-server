@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { expect, test } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/svelte';
 import { shellRoot } from './fixtures';
 
 /**
@@ -43,6 +44,66 @@ import { shellRoot } from './fixtures';
  */
 
 const APP_CSS = readFileSync(join(shellRoot, 'src', 'app.css'), 'utf8');
+
+// ── the render harness ───────────────────────────────────────────────────
+//
+// The frame and the home page read the wire at mount; the construction-order
+// law (chat-surface.test.ts) applies: the typed client captures `fetch` at
+// creation, so the stub is installed at module top and every component
+// module is imported DYNAMICALLY below it. The responder answers the glance
+// reads with empty-but-well-formed bodies and refuses everything else.
+
+vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
+vi.mock('$app/paths', () => ({ resolve: (p: string) => p }));
+vi.mock('$app/state', () => ({ page: { url: new URL('http://127.0.0.1/'), params: {} } }));
+vi.mock('@tauri-apps/api/core', () => ({
+	invoke: vi.fn(async (command: string) => {
+		if (command === 'kernel_token') return null;
+		throw new Error(`unexpected command ${command}`);
+	})
+}));
+
+const json = (body: unknown, status = 200): Response =>
+	new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+vi.stubGlobal(
+	'fetch',
+	vi.fn(async (input: RequestInfo | URL) => {
+		const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+		if (path === '/proposals') return json([]);
+		if (path === '/chat/sessions') return json({ sessions: [], total: 0 });
+		if (path === '/recall') return json({ hits: [], decision: 'ok' });
+		return new Response('not found', { status: 404 });
+	})
+);
+
+/** The real stylesheet, attached for one test; removed after it. */
+let attachedSheet: HTMLStyleElement | null = null;
+function attachAppCss(): void {
+	attachedSheet = document.createElement('style');
+	attachedSheet.textContent = APP_CSS;
+	document.head.append(attachedSheet);
+}
+
+afterEach(() => {
+	attachedSheet?.remove();
+	attachedSheet = null;
+	document.body.style.removeProperty('font-size');
+});
+
+async function renderFrame(): Promise<void> {
+	const host = (await import('./AppShellHost.svelte')).default;
+	render(host);
+	await waitFor(() => expect(screen.getByTestId('host-content')).toBeTruthy());
+}
+
+async function renderHome(): Promise<void> {
+	const page = (await import('../src/routes/+page.svelte')).default;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	render(page as any);
+	await waitFor(() => expect(screen.getByTestId('chat-composer')).toBeTruthy());
+}
+
+const computed = (el: Element): CSSStyleDeclaration => window.getComputedStyle(el);
 
 // ── the parsed stylesheet ────────────────────────────────────────────────
 
@@ -270,4 +331,71 @@ test('every_text_and_ui_pair_holds_aa_in_both_schemes', () => {
 		failures,
 		'AA pairs below the floor — retune the token, never the pair list (the pairs are what the chrome renders)'
 	).toEqual([]);
+});
+
+// ── E-2 · D3: the type scale — 500 is THE emphasis, 16px is the control law ─
+
+/**
+ * The 500 law (plan 24 D3; dsh's Figma-510 rule): the ACTIVE sidebar row —
+ * the current surface in the nav, the open conversation in the history — is
+ * the one place the chrome carries `font-weight: 500`; every other row is
+ * regular. The weight is one unlayered `app.css` rule keyed on
+ * `[aria-current]` inside the sidebar, so emphasis follows the current
+ * state and cannot be sprinkled per element.
+ */
+test('the_active_sidebar_row_computes_the_emphasis_weight_and_the_rest_do_not', async () => {
+	attachAppCss();
+	await renderFrame();
+	const active = screen.getByTestId('nav-chat');
+	const idle = screen.getByTestId('nav-memory');
+	expect(active.getAttribute('aria-current'), 'the harness renders at `/`, so Chat is the current row').toBe('page');
+	expect(idle.getAttribute('aria-current')).toBeNull();
+	expect(computed(active).fontWeight, 'the current row is the emphasis weight').toBe('500');
+	expect(computed(idle).fontWeight, 'an idle row is regular — 500 is reserved for the current state').toBe('400');
+});
+
+/**
+ * The 16px law (app.css's "no zoom-on-focus" platform law): the composer
+ * textarea and every input and select compute at least 16px WHATEVER
+ * surrounds them. The harness sets the body to 13px — the size a UA
+ * small-control default or a shrunk chrome ancestor would hand down — and
+ * proves it bit (a plain span inherits 13px) before asserting that the
+ * controls do not: the unlayered `button, select, input, textarea` rule
+ * resets them to `1rem`, which is why no `text-sm` utility on a control can
+ * lower it in a real engine either (unlayered beats layered).
+ */
+function fontPx(el: Element): number {
+	const value = computed(el).fontSize;
+	const px = /^([\d.]+)px$/.exec(value);
+	if (!px) throw new Error(`font-size did not resolve to px: "${value}"`);
+	return Number(px[1]);
+}
+
+test('the_composer_and_every_text_control_compute_at_least_16px_whatever_surrounds_them', async () => {
+	attachAppCss();
+	document.body.style.fontSize = '13px';
+	const probe = document.createElement('span');
+	document.body.append(probe);
+	expect(fontPx(probe), 'the harness must bite: a plain span inherits the 13px ancestor').toBe(13);
+	probe.remove();
+
+	await renderHome();
+	await renderFrame();
+	// Open the settings dialog so its input and native select are in the tree.
+	screen.getByTestId('nav-settings').click();
+	await waitFor(() => expect(document.getElementById('setting-origin')).toBeTruthy());
+
+	const controls = [...document.querySelectorAll<HTMLElement>('input, select, textarea')].filter(
+		(el) => !(el instanceof HTMLInputElement && ['hidden', 'submit', 'reset', 'button', 'image'].includes(el.type))
+	);
+	const names = controls.map((el) => `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ''}`);
+	expect(names, 'the composer, the origin input and the locale select must all be in the tree').toEqual(
+		expect.arrayContaining(['textarea#chat-composer', 'input#setting-origin', 'select#setting-locale'])
+	);
+
+	const small = controls
+		.map((el) => ({ el, px: fontPx(el) }))
+		.filter(({ px }) => px < 16)
+		.map(({ el, px }) => `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ''} computes ${px}px`);
+	expect(small, 'text controls below 16px — the no-zoom-on-focus law').toEqual([]);
 });

@@ -603,7 +603,7 @@
 			</span>
 			{#if !collapsed}
 				<div class="min-w-0" data-tauri-drag-region>
-					<p class="truncate text-sm font-semibold tracking-tight" data-testid="shell-brand">
+					<p class="truncate text-sm font-medium tracking-tight" data-testid="shell-brand">
 						{m['shell.brand']()}
 					</p>
 					<p class="truncate text-xs text-muted-foreground" data-testid="shell-kernel">
@@ -640,7 +640,7 @@
 							href={resolve(item.route)}
 							data-testid="nav-{item.id}"
 							aria-current={active ? 'page' : undefined}
-							class="relative flex h-9 items-center gap-3 rounded-lg px-2.5 text-sm font-medium transition-colors
+							class="relative flex h-9 items-center gap-3 rounded-lg px-2.5 text-sm transition-colors
 								{active
 								? 'bg-sidebar-active text-foreground'
 								: 'text-muted-foreground hover:bg-sidebar-hover hover:text-foreground'}"
@@ -655,7 +655,7 @@
 								<span
 									data-testid="review-badge"
 									data-queue="nonempty"
-									class="grid min-w-5 place-items-center rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground tabular-nums
+									class="grid min-w-5 place-items-center rounded-full bg-primary px-1.5 text-xs font-medium text-primary-foreground tabular-nums
 										{collapsed ? 'absolute translate-x-3 -translate-y-3' : ''}"
 									aria-label={m['review.badge']({ count: queueCount })}
 								>
@@ -669,7 +669,7 @@
 					<button
 						type="button"
 						data-testid="nav-settings"
-						class="flex h-9 w-full items-center gap-3 rounded-lg px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-sidebar-hover hover:text-foreground"
+						class="flex h-9 w-full items-center gap-3 rounded-lg px-2.5 text-sm text-muted-foreground transition-colors hover:bg-sidebar-hover hover:text-foreground"
 						aria-haspopup="dialog"
 						aria-label={m['nav.settings']()}
 						onclick={() => {
