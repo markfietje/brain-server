@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, expect, test } from 'vitest';
@@ -99,7 +99,7 @@ function fixtureSigningKey(): { secretKey: string; publicKey: string } {
 	const minted = spawnSync(
 		'pnpm',
 		['tauri', 'signer', 'generate', '--ci', '-w', secretKey, '-p', FIXTURE_KEY_PASSWORD],
-		{ cwd: shellRoot, encoding: 'utf8' }
+		{ cwd: shellRoot, encoding: 'utf8', timeout: SPAWN_BOUND_MS }
 	);
 	if (minted.status !== 0) {
 		throw new Error(
@@ -128,7 +128,7 @@ function signFixtureArtifact(artifact: string, version: string): void {
 			FIXTURE_KEY_PASSWORD,
 			artifact
 		],
-		{ cwd: shellRoot, encoding: 'utf8' }
+		{ cwd: shellRoot, encoding: 'utf8', timeout: SPAWN_BOUND_MS }
 	);
 	if (signed.status !== 0) {
 		throw new Error(
@@ -201,6 +201,7 @@ function fixture(options: FixtureOptions = {}): Fixture {
 		execFileSync('git', args, {
 			cwd: root,
 			encoding: 'utf8',
+			timeout: SPAWN_BOUND_MS,
 			env: {
 				...process.env,
 				GIT_AUTHOR_NAME: 'fixture',
@@ -257,12 +258,34 @@ function fixture(options: FixtureOptions = {}): Fixture {
 
 type Run = { status: number | null; stdout: string; stderr: string };
 
+/**
+ * THE BOUND (R0b, 2026-10-27): every subprocess this file spawns is bounded —
+ * the de-slop round's law for the other keychain pin ("a pin that shells out
+ * to your keychain must be bounded, or it is a flake"), extended to the whole
+ * signing lane. The unbounded drill measured this morning ran 119 s against
+ * its 5 s budget: the pairing-positive arm sailed past the pairing check into
+ * THE BUNDLER BUILD (no `--artifact` means the lane builds the whole app),
+ * and a synchronous, unkillable `spawnSync` pinned the vitest worker until
+ * the build gave up. On a bound the child is killed and the run says so by
+ * name — "this arm cannot run here" — never a silent null status.
+ */
+const SPAWN_BOUND_MS = 20_000;
+
+function boundMessage(what: string, result: { status: number | null; error?: Error }): string | null {
+	if (result.status !== null || result.error === undefined) return null;
+	return `${what} cannot run here: the subprocess hit the ${SPAWN_BOUND_MS} ms bound (${result.error.message})`;
+}
+
 function run(args: string[]): Run {
-	const result = spawnSync('node', [scriptPath, ...args], { encoding: 'utf8' });
+	const result = spawnSync('node', [scriptPath, ...args], {
+		encoding: 'utf8',
+		timeout: SPAWN_BOUND_MS
+	});
+	const bounded = boundMessage(`the manifest writer (${args.join(' ')})`, result);
 	return {
 		status: result.status,
 		stdout: result.stdout ?? '',
-		stderr: result.stderr ?? ''
+		stderr: `${result.stderr ?? ''}${bounded === null ? '' : `\n${bounded}\n`}`
 	};
 }
 
@@ -644,17 +667,23 @@ function freshKeypair(): { secretKey: string; publicKey: string; keynum: string 
  * `BRAIN_UPDATER_PASSPHRASE` is CLEARED for every call: a test must never be
  * able to reach the operator's key, even by accident, and an inherited
  * passphrase in the developer's shell would otherwise let a fixture
- * artefact be signed with it.
+ * artefact be signed with it. An arm that needs a passphrase takes the
+ * NON-interactive rung (`--passphrase-file`, a fixture file outside the
+ * repository) — the keychain is never consulted from a test (R0b).
+ *
+ * The spawn is BOUNDED (see SPAWN_BOUND_MS): the lane cannot pin this worker.
  */
 function runSign(args: string[], env: Record<string, string> = {}): Run {
 	const result = spawnSync('bash', [signScriptPath, ...args], {
 		encoding: 'utf8',
+		timeout: SPAWN_BOUND_MS,
 		env: { ...process.env, BRAIN_UPDATER_PASSPHRASE: '', ...env }
 	});
+	const bounded = boundMessage(`the signing lane (${args.join(' ')})`, result);
 	return {
 		status: result.status,
 		stdout: result.stdout ?? '',
-		stderr: result.stderr ?? ''
+		stderr: `${result.stderr ?? ''}${bounded === null ? '' : `\n${bounded}\n`}`
 	};
 }
 
@@ -731,53 +760,84 @@ test('the_manifest_writer_names_a_resolvable_release_tag_and_refuses_one_that_do
  * The positive arm matters as much: the SHIPPED half must sail past the
  * pairing check, or the check is just a refusal that refuses everything.
  */
-test('the_signing_lane_refuses_a_key_that_is_not_the_key_the_app_ships', () => {
-	const shipped = shippedKeynum();
-	expect(shipped, 'the app configuration pins no keynum').not.toBe('');
+test(
+	'the_signing_lane_refuses_a_key_that_is_not_the_key_the_app_ships',
+	{ timeout: 30_000 },
+	() => {
+		const shipped = shippedKeynum();
+		expect(shipped, 'the app configuration pins no keynum').not.toBe('');
 
-	const fresh = freshKeypair();
-	// The anti-vacuity precondition, asserted: the fixture really is a
-	// DIFFERENT key, so the refusal below is about the key and not about
-	// some unrelated rule.
-	expect(fresh.keynum).not.toBe('');
-	expect(fresh.keynum).not.toBe(shipped);
+		const fresh = freshKeypair();
+		// The anti-vacuity precondition, asserted: the fixture really is a
+		// DIFFERENT key, so the refusal below is about the key and not about
+		// some unrelated rule.
+		expect(fresh.keynum).not.toBe('');
+		expect(fresh.keynum).not.toBe(shipped);
 
-	const refused = runSign([
-		'--tag',
-		RELEASED_TAG,
-		'--public-key',
-		fresh.publicKey,
-		'--secret-key',
-		fresh.secretKey,
-		'--dry-run'
-	]);
-	expect(refused.status).not.toBe(0);
-	// Both halves are NAMED — the pinned one and the one that was offered —
-	// in ONE assertion, so the drill that turns this check off fails with a
-	// message that names both rather than with the first half alone.
-	expect(
-		refused.stderr.includes(shipped) && refused.stderr.includes(fresh.keynum),
-		`the refusal must name BOTH halves — the app pins ${shipped}, the offered key is ${fresh.keynum} — got: ${refused.stderr}`
-	).toBe(true);
-	expect(refused.stderr).toContain('the signing key is NOT the key the app ships');
+		const refused = runSign([
+			'--tag',
+			RELEASED_TAG,
+			'--public-key',
+			fresh.publicKey,
+			'--secret-key',
+			fresh.secretKey,
+			'--dry-run'
+		]);
+		expect(refused.status).not.toBe(0);
+		// Both halves are NAMED — the pinned one and the one that was offered —
+		// in ONE assertion, so the drill that turns this check off fails with a
+		// message that names both rather than with the first half alone.
+		expect(
+			refused.stderr.includes(shipped) && refused.stderr.includes(fresh.keynum),
+			`the refusal must name BOTH halves — the app pins ${shipped}, the offered key is ${fresh.keynum} — got: ${refused.stderr}`
+		).toBe(true);
+		expect(refused.stderr).toContain('the signing key is NOT the key the app ships');
 
-	// The positive arm: the SHIPPED half passes the pairing check, and the
-	// lane says so by name before it does anything else.
-	const pinnedFile = join(tempDir('brain-updater-pinned-'), 'pinned.pub');
-	writeFileSync(pinnedFile, `${shippedPublicKey()}\n`);
-	const accepted = runSign([
-		'--tag',
-		RELEASED_TAG,
-		'--public-key',
-		pinnedFile,
-		'--secret-key',
-		fresh.secretKey,
-		'--dry-run'
-	]);
-	expect(accepted.stdout).toContain('the signing key IS the key the app ships');
-	expect(accepted.stdout).toContain(shipped);
-	expect(accepted.stderr).not.toContain('the signing key is NOT the key the app ships');
-});
+		// The positive arm: the SHIPPED half passes the pairing check, and the
+		// lane says so by name before it does anything else.
+		//
+		// R0b — this arm is NON-INTERACTIVE and BUILD-FREE on purpose. The
+		// pairing check needs no passphrase (verification is what the public
+		// lane is FOR), so the arm pins its passphrase to a fixture FILE (the
+		// script's first ladder rung — the keychain is never consulted from a
+		// test) and names an `--artifact`/`--bundle` pair, because an arm
+		// without an artifact sends the lane into THE BUNDLER BUILD — the
+		// unbounded 119 s this round measured. What the arm asserts is the
+		// pairing verdict, printed immediately after the check; whatever the
+		// lane refuses AFTER that line (the fixture key cannot produce a
+		// signature the pinned half verifies) is beyond the law this pin
+		// holds, and a bound-hit names itself in the stderr.
+		const pinnedDir = tempDir('brain-updater-pinned-');
+		const pinnedFile = join(pinnedDir, 'pinned.pub');
+		writeFileSync(pinnedFile, `${shippedPublicKey()}\n`);
+		const passphraseFile = join(pinnedDir, 'fixture.passphrase');
+		writeFileSync(passphraseFile, FIXTURE_KEY_PASSWORD);
+		chmodSync(passphraseFile, 0o600);
+		const artifact = join(pinnedDir, 'Brain-Shell.app.tar.gz');
+		writeFileSync(artifact, 'the updater artifact bytes\n');
+		const bundle = join(pinnedDir, 'Brain Shell.app');
+		mkdirSync(join(bundle, 'Contents'), { recursive: true });
+		writeFileSync(join(bundle, 'Contents', 'Info.plist'), infoPlist('0.1.1'));
+		const accepted = runSign([
+			'--tag',
+			RELEASED_TAG,
+			'--public-key',
+			pinnedFile,
+			'--secret-key',
+			fresh.secretKey,
+			'--artifact',
+			artifact,
+			'--bundle',
+			bundle,
+			'--passphrase-file',
+			passphraseFile,
+			'--dry-run'
+		]);
+		expect(accepted.stdout).toContain('the signing key IS the key the app ships');
+		expect(accepted.stdout).toContain(shipped);
+		expect(accepted.stderr).not.toContain('the signing key is NOT the key the app ships');
+	}
+);
 
 // ── III-7 P3 · the chain, or none of it ──────────────────────────────────
 
