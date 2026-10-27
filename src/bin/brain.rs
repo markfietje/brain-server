@@ -439,8 +439,8 @@ const SUBCOMMANDS: &[Subcommand] = &[
         run: cmd_principal_list,
         usage: "brain principal list [--db PATH]",
     },
-    // The rules door (C2 G-3) — C1's named finding `the_rules_insert_door_
-    // is_missing`, closed. LOCAL operator acts on the DB the operator names,
+    // The rules door — C1's named finding `the_rules_insert_door_is_missing`,
+    // closed. LOCAL operator acts on the DB the operator names,
     // never HTTP (a wire writer would let any JWT-bearing principal mint
     // jurisdiction law; the roster door's posture is the authority). One
     // audit row per insert; a replay of the same revision is refused, only a
@@ -462,8 +462,8 @@ const SUBCOMMANDS: &[Subcommand] = &[
         run: cmd_rules_list,
         usage: "brain rules list [--db PATH]",
     },
-    // The pack installer (C2 G-4, plan 28 §4) — the signed chain, R137's
-    // shape: verify against the PINNED pack key (a SECOND key from the
+    // The pack installer (plan 28 §4) — the signed chain, the
+    // plugin-integration drill's shape: verify against the PINNED pack key (a SECOND key from the
     // updater's — a pack signed by the updater key is a REFUSAL) → DRY-RUN
     // is the default surface (nothing writes without --yes, the `brain
     // client add --yes` convention) → import through the EXISTING doors
@@ -776,8 +776,8 @@ const VALUE_FLAGS: &[&str] = &[
     "var",
     "verify",
     "webhook-secret-file",
-    // `brain rules insert` (C2 G-3): the row's columns as flags. The lesson
-    // of `principal grant` (M3-g's daebe7fe) holds — a verb's OWN documented
+    // `brain rules insert`: the row's columns as flags. The lesson of
+    // `principal grant`'s flag-vocabulary fix holds — a verb's OWN documented
     // flags must sit in this closed vocabulary before its first run.
     "rule-key",
     "subject",
@@ -787,7 +787,7 @@ const VALUE_FLAGS: &[&str] = &[
     "reviewed-at",
     "expires-at",
     "revision",
-    // `brain plugin install` (C2 G-4): the detached signature's path
+    // `brain plugin install`: the detached signature's path
     // (default: beside the archive, minisign's own convention).
     "sig",
 ];
@@ -6347,7 +6347,7 @@ fn cmd_principal_list(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-// ── the rules door (C2 G-3) ──────────────────────────────────────────────
+// ── the rules door ───────────────────────────────────────────────────────
 
 fn cmd_rules_insert(args: &[String]) -> Result<(), String> {
     const USAGE: &str = "usage: brain rules insert --jurisdiction J --subject S --rule-key K\n \
@@ -6439,7 +6439,7 @@ fn cmd_rules_list(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-// ── the pack installer (C2 G-4) ──────────────────────────────────────────
+// ── the pack installer ──────────────────────────────────────────────────
 
 fn cmd_plugin_install(args: &[String]) -> Result<(), String> {
     const USAGE: &str = "usage: brain plugin install <pack.tar.gz> [--dry-run] [--yes] \
@@ -6472,7 +6472,7 @@ fn cmd_plugin_install(args: &[String]) -> Result<(), String> {
             sig_path.display()
         )
     })?;
-    let pubkey = pack_pubkey_path(
+    let pubkey = brain_server::packs::signature::pack_pubkey_path(
         std::env::var("BRAIN_PACK_PUBKEY").ok().as_deref(),
         &data_root(&flags)?,
     );
@@ -6486,7 +6486,7 @@ fn cmd_plugin_install(args: &[String]) -> Result<(), String> {
     })?;
 
     // 1 · VERIFY — the two-key law's enforcement point
-    let keynum = brain_server::packs::signature::verify(&archive, &sig, &pubkey_file)
+    let keynum = brain_server::packs::signature::verify_signature(&archive, &sig, &pubkey_file)
         .map_err(|e| format!("signature refused: {e}"))?;
 
     // 2 · PARSE + VALIDATE — the format, arm by arm
@@ -6496,7 +6496,8 @@ fn cmd_plugin_install(args: &[String]) -> Result<(), String> {
         .iter()
         .map(|(k, v)| (k.as_str(), v.clone()))
         .collect();
-    let pack = brain_server::packs::validate(&erefs).map_err(|e| format!("pack refused: {e}"))?;
+    let pack =
+        brain_server::packs::validate_pack(&erefs).map_err(|e| format!("pack refused: {e}"))?;
     if !brain_server::packs::engine_matches(&pack.manifest.engine, env!("CARGO_PKG_VERSION")) {
         return Err(format!(
             "pack refused: {}@{} needs engine {}, this kernel is {}",
@@ -6563,10 +6564,6 @@ fn cmd_plugin_install(args: &[String]) -> Result<(), String> {
         receipt.audit_refs.len(),
     );
     Ok(())
-}
-
-fn pack_pubkey_path(env_value: Option<&str>, data_root: &std::path::Path) -> PathBuf {
-    brain_server::packs::signature::pack_pubkey_path(env_value, data_root)
 }
 
 fn data_root(flags: &FlagMap) -> Result<PathBuf, String> {

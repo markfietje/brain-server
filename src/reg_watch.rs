@@ -468,6 +468,7 @@ fn crypto_inventory_census_maps_every_crypto_crate() {
         ("hmac", "HMAC-SHA256"),
         ("sha2", "SHA-256"),
         ("blake3", "BLAKE3"),
+        ("blake2", "BLAKE2b-512"),
         ("aes-gcm", "AES-256-GCM"),
         ("argon2", "Argon2id"),
         ("rsa", "RS256/RS384/RS512"),

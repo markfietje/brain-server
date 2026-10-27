@@ -22505,11 +22505,13 @@ mod r42_authority_bindings {
             .collect();
         assert_eq!(
             names.len(),
-            53,
-            "the dependency ceiling is 53 — the knowledge-version axis extraction (R5) moved \
-             it from 52 by adding brain-evolve-core as a workspace path edge; a round that \
-             adds a crate moves this number, and the lockfile diff is the other half of the \
-             proof. Tail entries: {:?}",
+            55,
+            "the dependency ceiling is 55 — the knowledge-version axis extraction (R5) moved \
+             it from 52 by adding brain-evolve-core as a workspace path edge; C2 (plan 28) \
+             moved it 53 → 55 with blake2 + flate2, both ALREADY in the lock as transitives, \
+             declared directly for the pack key's verifier and the pack archive's gzip \
+             framing (zero new crates enter the lock); a round that adds a crate moves this \
+             number, and the lockfile diff is the other half of the proof. Tail entries: {:?}",
             &names[45..]
         );
     }
@@ -23283,9 +23285,10 @@ mod r43_releases {
             .collect();
         assert_eq!(
             names.len(),
-            53,
-            "the dependency count is 53 — the knowledge-version axis extraction (R5) moved the \
-             ceiling from 52 by adding brain-evolve-core as a workspace path edge \
+            55,
+            "the dependency count is 55 — the knowledge-version axis extraction (R5) moved the \
+             ceiling from 52 by adding brain-evolve-core as a workspace path edge; C2 (plan 28) \
+             moved it 53 → 55 with blake2 + flate2 (both already in the lock as transitives) \
              (found {names:?})"
         );
     }
@@ -23895,10 +23898,11 @@ mod r44_outcomes {
             .collect();
         assert_eq!(
             names.len(),
-            53,
-            "the dependency count is 53 — the knowledge-version axis extraction (R5) moved the \
+            55,
+            "the dependency count is 55 — the knowledge-version axis extraction (R5) moved the \
              ceiling from 52 by adding brain-evolve-core as a workspace path edge; the read \
-             model itself needs no new crate \
+             model itself needs no new crate; C2 (plan 28) moved it 53 → 55 with blake2 + \
+             flate2 (both already in the lock as transitives) \
              (found {names:?})"
         );
         // The completeness half: the guard must not pass on an empty round.

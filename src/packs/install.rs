@@ -1,4 +1,5 @@
-//! `brain plugin install` — the signed chain (R137's shape, plan 28 §4):
+//! `brain plugin install` — the signed chain (the plugin-integration
+//! drill's shape, plan 28 §4):
 //! **verify → dry-run → import**, each import act through a door that
 //! already exists and already audits.
 //!
@@ -161,9 +162,8 @@ fn re_install_law(
             message: e,
         })?;
     let offered = super::parse_version_tuple(version);
-    let installed_v = existing.as_ref().map(|(_, v)| v.clone());
     match (existing, offered) {
-        (Some((id, installed_version)), _) if installed_version == version => Err(ImportError {
+        (Some((_id, installed_version)), _) if installed_version == version => Err(ImportError {
             act: "register",
             message: format!(
                 "pack '{pack_id}' version {version} is ALREADY INSTALLED — re-install \
@@ -206,10 +206,16 @@ pub fn apply(
     // a row, so the refusal is total.
     let existing_register = re_install_law(conn, &pack_id, &version)?;
 
-    let tx = conn.transaction().map_err(|e| ImportError {
-        act: "tx",
-        message: e.to_string(),
-    })?;
+    // BEGIN IMMEDIATE — the write-discipline law for read-modify-write
+    // transitions (the audit chain's tip read-write and the register's
+    // read-then-write both need the write lock from the start; the CLI is
+    // the single writer here).
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| ImportError {
+            act: "tx",
+            message: e.to_string(),
+        })?;
     let mut audit_refs = Vec::new();
 
     // 1 · the domain act — the profile binding through profile::bind (the
@@ -300,8 +306,8 @@ pub fn apply(
         let _ = root_id; // the act's evidence is the Procedure audit row
     }
 
-    // 4 · the rules act — THE one rules door, second consumer (G-3's
-    // promise): one Rules audit row per LANDED rule, the natural-key
+    // 4 · the rules act — THE one rules door, second consumer (the door
+    // round's promise): one Rules audit row per LANDED rule, the natural-key
     // revision law enforced by the door itself. A same-revision replay is
     // the C1 fixture's skip ("a replay inserts nothing") — a pack upgrade
     // carrying unchanged rules imports cleanly; a STALE rule still refuses
@@ -463,7 +469,7 @@ pub fn content_hash(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::packs::{PackKind, validate};
+    use crate::packs::{PackKind, validate_pack};
 
     fn db() -> Connection {
         crate::register_sqlite_vec::register_sqlite_vec();
@@ -511,7 +517,7 @@ mod tests {
     fn validated() -> ValidatedPack {
         let entries = pack_entries();
         let refs: Vec<(&str, Vec<u8>)> = entries.iter().map(|(k, v)| (*k, v.clone())).collect();
-        validate(&refs).expect("the fixture pack validates")
+        validate_pack(&refs).expect("the fixture pack validates")
     }
 
     #[test]
@@ -595,7 +601,7 @@ mod tests {
             .into_bytes(),
         );
         let refs: Vec<(&str, Vec<u8>)> = entries.iter().map(|(k, v)| (*k, v.clone())).collect();
-        let upgraded = validate(&refs).unwrap();
+        let upgraded = validate_pack(&refs).unwrap();
         apply(&mut conn, &upgraded, "a2", "m2", 3, 3_000).unwrap();
         let installed = list_installed(&conn).unwrap();
         assert_eq!(installed.len(), 1, "one living row per pack");

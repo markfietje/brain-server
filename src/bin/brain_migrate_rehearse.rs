@@ -115,7 +115,7 @@ const PARITY_TABLES: &[&str] = &[
     // plugin principal it ever granted, and would say so nowhere.
     "principals",
     "agent_session_events",
-    // the installed-pack register (C2 G-4): row-count parity proves a
+    // the installed-pack register (the pack round): row-count parity proves a
     // rehearsal copied the pack ledger — a rehearsal that came back with
     // zero packs would produce a server that has forgotten every pack it
     // ever mounted, and would say so nowhere.

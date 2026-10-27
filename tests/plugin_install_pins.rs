@@ -10,7 +10,6 @@
 //! binary against a fresh migrated DB.
 
 use brain_server::packs::archive::write_archive;
-use brain_server::packs::signature as sig;
 use ed25519_dalek::Signer;
 use std::process::Command;
 

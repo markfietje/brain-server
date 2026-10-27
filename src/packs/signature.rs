@@ -117,7 +117,11 @@ pub fn parse_pubkey(file: &str) -> Result<(String, VerifyingKey), SigError> {
 /// Returns the pinned keynum on success (the receipt names the key that
 /// spoke). The signature's presence is checked FIRST — an unsigned pack is
 /// the operator's most common mistake and gets the clearest refusal.
-pub fn verify(content: &[u8], sig_file: &str, pubkey_file: &str) -> Result<String, SigError> {
+pub fn verify_signature(
+    content: &[u8],
+    sig_file: &str,
+    pubkey_file: &str,
+) -> Result<String, SigError> {
     // Line 2: the primary signature blob; line 3+4: the trusted comment and
     // its signature. Anything else is the unsigned or malformed arm.
     let mut lines = sig_file.lines();
@@ -282,7 +286,7 @@ mod tests {
             CONTENT,
             "file:pack.tar.gz",
         );
-        let receipt = verify(CONTENT, &sig, &keyfile).expect("a true chain verifies");
+        let receipt = verify_signature(CONTENT, &sig, &keyfile).expect("a true chain verifies");
         assert_eq!(receipt, "D5626019111E7CC2");
     }
 
@@ -298,7 +302,7 @@ mod tests {
             CONTENT,
             "the updater key's chain over a pack",
         );
-        let err = verify(CONTENT, &sig, &pack_keyfile).unwrap_err();
+        let err = verify_signature(CONTENT, &sig, &pack_keyfile).unwrap_err();
         assert!(
             matches!(err, SigError::KeynumMismatch { .. }),
             "a foreign-key signature is a keynum refusal: {err}"
@@ -309,7 +313,7 @@ mod tests {
 
     #[test]
     fn an_unsigned_pack_is_refused() {
-        let err = verify(CONTENT, "", "not even a key file").unwrap_err();
+        let err = verify_signature(CONTENT, "", "not even a key file").unwrap_err();
         assert_eq!(err, SigError::Unsigned);
     }
 
@@ -319,7 +323,7 @@ mod tests {
         let sig = sign(&sk, &0xBBBB_0000_0000_0002u64.to_be_bytes(), CONTENT, "c");
         let mut tampered = CONTENT.to_vec();
         tampered[0] ^= 0x01;
-        let err = verify(&tampered, &sig, &keyfile).unwrap_err();
+        let err = verify_signature(&tampered, &sig, &keyfile).unwrap_err();
         assert!(
             matches!(err, SigError::Tampered(_)),
             "the tamper arm refuses by name: {err}"
@@ -342,7 +346,7 @@ mod tests {
             "untrusted comment: file:OTHER.tar.gz",
             1,
         );
-        let err = verify(CONTENT, &sig, &keyfile).unwrap_err();
+        let err = verify_signature(CONTENT, &sig, &keyfile).unwrap_err();
         assert!(matches!(err, SigError::Tampered(_)), "{err}");
     }
 
@@ -353,18 +357,18 @@ mod tests {
 
         // truncated signature file
         let truncated: String = sig.lines().take(2).collect::<Vec<_>>().join("\n");
-        assert!(verify(CONTENT, &truncated, &keyfile).is_err());
+        assert!(verify_signature(CONTENT, &truncated, &keyfile).is_err());
 
         // a key file whose blob is the wrong length
         let bad_key = format!("untrusted comment: x\n{}\n", b64(b"short"));
         assert!(matches!(
-            verify(CONTENT, &sig, &bad_key),
+            verify_signature(CONTENT, &sig, &bad_key),
             Err(SigError::Malformed(_))
         ));
 
         // non-base64 body
         let bad_sig = "untrusted comment: x\nNOT BASE64 !!\nuntrusted comment: c\nAAAA\n";
-        assert!(verify(CONTENT, &bad_sig, &keyfile).is_err());
+        assert!(verify_signature(CONTENT, &bad_sig, &keyfile).is_err());
     }
 
     #[test]
@@ -406,7 +410,7 @@ mod tests {
         let content = std::fs::read(dir.join("pack.tar.gz")).expect("probe pack.tar.gz");
         let sig = std::fs::read_to_string(dir.join("pack.tar.gz.minisig")).expect("probe sig");
         let key = std::fs::read_to_string(dir.join("pack.pub")).expect("probe pub");
-        let receipt = verify(&content, &sig, &key).expect("the real chain verifies");
+        let receipt = verify_signature(&content, &sig, &key).expect("the real chain verifies");
         let pinned = parse_pubkey(&key).unwrap().0;
         assert_eq!(receipt, pinned);
     }

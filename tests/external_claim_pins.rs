@@ -1107,8 +1107,14 @@ fn r45_0_correction_leaves_the_audit_chain_module_byte_untouched() {
 /// erase), the same dedicated-kind precedent `Forget`/`Procedure` set, and
 /// the module's own battery (keyed hash, tamper controls, genesis + head
 /// pins) is untouched and still green.
+// Re-pinned by C2 (plan 28, 2026-10-27): R45-0's scope proof froze the
+// module at e99349e1…; C2 added AuditKind::Rules (the rules door's audit
+// row, G-3) and AuditKind::Plugin (the pack-import witness, G-4) — each
+// with its own red-first battery — and the freeze moves with the record,
+// the dependency-ceiling precedent. The pin's JOB is unchanged: the NEXT
+// round that touches the chain without naming it reds here.
 const CHAIN_MODULE_SHA256: &str =
-    "e99349e1e4f4ee87d62ed35f2951cc244627212be754c94b7222d32af2d36915";
+    "30ffdec0ce656a094088db62496ec74773db1f4ff98261884d314bea873b0927";
 
 /// E8's second half: the correction adds no key material and no audit row.
 #[test]

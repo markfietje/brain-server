@@ -1,5 +1,5 @@
 //! The `rules`/`rule_rates` tables' ONE door — C1's named finding
-//! `the_rules_insert_door_is_missing`, closed (C2 G-3, plan 28 §4's K7).
+//! `the_rules_insert_door_is_missing`, closed (plan 28 §4's K7).
 //!
 //! Until this module the tables had a schema and no writer: no CLI verb, no
 //! route, the migration and the migrate-rehearse list their only

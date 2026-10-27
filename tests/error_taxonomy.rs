@@ -44,6 +44,12 @@ const KNOWN_ERRORS: &[(&str, &str, &str, &str)] = &[
         "storage",
         "display",
     ),
+    // C2 (plan 28): the pack chain's refusals. SigError is integrity by
+    // nature (keys/keynums/prehashes — the two-key law's vocabulary);
+    // ArchiveError is input (caller-derived bytes: traversal, corruption,
+    // unsupported tar entries — every arm names the entry it died at).
+    ("SigError", "packs/signature.rs", "integrity", "display"),
+    ("ArchiveError", "packs/archive.rs", "input", "display"),
     ("EmbedError", "embed.rs", "integrity", "display"),
     (
         "AppError",

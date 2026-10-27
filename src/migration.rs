@@ -3502,7 +3502,7 @@ pub fn run_migration_with_store_dim(
          );",
     )?;
 
-    // ── the installed-pack register (C2 G-4, plan 28 §4) ─────────────────
+    // ── the installed-pack register (plan 28 §4) ─────────────────
     // One row per installed pack: the roster door's neighborhood (the
     // global/global-named DB, beside `principals`), because the audit chain
     // carries HASHES — a `plugin list` cannot reconstruct id/version from

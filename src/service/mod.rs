@@ -83,7 +83,7 @@ pub mod retention;
 pub mod review;
 pub mod routing;
 /// the `rules`/`rule_rates` tables' ONE door (C1's named finding
-/// `the_rules_insert_door_is_missing`, closed by G-3): insert + list, a
+/// `the_rules_insert_door_is_missing`, closed by the rules-door round): insert + list, a
 /// local operator act through the `brain rules` CLI — no HTTP route. The
 /// pack installer composes THIS core (one rules door, two consumers).
 pub mod rules;

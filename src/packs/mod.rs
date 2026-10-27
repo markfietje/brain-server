@@ -339,7 +339,7 @@ impl std::fmt::Display for PackError {
 /// (the installer) owns the archive's bytes and the signature check that
 /// must have run BEFORE this — a pack that fails its signature is never
 /// validated, let alone imported.
-pub fn validate(entries: &[(&str, Vec<u8>)]) -> Result<ValidatedPack, PackError> {
+pub fn validate_pack(entries: &[(&str, Vec<u8>)]) -> Result<ValidatedPack, PackError> {
     // Structural law first — and the executable scan before the allowlist,
     // so a payload is named AS a payload, never merely as an unlisted file:
     for (path, bytes) in entries {
@@ -1066,7 +1066,7 @@ mod tests {
                     .into_bytes(),
             ));
         }
-        let pack = validate(&all).expect("a clean pack passes");
+        let pack = validate_pack(&all).expect("a clean pack passes");
         assert_eq!(pack.manifest.id, "support-pack");
         assert_eq!(pack.manifest.kinds.len(), 4);
         assert_eq!(pack.domain.as_ref().unwrap().name, "support");
@@ -1084,7 +1084,7 @@ mod tests {
             (MANIFEST, manifest_json(&["rules"])),
             ("assets/blob.bin", b"harmless".to_vec()),
         ];
-        let err = validate(&entries).unwrap_err();
+        let err = validate_pack(&entries).unwrap_err();
         assert_eq!(err.kind, PackErrorKind::UnknownFile);
         assert_eq!(err.file.as_deref(), Some("assets/blob.bin"));
         assert!(err.message.contains("file set"));
@@ -1095,7 +1095,7 @@ mod tests {
             (MANIFEST, manifest_json(&["rules"])),
             ("hooks/notify.sh", b"echo hi".to_vec()),
         ];
-        let err = validate(&entries).unwrap_err();
+        let err = validate_pack(&entries).unwrap_err();
         assert_eq!(err.kind, PackErrorKind::ExecutableContent);
         assert_eq!(err.file.as_deref(), Some("hooks/notify.sh"));
     }
@@ -1112,7 +1112,7 @@ mod tests {
                 v
             }),
         ];
-        let err = validate(&entries).unwrap_err();
+        let err = validate_pack(&entries).unwrap_err();
         assert_eq!(err.kind, PackErrorKind::ExecutableContent);
         assert_eq!(err.file.as_deref(), Some("taxonomy.json"));
         assert!(err.message.contains("wasm"));
@@ -1122,7 +1122,7 @@ mod tests {
             (MANIFEST, manifest_json(&["rules"])),
             ("rules.json", b"#!/bin/sh\necho pwned".to_vec()),
         ];
-        let err = validate(&entries).unwrap_err();
+        let err = validate_pack(&entries).unwrap_err();
         assert_eq!(err.kind, PackErrorKind::ExecutableContent);
         assert!(err.message.contains("shebang"));
 
@@ -1135,7 +1135,7 @@ mod tests {
                 v
             }),
         ];
-        let err = validate(&entries).unwrap_err();
+        let err = validate_pack(&entries).unwrap_err();
         assert_eq!(err.kind, PackErrorKind::ExecutableContent);
         assert_eq!(err.file.as_deref(), Some("payload.so"));
 
@@ -1144,7 +1144,7 @@ mod tests {
             (MANIFEST, manifest_json(&["rules"])),
             ("i18n/payload.py", b"print('hi')".to_vec()),
         ];
-        let err = validate(&entries).unwrap_err();
+        let err = validate_pack(&entries).unwrap_err();
         assert_eq!(err.kind, PackErrorKind::ExecutableContent);
 
         // Mach-O, the arm a macOS payload actually arrives in
@@ -1157,7 +1157,7 @@ mod tests {
             }),
         ];
         assert_eq!(
-            validate(&entries).unwrap_err().kind,
+            validate_pack(&entries).unwrap_err().kind,
             PackErrorKind::ExecutableContent
         );
     }
@@ -1166,7 +1166,7 @@ mod tests {
     fn k5_and_k6_kinds_are_refused_as_kinds() {
         for kind in ["connector", "model-adapter"] {
             let entries = vec![(MANIFEST, manifest_json(&["rules", kind]))];
-            let err = validate(&entries).unwrap_err();
+            let err = validate_pack(&entries).unwrap_err();
             assert_eq!(err.kind, PackErrorKind::BadManifest);
             assert!(
                 err.message.contains("refused in packs"),
@@ -1192,7 +1192,7 @@ mod tests {
                 .into_bytes(),
             ),
         ];
-        let err = validate(&entries).unwrap_err();
+        let err = validate_pack(&entries).unwrap_err();
         assert_eq!(err.kind, PackErrorKind::BadRoles);
         assert!(
             err.message.contains("invalid role name"),
@@ -1214,7 +1214,7 @@ mod tests {
                 .into_bytes(),
             ),
         ];
-        let err = validate(&entries).unwrap_err();
+        let err = validate_pack(&entries).unwrap_err();
         assert!(err.message.contains("unknown"));
     }
 
@@ -1242,7 +1242,7 @@ mod tests {
                 .into_bytes(),
             ),
         ];
-        let err = validate(&entries).unwrap_err();
+        let err = validate_pack(&entries).unwrap_err();
         assert_eq!(err.kind, PackErrorKind::BadProcedure);
         assert_eq!(err.file.as_deref(), Some("procedures/broken.json"));
         assert!(
@@ -1266,7 +1266,7 @@ mod tests {
                 .into_bytes(),
             ),
         ];
-        let err = validate(&entries).unwrap_err();
+        let err = validate_pack(&entries).unwrap_err();
         assert_eq!(err.kind, PackErrorKind::BadRules);
         assert!(err.message.contains("revision"));
 
@@ -1284,7 +1284,7 @@ mod tests {
                     .into_bytes(),
             ),
         ];
-        let err = validate(&entries).unwrap_err();
+        let err = validate_pack(&entries).unwrap_err();
         assert!(err.message.contains("duplicate rule_key"));
     }
 
@@ -1301,7 +1301,7 @@ mod tests {
                 .into_bytes(),
             ),
         ];
-        let err = validate(&entries).unwrap_err();
+        let err = validate_pack(&entries).unwrap_err();
         assert_eq!(err.kind, PackErrorKind::BadDomain);
         assert!(err.message.contains("invalid domain name"));
     }
@@ -1323,7 +1323,7 @@ mod tests {
                 base(&["nav.support"]),
             ));
         }
-        let err = validate(&entries).unwrap_err();
+        let err = validate_pack(&entries).unwrap_err();
         assert_eq!(err.kind, PackErrorKind::BadI18n);
         assert!(err.message.contains("all five"));
 
@@ -1340,7 +1340,7 @@ mod tests {
                 base(keys),
             ));
         }
-        let err = validate(&entries).unwrap_err();
+        let err = validate_pack(&entries).unwrap_err();
         assert!(err.message.contains("parity law"), "{err}");
 
         // a ui manifest without i18n at all: half a surface
@@ -1353,7 +1353,7 @@ mod tests {
                     .into_bytes(),
             ),
         ];
-        let err = validate(&entries).unwrap_err();
+        let err = validate_pack(&entries).unwrap_err();
         assert_eq!(err.kind, PackErrorKind::BadI18n);
     }
 
@@ -1373,7 +1373,7 @@ mod tests {
     #[test]
     fn a_missing_manifest_is_a_refusal_not_a_panic() {
         let entries = vec![(RULES, rules_json())];
-        let err = validate(&entries).unwrap_err();
+        let err = validate_pack(&entries).unwrap_err();
         assert_eq!(err.kind, PackErrorKind::BadManifest);
     }
 }
