@@ -1878,16 +1878,21 @@ pub fn recent(
     kind: Option<&str>,
     limit: usize,
 ) -> rusqlite::Result<Vec<AuditRow>> {
-    recent_tenant(conn, kind, None, limit, 0)
+    recent_tenant(conn, kind, None, None, limit, 0)
 }
 
 /// Per-tenant variant of [`recent`]. `tenant = None` returns rows across all
 /// tenants (operator diagnostics); `Some(t)` enforces `WHERE tenant_id = ?`.
+/// `actor = None` returns every principal's rows; `Some(a)` filters to ONE
+/// principal's audited footprint (the `actor` column, exact match — the
+/// `/audit?principal=` filter). The filter reads rows; it never
+/// re-verifies the chain differently, and the verdict surface is untouched.
 /// `offset` is the pagination cursor (`ORDER BY id DESC LIMIT ? OFFSET ?`).
 pub fn recent_tenant(
     conn: &Connection,
     kind: Option<&str>,
     tenant: Option<&str>,
+    actor: Option<&str>,
     limit: usize,
     offset: usize,
 ) -> rusqlite::Result<Vec<AuditRow>> {
@@ -1904,6 +1909,10 @@ pub fn recent_tenant(
     if tenant.is_some() {
         clauses.push("tenant_id = ?");
         params.push(&tenant);
+    }
+    if actor.is_some() {
+        clauses.push("actor = ?");
+        params.push(&actor);
     }
     if !clauses.is_empty() {
         sql.push_str(" WHERE ");
@@ -2865,15 +2874,15 @@ mod tests {
             "d2",
             "team-b",
         );
-        let a = recent_tenant(&db, None, Some("team-a"), 100, 0).unwrap();
-        let b = recent_tenant(&db, None, Some("team-b"), 100, 0).unwrap();
+        let a = recent_tenant(&db, None, Some("team-a"), None, 100, 0).unwrap();
+        let b = recent_tenant(&db, None, Some("team-b"), None, 100, 0).unwrap();
         assert_eq!(a.len(), 1, "team-a must see only its own row");
         assert_eq!(b.len(), 1, "team-b must see only its own row");
         assert_eq!(a[0].tenant_id, "team-a");
         assert_eq!(b[0].tenant_id, "team-b");
         // Forgetting the tenant filter returns both — proves the SQL filter is
         // the enforcement point, not a missing app-level guard.
-        let all = recent_tenant(&db, None, None, 100, 0).unwrap();
+        let all = recent_tenant(&db, None, None, None, 100, 0).unwrap();
         assert_eq!(all.len(), 2);
     }
 
@@ -2894,9 +2903,9 @@ mod tests {
             );
         }
         // Newest-first: id 10 (the last insert) is page[0].
-        let page0 = recent_tenant(&db, None, Some("team-a"), 4, 0).unwrap();
-        let page1 = recent_tenant(&db, None, Some("team-a"), 4, 4).unwrap();
-        let page2 = recent_tenant(&db, None, Some("team-a"), 4, 8).unwrap();
+        let page0 = recent_tenant(&db, None, Some("team-a"), None, 4, 0).unwrap();
+        let page1 = recent_tenant(&db, None, Some("team-a"), None, 4, 4).unwrap();
+        let page2 = recent_tenant(&db, None, Some("team-a"), None, 4, 8).unwrap();
         assert_eq!(page0.len(), 4);
         assert_eq!(page1.len(), 4);
         assert_eq!(page2.len(), 2);
@@ -2926,7 +2935,7 @@ mod tests {
         assert_eq!(sorted, (1..=10).collect::<Vec<i64>>());
         // Offset past the end → empty, not an error.
         assert!(
-            recent_tenant(&db, None, Some("team-a"), 4, 40)
+            recent_tenant(&db, None, Some("team-a"), None, 4, 40)
                 .unwrap()
                 .is_empty()
         );

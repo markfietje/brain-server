@@ -842,7 +842,16 @@ describe('the envelope law', () => {
 		// (the repaired pin, R0a), 45 JS files, this pin's own routine:
 		// 207,772 bytes gzipped. Moving the band is a named act; the register
 		// row carries it.
-		const R0_BASELINE = 207_772;
+		//
+		// NAMED ACT (M3-g, plan 27 G-3, measured 2026-10-27): the audit
+		// principal filter's shell surface — the audit page's ?principal=
+		// read + filter chip + clear link, the governance role-row footprint
+		// link, the audit.ts wire param, and three message keys × five
+		// locales — grew the built JS to 208,726 bytes gzipped (+954 over the
+		// R0 midpoint; +626 over the refactor's landed 208,100). The band's
+		// midpoint MOVES to the measurement, the same named act the plan-25
+		// round made; the register row carries it.
+		const R0_BASELINE = 208_726;
 		const BAND = 512;
 		expect(
 			Math.abs(total - R0_BASELINE),

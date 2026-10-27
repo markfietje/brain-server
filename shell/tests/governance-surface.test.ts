@@ -169,3 +169,28 @@ test('G6 the governance surface reaches no write verb', async () => {
 		).toBeNull();
 	}
 });
+
+test('G7 the role row links the audited footprint, answered by the chain', async () => {
+	// M3-g (plan 27 §2.3): the roles section LINKS to the audit surface's
+	// principal filter — "what did a principal of this role touch?" is
+	// answered by the chain, never by a new telemetry, and never by this
+	// page reading the audit log itself.
+	serve({
+		'/domains': () => jsonResponse(DOMAINS),
+		'/roles': () => jsonResponse(ROLES),
+		'/retention': () => jsonResponse(RETENTION)
+	});
+	await renderGovernance();
+	await waitFor(() =>
+		expect(screen.getAllByTestId('governance-role-footprint').length).toBeGreaterThan(0)
+	);
+	const links = screen.getAllByTestId('governance-role-footprint');
+	expect(links).toHaveLength(1); // the fixture carries one role row
+	expect(links[0]!.getAttribute('href')).toBe('/audit?principal=operator');
+	// and the page did NOT read the chain itself — the link is the whole act
+	const paths = fetchMock.mock.calls.map((call) => {
+		const u = call[0] instanceof Request ? (call[0] as Request).url : String(call[0]);
+		return new URL(u).pathname;
+	});
+	expect(paths).not.toContain('/audit');
+});

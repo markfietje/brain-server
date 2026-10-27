@@ -137,6 +137,17 @@
 									{#each role.can as verb (verb)}
 										<Badge variant="outline" class="rounded-full font-mono">{verb}</Badge>
 									{/each}
+									<!-- M3-g (plan 27 §2.3): the role row links to the chain —
+									    "what did a principal of this role touch?" answered by
+									    the audit surface's principal filter, not by a new
+									    telemetry. The audit page honors ?principal= directly. -->
+									<a
+										href="{resolve('/audit')}?principal={role.name}"
+										class="ms-auto text-muted-foreground underline-offset-4 hover:underline"
+										data-testid="governance-role-footprint"
+									>
+										{m['governance.role.footprint']()} →
+									</a>
 								</div>
 							</Card>
 						</li>

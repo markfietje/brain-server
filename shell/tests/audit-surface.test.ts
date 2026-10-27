@@ -21,6 +21,12 @@ import userEvent from '@testing-library/user-event';
 
 const state = vi.hoisted(() => ({ wireStatus: 'unreachable' }));
 
+// The `$app/state` page holder (the route-a11y pattern): one mock for the
+// file, per-test URL values — the M3-g principal filter reads the URL, so a
+// test plants `?principal=` here before rendering.
+const pageState = vi.hoisted(() => ({ url: new URL('http://127.0.0.1/audit') }));
+vi.mock('$app/state', () => ({ page: pageState }));
+
 vi.mock('@tauri-apps/api/core', () => ({
 	invoke: vi.fn(async (command: string) => {
 		if (command === 'kernel_wire_status') return { kind: state.wireStatus };
@@ -42,6 +48,7 @@ afterEach(() => {
 	cleanup();
 	responder = noWire;
 	state.wireStatus = 'unreachable';
+	pageState.url = new URL('http://127.0.0.1/audit');
 	vi.clearAllMocks();
 });
 
@@ -222,3 +229,56 @@ test('A7 the audit surface reaches no write verb', async () => {
 async function waitForTestId(testid: string): Promise<void> {
 	await waitFor(() => expect(screen.getByTestId(testid)).toBeTruthy());
 }
+
+test('A4 the URL principal filter reaches the wire and names itself on the page', async () => {
+	// The retired GUI's `/audit?principal=` promise, kept: the URL is the
+	// source, the request carries the filter, and the page NAMES the filter
+	// (the chip) beside its clear link — a filter that silently changed the
+	// rows would be indistinguishable from a smaller chain.
+	let requested: URL | null = null;
+	const rows = [auditEvent(7), auditEvent(8)];
+	responder = async (url, _init, method) => {
+		const u = new URL(url);
+		if (method === 'GET' && u.pathname === '/audit') {
+			requested = u;
+			const offset = Number.parseInt(u.searchParams.get('offset') ?? '0', 10);
+			const limit = Number.parseInt(u.searchParams.get('limit') ?? '100', 10);
+			return jsonResponse({ events: rows.slice(offset, offset + limit) });
+		}
+		if (method === 'GET' && u.pathname === '/audit/verify') {
+			return jsonResponse({ ok: true, domains: { global: true } });
+		}
+		return new Response('not found', { status: 404 });
+	};
+	pageState.url = new URL('http://127.0.0.1/audit?principal=edu-plugin');
+	await renderAudit();
+	await waitFor(() => expect(screen.getAllByTestId('audit-row')).toHaveLength(2));
+	expect(requested).not.toBeNull();
+	expect(requested!.searchParams.get('principal')).toBe('edu-plugin');
+	const chip = screen.getByTestId('audit-principal-filter');
+	expect(chip.textContent).toContain('edu-plugin');
+	expect(screen.getByTestId('audit-principal-clear').getAttribute('href')).toBe('/audit');
+	// and the verify read rode the SAME page load, filter-free (the verdict
+	// surface is a separate endpoint the filter never touches)
+	expect(screen.getByTestId('audit-chain').getAttribute('data-chain')).toBe('verified');
+});
+
+test('A5 no filter in the URL sends no principal param and renders no chip', async () => {
+	let requested: URL | null = null;
+	responder = async (url, _init, method) => {
+		const u = new URL(url);
+		if (method === 'GET' && u.pathname === '/audit') {
+			requested = u;
+			return jsonResponse({ events: [auditEvent(7)] });
+		}
+		if (method === 'GET' && u.pathname === '/audit/verify') {
+			return jsonResponse({ ok: true, domains: { global: true } });
+		}
+		return new Response('not found', { status: 404 });
+	};
+	await renderAudit();
+	await waitFor(() => expect(screen.getAllByTestId('audit-row')).toHaveLength(1));
+	expect(requested).not.toBeNull();
+	expect(requested!.searchParams.get('principal')).toBeNull();
+	expect(screen.queryByTestId('audit-principal-filter')).toBeNull();
+});

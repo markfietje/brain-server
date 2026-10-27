@@ -15,6 +15,7 @@
 	// "not verified", never "verified" on a guess.
 	import { onMount } from 'svelte';
 	import { m } from '$paraglide/messages.js';
+	import { page } from '$app/state';
 	import type { WireFault } from '#lib/api/client.js';
 	import {
 		AUDIT_PAGE,
@@ -40,6 +41,14 @@
 	let loadingMore = $state(false);
 	let generation = 0;
 
+	// The principal filter (M3-g, plan 27): the URL is the source, so a link
+	// from the governance surface (or a bookmark) lands on the principal's
+	// audited footprint directly — the retired GUI's `/audit?principal=`
+	// promise, finally built. The chip names the filter and links back to the
+	// unfiltered chain; the filter reads rows, the verdict read beside it is
+	// untouched by it.
+	const principalFilter = $derived(page.url.searchParams.get('principal')?.trim() || null);
+
 	function refusalMessage(status: number | null, fault: WireFault): string {
 		if (status === 401 || fault === 'unauthorized' || fault === 'no_credential') {
 			return m['audit.refused.unauthorized']();
@@ -51,7 +60,10 @@
 	async function load(): Promise<void> {
 		const mine = ++generation;
 		view = { kind: 'loading' };
-		const [events, verdict] = await Promise.all([fetchAuditEvents(0), verifyAuditChain()]);
+		const [events, verdict] = await Promise.all([
+			fetchAuditEvents(0, principalFilter ?? undefined),
+			verifyAuditChain()
+		]);
 		if (mine !== generation) return;
 		chain = verdict;
 		if (events.kind === 'ok') {
@@ -73,13 +85,13 @@
 		loadingMore = true;
 		const before = view.events;
 		try {
-			const page = await fetchAuditEvents(before.length);
+			const nextPage = await fetchAuditEvents(before.length, principalFilter ?? undefined);
 			if (view.kind !== 'live') return;
-			if (page.kind === 'ok') {
+			if (nextPage.kind === 'ok') {
 				view = {
 					kind: 'live',
-					events: [...before, ...page.events],
-					exhausted: page.events.length < AUDIT_PAGE
+					events: [...before, ...nextPage.events],
+					exhausted: nextPage.events.length < AUDIT_PAGE
 				};
 			}
 			// A failed further page leaves what is on screen on screen; the
@@ -131,6 +143,21 @@
 			<span class="text-xs text-muted-foreground">{m['audit.chain.refused']()}</span>
 		{/if}
 	</div>
+
+	{#if principalFilter !== null}
+		<div class="flex items-center gap-2 text-sm" data-testid="audit-principal-filter">
+			<Badge variant="secondary" class="rounded-full px-2.5 py-1 font-mono">
+				{m['audit.principal.filtered']({ name: principalFilter })}
+			</Badge>
+			<a
+				href="/audit"
+				class="text-xs text-muted-foreground underline-offset-4 hover:underline"
+				data-testid="audit-principal-clear"
+			>
+				{m['audit.principal.clear']()}
+			</a>
+		</div>
+	{/if}
 
 	{#if view.kind === 'loading'}
 		<p aria-busy="true" data-testid="audit-loading">{m['audit.loading']()}</p>

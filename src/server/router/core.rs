@@ -443,6 +443,7 @@ pub(crate) async fn list_audit(
     let limit = params.limit.unwrap_or(100).min(config::MAX_MULTI_GET);
     let kind = params.kind;
     let tenant = tenant_scope;
+    let principal_filter = params.principal;
     // The operator audit list covers EVERY registered
     // domain's chain in multi-db mode (rows carry their domain tag), not just
     // the global pool. Shim mode stays the single shared pool. Merged rows
@@ -465,6 +466,7 @@ pub(crate) async fn list_audit(
                 &conn,
                 kind.as_deref(),
                 tenant.as_deref(),
+                principal_filter.as_deref(),
                 limit.saturating_add(offset),
                 0,
             ) {
@@ -503,6 +505,13 @@ pub(crate) struct AuditQuery {
     kind: Option<String>,
     #[serde(default)]
     tenant: Option<String>,
+    /// The principal filter — rows whose `actor` matches,
+    /// exact, at the SQL layer beside `kind`/`tenant`. Answers "what did
+    /// plugin X touch?" from the chain, not from a new telemetry. The filter
+    /// reads rows; it never re-verifies the chain differently, and the
+    /// verdict surface (`/audit/verify`) is untouched.
+    #[serde(default)]
+    principal: Option<String>,
     #[serde(default)]
     limit: Option<usize>,
     /// pagination cursor. `offset` past the last row returns [].

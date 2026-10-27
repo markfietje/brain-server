@@ -3721,3 +3721,86 @@ fn a_plugin_principals_tool_reach_is_exactly_the_roster_row() {
          named tools — the roster arm consults kind == Plugin only"
     );
 }
+
+/// THE AUDIT PRINCIPAL FILTER (M3-g G-3): `/audit?principal=X` returns X's
+/// rows and nobody else's, at the SQL layer beside `kind`/`tenant` — and the
+/// chain VERDICT is untouched by it: the filter reads rows, it never
+/// re-verifies differently, so the verify body is byte-identical across a
+/// filtered call. The admin bearer is the JWT class (the /audit gate is
+/// Admin); the rows are written through the SAME audit::record the handlers
+/// use, two principals, so a filter that returned everything is visible.
+#[tokio::test]
+async fn the_audit_principal_filter_filters_rows_and_leaves_the_verdict_unchanged() {
+    let srv = build_server();
+    {
+        let conn = srv.state.pool.get().expect("pool");
+        for (actor, detail) in [
+            ("edu-plugin", "grant: role=plugin domain=education"),
+            ("other-plugin", "grant: role=plugin domain=finance"),
+            ("edu-plugin", "revoke: operator revoke"),
+        ] {
+            brain_server::audit::record(
+                &conn,
+                brain_server::audit::AuditKind::Auth,
+                actor,
+                &format!("principal:{actor}"),
+                brain_server::audit::AuditStatus::Ok,
+                detail,
+            );
+        }
+    }
+    let admin = mint(
+        &srv,
+        "aud-filter-admin",
+        "user:admin",
+        "global",
+        &["admin:*/*"],
+        &["admin"],
+    );
+
+    // the verdict BEFORE (the byte the filtered sequence must return to)
+    let (vst, vbody1) = send_body(&srv, Some(&admin), "/audit/verify", "GET", "").await;
+    assert_eq!(vst, StatusCode::OK, "{vbody1}");
+
+    // UNFILTERED: both principals' rows are in the listing (the pin's
+    // non-vacuity arm — the corpus carries two actors)
+    let (st, text) = send_body(&srv, Some(&admin), "/audit", "GET", "").await;
+    assert_eq!(st, StatusCode::OK, "{text}");
+    let body: serde_json::Value = serde_json::from_str(&text).expect("audit answers JSON");
+    let events = body["events"].as_array().expect("events array");
+    let edu_total = events.iter().filter(|e| e["actor"] == "edu-plugin").count();
+    let other_total = events
+        .iter()
+        .filter(|e| e["actor"] == "other-plugin")
+        .count();
+    assert!(
+        edu_total >= 2 && other_total >= 1,
+        "the fixture wrote 2+1 rows across two principals — got {edu_total}/{other_total}: {body}"
+    );
+
+    // FILTERED: exactly edu-plugin's rows, nobody else's.
+    let (st, text) = send_body(&srv, Some(&admin), "/audit?principal=edu-plugin", "GET", "").await;
+    assert_eq!(st, StatusCode::OK, "{text}");
+    let body: serde_json::Value = serde_json::from_str(&text).expect("audit answers JSON");
+    let events = body["events"].as_array().expect("events array");
+    assert_eq!(
+        events.len(),
+        edu_total,
+        "the filter returns the principal's row count from the unfiltered listing"
+    );
+    for e in events {
+        assert_eq!(
+            e["actor"], "edu-plugin",
+            "every filtered row carries the principal: {e}"
+        );
+    }
+
+    // the verdict AFTER the filtered call: byte-identical. The filter read
+    // rows; it did not re-verify differently.
+    let (vst2, vbody2) = send_body(&srv, Some(&admin), "/audit/verify", "GET", "").await;
+    assert_eq!(vst2, StatusCode::OK);
+    assert_eq!(
+        vbody1, vbody2,
+        "the chain verdict is byte-identical across a principal-filtered call"
+    );
+}

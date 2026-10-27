@@ -71,12 +71,24 @@ function refusalOf(error: unknown): AuditRead & ChainRead {
 	return { kind: 'refused', status: null, fault };
 }
 
-/** Read one page of events, newest first. `offset` pages further back. */
-export async function fetchAuditEvents(offset = 0): Promise<AuditRead> {
+/**
+ * Read one page of events, newest first. `offset` pages further back.
+ * `principal` narrows the page to ONE principal's audited footprint — the
+ * kernel filters at the SQL layer beside `kind`/`tenant` (M3-g, plan 27),
+ * the thing the retired GUI's `/audit?principal=` URL promised and the
+ * kernel never shipped until now. The chain verdict read is a SEPARATE
+ * endpoint and is untouched by the filter.
+ */
+export async function fetchAuditEvents(offset = 0, principal?: string): Promise<AuditRead> {
 	const from = Number.isSafeInteger(offset) && offset >= 0 ? offset : 0;
+	const filter = typeof principal === 'string' && principal.trim().length > 0 ? principal : undefined;
 	try {
 		const result = await client.GET('/audit', {
-			params: { query: { limit: AUDIT_PAGE, offset: from } }
+			params: {
+				query: filter
+					? { limit: AUDIT_PAGE, offset: from, principal: filter }
+					: { limit: AUDIT_PAGE, offset: from }
+			}
 		});
 		if (result.response.status !== 200) {
 			return { kind: 'refused', status: result.response.status, fault: 'unknown' };

@@ -1036,8 +1036,17 @@ pub async fn audit(
     let rows = tokio::task::spawn_blocking(
         move || -> Result<Vec<crate::audit::AuditRow>, HandlerError> {
             let conn = pool.get().map_err(HandlerError::db_down)?;
-            crate::audit::recent_tenant(&conn, kind.as_deref(), tenant.as_deref(), limit, offset)
-                .map_err(|e| HandlerError::internal(e.to_string()))
+            crate::audit::recent_tenant(
+                &conn,
+                kind.as_deref(),
+                tenant.as_deref(),
+                // the UMP surface keeps its shape — the principal filter is
+                // the operator /audit's additive wire, not this one's
+                None,
+                limit,
+                offset,
+            )
+            .map_err(|e| HandlerError::internal(e.to_string()))
         },
     )
     .await
