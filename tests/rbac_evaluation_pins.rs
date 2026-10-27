@@ -1266,8 +1266,10 @@ fn r47_r47_touches_neither_the_r46_crate_nor_the_role_vocabulary() {
         .expect("PRESETS_RAW must still be declared");
     assert_eq!(
         presets.matches("\"name\":").count(),
-        13,
-        "the preset count is frozen at 13 — E2 forbids adding, removing or editing one"
+        14,
+        "the preset count is frozen at 14 — E2 forbids adding, removing or editing \
+         one; the 14th is 'plugin' (M3-g, plan 27), and this pin's count moves only \
+         with a round that names the preset"
     );
 }
 
