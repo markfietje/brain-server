@@ -487,6 +487,24 @@ const SUBCOMMANDS: &[Subcommand] = &[
         run: cmd_plugin_list,
         usage: "brain plugin list [--db PATH]",
     },
+    // The pack uninstaller — the lifecycle's other half. A REGISTRATION
+    // act, never an erasure act: the register row is MARKED (removed_at),
+    // the imported DATA stays put (the erasure doors are `brain
+    // source-delete` and `brain shred`). REFUSE-WHILE-LIVE, fail-closed:
+    // the act is refused while a roster principal holds a pack-upserted
+    // role or the pack's profile binding stands — the refusal names what
+    // is live and the doors that clear it. DRY-RUN is the default surface
+    // (nothing writes without --yes, the installer's own law); one `Plugin`
+    // audit row lands on the real act. NO HTTP route — the mint refusal's
+    // posture, third time.
+    Subcommand {
+        name: "plugin uninstall",
+        json: false,
+        run: cmd_plugin_uninstall,
+        usage: "brain plugin uninstall <pack-id> [--dry-run] [--yes] [--db PATH]\n \
+                      (mark the register row removed: refuse-while-live first, the\n \
+                       imported DATA stays; without --yes this IS a dry-run)",
+    },
 ];
 
 fn main() {
@@ -6620,26 +6638,100 @@ fn cmd_plugin_list(args: &[String]) -> Result<(), String> {
                     "id": r.pack_id, "version": r.version, "kinds": r.kinds,
                     "manifest_hash": r.manifest_hash, "archive_hash": r.archive_hash,
                     "files": r.file_count, "import_audit_id": r.import_audit_id,
-                    "imported_at": r.imported_at,
+                    "imported_at": r.imported_at, "removed_at": r.removed_at,
+                    "state": if r.removed_at.is_some() { "removed" } else { "live" },
                 })
             })
             .collect();
         return emit_json_ok("plugin list", serde_json::json!({ "packs": data }));
     }
     println!(
-        "{:<20} {:<8} {:<28} {:<18} {}",
-        "id", "version", "kinds", "archive_hash", "imported_at"
+        "{:<20} {:<8} {:<8} {:<28} {:<18} {}",
+        "id", "version", "state", "kinds", "archive_hash", "imported_at"
     );
     for r in &rows {
         println!(
-            "{:<20} {:<8} {:<28} {:<18} {}",
+            "{:<20} {:<8} {:<8} {:<28} {:<18} {}",
             truncate(&r.pack_id, 18),
             truncate(&r.version, 6),
+            if r.removed_at.is_some() {
+                "removed"
+            } else {
+                "live"
+            },
             truncate(&r.kinds.join(","), 26),
             truncate(&r.archive_hash, 16),
             r.imported_at
         );
     }
+    Ok(())
+}
+
+fn cmd_plugin_uninstall(args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage: brain plugin uninstall <pack-id> [--dry-run] [--yes] [--db PATH]";
+    let (positionals, flags) = parse_flags(args)?;
+    let pack_id = require_positional(&positionals, "pack-id")?;
+    let dry_run = flags.contains_key("dry-run");
+    let yes = flags.contains_key("yes");
+    if positionals.len() > 1 {
+        return Err(usage(format!("{USAGE}\n  one pack per uninstall")));
+    }
+
+    // THE LAW, RUN BEFORE ANYTHING WRITES, in order: an unknown pack-id
+    // refuses naming the register; an already-removed registration refuses
+    // (history, not a live registration); a LIVE pack refuses naming what
+    // is live and the doors that clear it. The dry-run prints the same
+    // check's result and the mark it WOULD land — nothing writes without
+    // --yes (the installer's own law, inherited).
+    let mut conn = principal_db_conn(&flags)?;
+    let (version, removed_at): (String, Option<i64>) = conn
+        .query_row(
+            "SELECT version, removed_at FROM installed_packs WHERE pack_id = ?1",
+            rusqlite::params![&pack_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|_| {
+            format!("no installed pack named '{pack_id}' — `brain plugin list` is the register")
+        })?;
+    if let Some(at) = removed_at {
+        return Err(format!(
+            "pack '{pack_id}' was already removed at unix {at} — the register row is \
+             HISTORY, not a live registration; installing again is a fresh decision"
+        ));
+    }
+    let live = match brain_server::packs::uninstall::installed_pack_is_live(&conn, &pack_id) {
+        Ok(state) => state,
+        Err(e) => return Err(e),
+    };
+    if live.is_live() {
+        return Err(live.refusal(&pack_id));
+    }
+
+    if dry_run || !yes {
+        println!(
+            "pack {pack_id}@{version} — live-state check: clean (no live principals on \
+             the pack's roles, no pack-mounted profile bindings)"
+        );
+        println!(
+            "  would mark: register row removed_at = now (the row itself stays — history, not erasure)"
+        );
+        println!(
+            "  the imported DATA stays: procedures and rules rows remain, still governed — \
+             erasing them is the doors' work (`brain source-delete`, `brain shred`)"
+        );
+        if !yes {
+            println!("dry-run: nothing written — pass --yes to uninstall");
+        }
+        return Ok(());
+    }
+
+    let receipt =
+        brain_server::packs::uninstall::uninstall_pack(&mut conn, &pack_id, cli_unix_now())?;
+    println!(
+        "uninstalled {pack_id}@{}: register row {} marked removed, audit row {:?} — \
+         the imported DATA stays (erasure: `brain source-delete`, `brain shred`)",
+        receipt.version, receipt.register_id, receipt.audit_id
+    );
     Ok(())
 }
 

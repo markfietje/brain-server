@@ -94,6 +94,41 @@ that hosts it.
      server-side; the 0600 file on disk is inert afterwards — remove it
      like any dead secret.
 
+7. **Removing a vertical — the uninstall is a REGISTRATION act, never an
+   erasure act.**
+
+   ```sh
+   brain plugin uninstall <pack-id> [--dry-run] [--yes]
+   ```
+
+   The act marks the register row's `removed_at` (the row itself is kept —
+   a pack's import history is exactly what an auditor needs after the
+   operator changes their mind) and writes one `Plugin` audit row. Two
+   laws it refuses under, each naming what is live and the door that
+   clears it:
+
+   - **Refuse-while-live, fail-closed.** The act is refused while a roster
+     principal still holds a role the pack upserted (clear it: `brain
+     principal revoke`) or the pack's profile binding still stands (clear
+     it: the profile unbind — the domain's profile write with no profile).
+     Clear what is named, then uninstall again.
+   - **The re-install law resets.** A removed registration is history, not
+     a live registration: the SAME version installs again as a fresh
+     decision (the C2 refusal guarded a tampered re-offer riding a live
+     registration; the bytes are signature-checked either way).
+
+   **What uninstall does NOT do — read this twice.** It deletes NO data.
+   The procedures and rules rows the pack imported stay exactly where they
+   are, still governed by the ordinary retention/hold/DSAR machinery. If
+   the operator wants the DATA gone, that is the erasure doors' work,
+   deliberately separate: `brain source-delete <id>` per source, and
+   `brain shred` for the physical residue after a purge. And the shell's
+   adopted Tier A surfaces retire by BUILD act, symmetric to how they
+   arrived — uninstalling a pack's registration does not reach into the
+   shell build. The dry-run is the default surface: nothing writes without
+   `--yes`. There is no HTTP uninstall route — a pack's lifecycle is a
+   local operator act, third time that posture is recorded.
+
 ## What this deliberately does NOT do
 
 - **No HTTP mint route.** Minting is an operator act on the machine that
@@ -118,5 +153,8 @@ that hosts it.
   (`the_writer_creates_owner_only_and_refuses_a_clobber`).
 - The live round-trip, the cross-domain refusals, and the tool-reach pin:
   `tests/authz_matrix.rs`.
+- The uninstall's live-state check and the register mark:
+  `src/packs/uninstall.rs`; the witnessed operator sequence and the
+  no-HTTP-route scan: `tests/plugin_uninstall_pins.rs`.
 - The register row with the red-proofs: `docs/gate-law-register.md`
   (M3-g).

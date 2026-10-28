@@ -203,6 +203,96 @@ pub fn installed_pack_is_live(conn: &Connection, pack_id: &str) -> Result<LiveSt
     Ok(live)
 }
 
+/// The uninstall receipt: the marked register row and the audit row that
+/// witnesses the act.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UninstallReceipt {
+    pub register_id: i64,
+    pub version: String,
+    pub audit_id: Option<i64>,
+}
+
+/// The REGISTRATION act: mark `removed_at`, write ONE `Plugin` audit row,
+/// and change NOTHING else — the imported procedures and rules rows stay
+/// exactly where they are (the erasure boundary; the ordinary doors erase
+/// data when the operator chooses). Fail-closed in order: an unknown
+/// pack-id refuses, an already-removed registration refuses (history, not
+/// a live registration), a LIVE pack refuses naming what is live and the
+/// doors that clear it. `now` is the caller's clock (unix seconds) so the
+/// pins drive time.
+pub fn uninstall_pack(
+    conn: &mut Connection,
+    pack_id: &str,
+    now: i64,
+) -> Result<UninstallReceipt, String> {
+    let (register_id, version): (i64, String) = conn
+        .query_row(
+            "SELECT id, version FROM installed_packs WHERE pack_id = ?1",
+            [pack_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|_| {
+            format!("no installed pack named '{pack_id}' — `brain plugin list` is the register")
+        })?;
+    let removed_at: Option<i64> = conn
+        .query_row(
+            "SELECT removed_at FROM installed_packs WHERE id = ?1",
+            [register_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("installed_packs read: {e}"))?;
+    if let Some(at) = removed_at {
+        return Err(format!(
+            "pack '{pack_id}' was already removed at unix {at} — the register row is \
+             HISTORY, not a live registration; installing again is a fresh decision"
+        ));
+    }
+    let live = installed_pack_is_live(conn, pack_id)?;
+    if live.is_live() {
+        return Err(live.refusal(pack_id));
+    }
+
+    // BEGIN IMMEDIATE — the installer's own write discipline for a
+    // read-then-mark transition. One tx: the mark and its audit row commit
+    // together or not at all.
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("tx: {e}"))?;
+    let marked = tx
+        .execute(
+            "UPDATE installed_packs SET removed_at = ?2
+             WHERE id = ?1 AND removed_at IS NULL",
+            rusqlite::params![register_id, now],
+        )
+        .map_err(|e| format!("register mark: {e}"))?;
+    if marked != 1 {
+        return Err(format!(
+            "register mark: pack '{pack_id}' moved under the act — nothing written"
+        ));
+    }
+    // ONE audit row, the installer's own kind: the chain's evidence the
+    // registration ENDED. The detail names the erasure boundary, because a
+    // chain reader in five years deserves the law in the row, not in a doc.
+    let audit_id = crate::audit::record(
+        &tx,
+        crate::audit::AuditKind::Plugin,
+        "operator",
+        &format!("pack:{pack_id}"),
+        crate::audit::AuditStatus::Ok,
+        &format!(
+            "uninstall {pack_id}@{version} register row {register_id} marked removed — \
+             the imported DATA stays; erasure is the doors' work (brain source-delete, \
+             brain shred), never the uninstall act's"
+        ),
+    );
+    tx.commit().map_err(|e| format!("tx commit: {e}"))?;
+    Ok(UninstallReceipt {
+        register_id,
+        version,
+        audit_id,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,7 +384,6 @@ mod tests {
             "no principals, no bindings: the pack is not live: {state:?}"
         );
     }
-
     /// U-2 pin 2 — the refuse-while-live arm, ROLES: a roster principal
     /// granted a role the pack upserted is LIVE, and the refusal NAMES the
     /// principal, the role, and the door that clears it.
@@ -398,6 +487,120 @@ mod tests {
         crate::profile::bind(&conn, "support", None).expect("the unbind lands");
         let state = installed_pack_is_live(&conn, "support-pack").expect("the register reads");
         assert!(!state.is_live(), "the unbind clears the arm: {state:?}");
+    }
+
+    /// U-3 — THE DATA LAW, COUNT-PINNED: the act marks the register and
+    /// writes ONE audit row, and changes NOTHING else. Every content count
+    /// (rules, roles, the domain's knowledge) is measured before and after
+    /// and must be equal; the governance-visibility check reads the rule
+    /// back through the rules door itself — the imported rows are not just
+    /// present, they are still governed by the machinery that always
+    /// governed them.
+    #[test]
+    fn the_act_marks_the_row_writes_one_audit_row_and_moves_nothing_else() {
+        let mut conn = db();
+        install_fixture(&mut conn, None, true);
+        let count = |conn: &Connection, sql: &str| -> i64 {
+            conn.query_row(sql, [], |r| r.get(0)).expect("count")
+        };
+        let before = (
+            count(&conn, "SELECT COUNT(*) FROM rules"),
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM roles WHERE name = 'support-supervisor'",
+            ),
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'plugin'",
+            ),
+        );
+        assert_eq!(before.1, 1, "the fixture's role row is present pre-act");
+        let receipt = uninstall_pack(&mut conn, "support-pack", 5_000).expect("the act lands");
+        assert_eq!(receipt.version, "0.1.0");
+        assert!(receipt.audit_id.is_some(), "the act is witnessed");
+        let after = (
+            count(&conn, "SELECT COUNT(*) FROM rules"),
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM roles WHERE name = 'support-supervisor'",
+            ),
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'plugin'",
+            ),
+        );
+        assert_eq!(before.0, after.0, "zero rule rows change — the data law");
+        assert_eq!(before.1, after.1, "zero role rows change — the data law");
+        assert_eq!(before.2 + 1, after.2, "exactly ONE audit row lands");
+        let (version, removed_at): (String, Option<i64>) = conn
+            .query_row(
+                "SELECT version, removed_at FROM installed_packs WHERE pack_id = 'support-pack'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(version, "0.1.0", "the row is marked, never rewritten");
+        assert_eq!(removed_at, Some(5_000), "the mark is the caller's clock");
+        // GOVERNANCE VISIBILITY: the rule reads back through the ordinary
+        // door, not through a side channel.
+        let stored = crate::service::rules::list(&conn).expect("the rules door reads");
+        assert!(
+            stored.iter().any(|r| r.rule_key == "ticket_retention"),
+            "the imported rule is still listed by the rules door: {:?}",
+            stored
+                .iter()
+                .map(|r| r.rule_key.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// U-3 — the fail-closed triage: an unknown pack-id refuses; a LIVE
+    /// pack refuses with the naming refusal; an already-removed
+    /// registration refuses (history, not a live registration).
+    #[test]
+    fn the_act_refuses_unknown_live_and_already_removed() {
+        let mut conn = db();
+        let err = uninstall_pack(&mut conn, "no-such-pack", 1_000).unwrap_err();
+        assert!(err.contains("no installed pack named"), "{err}");
+
+        install_fixture(&mut conn, None, true);
+        crate::auth::principals::grant(
+            &conn,
+            "support-agent",
+            "support-supervisor",
+            "support",
+            &[],
+            &[],
+            &crate::auth::principals::hash_token("bearer"),
+            2_000,
+            None,
+        )
+        .expect("the grant lands");
+        let err = uninstall_pack(&mut conn, "support-pack", 3_000).unwrap_err();
+        assert!(err.contains("uninstall refused"), "{err}");
+        assert!(err.contains("brain principal revoke"), "{err}");
+        // NOTHING moved on the refusal — the register is untouched.
+        let removed_at: Option<i64> = conn
+            .query_row(
+                "SELECT removed_at FROM installed_packs WHERE pack_id = 'support-pack'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(removed_at, None, "a refusal writes nothing");
+
+        crate::auth::principals::revoke_grant(
+            &conn,
+            "support-agent",
+            "operator revoke",
+            "operator",
+            4_000,
+        )
+        .expect("the revoke lands");
+        uninstall_pack(&mut conn, "support-pack", 5_000).expect("the act lands");
+        let err = uninstall_pack(&mut conn, "support-pack", 6_000).unwrap_err();
+        assert!(err.contains("already removed"), "{err}");
+        assert!(err.contains("fresh decision"), "{err}");
     }
 
     /// U-1 — the A-1 replay pattern (the `principals.manages` precedent):

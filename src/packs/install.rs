@@ -31,9 +31,10 @@
 //! id+version is REFUSED — idempotent success is how a tampered re-offer
 //! would ride in wearing the previous install's clothes; a HIGHER version
 //! of the same id is the upgrade path (the register row updates, the audit
-//! chain carries both). No uninstall verb ships: the register row plus the
-//! audit trail is the record, and removing a vertical is a round of its
-//! own.
+//! chain carries both). The law guards a LIVE registration: after an
+//! uninstall ([`super::uninstall`]) the registration is gone and the SAME
+//! version installs again — a fresh decision, its bytes hash-checked
+//! against the signature anyway, the register row's mark lifted.
 //!
 //! Per-row acts attribute `plugin:<pack-id>` as the actor (the CONTENT's
 //! provenance); the import act itself attributes `operator` (the hand that
@@ -138,19 +139,22 @@ impl std::fmt::Display for ImportError {
     }
 }
 
-/// The installed-register law: refuse a same-version re-install, admit a
-/// higher version. Returns Ok(existing_id) when the register row may
-/// update, Err when the offer is already installed verbatim.
+/// The installed-register law: refuse a same-version re-install of a LIVE
+/// registration, admit a higher version. A REMOVED registration (the
+/// uninstall round's `removed_at` mark) is history, not a live
+/// registration: any re-offer is a FRESH decision and the row's mark lifts
+/// on the update. Returns Ok(existing_id) when the register row may
+/// update, Err when the offer is already installed verbatim on a live row.
 fn re_install_law(
     conn: &Connection,
     pack_id: &str,
     version: &str,
 ) -> Result<Option<i64>, ImportError> {
-    let existing: Option<(i64, String)> = conn
+    let existing: Option<(i64, String, Option<i64>)> = conn
         .query_row(
-            "SELECT id, version FROM installed_packs WHERE pack_id = ?1",
+            "SELECT id, version, removed_at FROM installed_packs WHERE pack_id = ?1",
             [pack_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map(Some)
         .or_else(|e| match e {
@@ -163,15 +167,23 @@ fn re_install_law(
         })?;
     let offered = super::parse_version_tuple(version);
     match (existing, offered) {
-        (Some((_id, installed_version)), _) if installed_version == version => Err(ImportError {
-            act: "register",
-            message: format!(
-                "pack '{pack_id}' version {version} is ALREADY INSTALLED — re-install \
-                 is refused (a tampered re-offer must not pass as idempotent success); \
-                 a higher version is the upgrade path"
-            ),
-        }),
-        (Some((_, installed_version)), Some(offered))
+        // A removed registration is not a live one: the C2 refusal guarded
+        // a tampered RE-OFFER riding a live registration. History keeps its
+        // rows; a fresh install is a fresh decision, and the update lifts
+        // the mark (the row is UNIQUE on pack_id — it updates, never
+        // duplicates).
+        (Some((id, _, Some(_removed_at))), _) => Ok(Some(id)),
+        (Some((_id, installed_version, None)), _) if installed_version == version => {
+            Err(ImportError {
+                act: "register",
+                message: format!(
+                    "pack '{pack_id}' version {version} is ALREADY INSTALLED — re-install \
+                     is refused (a tampered re-offer must not pass as idempotent success); \
+                     a higher version is the upgrade path"
+                ),
+            })
+        }
+        (Some((_, installed_version, None)), Some(offered))
             if super::parse_version_tuple(&installed_version) > Some(offered) =>
         {
             Err(ImportError {
@@ -182,7 +194,7 @@ fn re_install_law(
                 ),
             })
         }
-        (existing, _) => Ok(existing.map(|(id, _)| id)),
+        (existing, _) => Ok(existing.map(|(id, _, _)| id)),
     }
 }
 
@@ -363,7 +375,7 @@ pub fn apply(
             tx.execute(
                 "UPDATE installed_packs SET version = ?2, kinds = ?3, manifest_hash = ?4,
                      archive_hash = ?5, file_count = ?6, import_audit_id = ?7,
-                     imported_at = ?8
+                     imported_at = ?8, removed_at = NULL
                  WHERE id = ?1",
                 rusqlite::params![
                     id,
@@ -417,7 +429,8 @@ pub fn apply(
     })
 }
 
-/// The installed register, oldest first: what `plugin list` reads.
+/// The installed register, oldest first: what `plugin list` reads. A
+/// removed pack reads as removed — it is history, not a live registration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledPack {
     pub pack_id: String,
@@ -428,13 +441,15 @@ pub struct InstalledPack {
     pub file_count: i64,
     pub import_audit_id: Option<i64>,
     pub imported_at: i64,
+    /// NULL = a live registration; a timestamp = the uninstall act's mark.
+    pub removed_at: Option<i64>,
 }
 
 pub fn list_installed(conn: &Connection) -> Result<Vec<InstalledPack>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT pack_id, version, kinds, manifest_hash, archive_hash, file_count,
-                    import_audit_id, imported_at
+                    import_audit_id, imported_at, removed_at
              FROM installed_packs ORDER BY imported_at, pack_id",
         )
         .map_err(|e| format!("installed_packs read: {e} (has the migration run?)"))?;
@@ -453,6 +468,7 @@ pub fn list_installed(conn: &Connection) -> Result<Vec<InstalledPack>, String> {
                 file_count: r.get(5)?,
                 import_audit_id: r.get(6)?,
                 imported_at: r.get(7)?,
+                removed_at: r.get(8)?,
             })
         })
         .map_err(|e| format!("installed_packs read: {e}"))?;
@@ -607,6 +623,47 @@ mod tests {
         assert_eq!(installed.len(), 1, "one living row per pack");
         assert_eq!(installed[0].version, "0.2.0");
         assert_eq!(installed[0].imported_at, 3_000);
+    }
+
+    /// The re-install law's reset (the uninstall round): a REMOVED
+    /// registration is history, not a live registration — the SAME version
+    /// installs again as a fresh decision, the update lifts the mark, and
+    /// one row stays one row.
+    #[test]
+    fn a_reinstall_after_uninstall_is_a_fresh_decision_and_lifts_the_mark() {
+        let mut conn = db();
+        let pack = validated();
+        apply(&mut conn, &pack, "a", "m", 3, 1_000).unwrap();
+        crate::packs::uninstall::uninstall_pack(&mut conn, "support-pack", 2_000)
+            .expect("the uninstall lands");
+        // same id+version after uninstall: a FRESH decision, not a refusal
+        let receipt =
+            apply(&mut conn, &pack, "a", "m", 3, 3_000).expect("the re-offer is a fresh decision");
+        assert_eq!(receipt.register_id, 1, "one row stays one row");
+        let (version, removed_at, imported_at): (String, Option<i64>, i64) = conn
+            .query_row(
+                "SELECT version, removed_at, imported_at FROM installed_packs
+                 WHERE pack_id = 'support-pack'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(version, "0.1.0");
+        assert_eq!(removed_at, None, "the re-install lifts the mark");
+        assert_eq!(imported_at, 3_000, "the row updated in place");
+        assert_eq!(list_installed(&conn).unwrap().len(), 1);
+        // the chain carries the whole lifecycle: import, uninstall, re-import
+        let plugin_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind='plugin'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            plugin_rows, 3,
+            "import + uninstall + re-import, on the chain"
+        );
     }
 
     #[test]
