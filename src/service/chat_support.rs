@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn the_support_verdict_rules_hold() {
         // Abstained: abstain ∧ claims empty — on sound AND on degraded
-        // grounding (the D1 abstain path emits exactly this shape).
+        // grounding (the kernel's deterministic abstain emits exactly this shape).
         let a = support_verdict(true, &[], 0, false);
         assert_eq!(a.decision, SupportDecision::Abstained);
         assert_eq!(a.cited + a.uncited + a.unknown_refs, 0);

@@ -249,4 +249,47 @@ struct BrainAfmBridgeTests {
             #expect(claim["cites"] is [Int], "a claim carries hit indices")
         }
     }
+
+    /// THE COLD CONTROL (LL-04 §4 pins), MEASURED AND REPORTED, NOT GATED —
+    /// AFM is a model, so a flaky sample must never red the lane; the
+    /// measurement is what the evidence file records. Ten turns whose
+    /// prompt carries ZERO evidence (the degraded-recall posture's exact
+    /// shape): an honest model abstains. The count is printed for the run
+    /// log and reported in `LL-04_EVIDENCE_2026-10-28.md`.
+    @Test("the cold control: a zero-evidence prompt yields abstention (measured, reported)")
+    func coldControlZeroEvidenceAbstains() async throws {
+        let replies = try Self.drive([["id": "c1", "op": "capabilities"]])
+        if replies.first?["window"] as? Int == 0 {
+            // No model on this machine: the measurement cannot be made, and
+            // the honest answer is the named posture, not a fake sample.
+            print("cold-control: NOT MEASURED — the on-device model is unavailable on this machine")
+            return
+        }
+        var requests: [[String: Any]] = [["id": "c0", "op": "capabilities"]]
+        for n in 0..<10 {
+            requests.append([
+                "id": "cc\(n)", "op": "turn", "session": "ll04-cold",
+                // Zero evidence: the prompt asserts nothing about the world
+                // and grounds nothing — there is no hit to cite.
+                "prompt": "What is the capital of Ruritania?",
+                "instructions":
+                    "You are a memory-grounded assistant. The recalled memory for this turn is EMPTY: no evidence was found. Answer from the given memory only, citing hit indices; if the memory does not answer, set abstain to true and leave claims empty. Say plainly when it is not.",
+            ])
+        }
+        let turns = try Self.drive(requests)
+        var abstained = 0
+        var answered = 0
+        for reply in turns where reply["event"] as? String == "final" {
+            answered += 1
+            if reply["abstain"] as? Bool == true { abstained += 1 }
+        }
+        print(
+            "cold-control: \(abstained)/\(answered) zero-evidence turns abstained " +
+                "(the plan's band: ≥ 9/10; reported, not gated — AFM is a model)"
+        )
+        // The HARNESS assertion only: every turn produced a typed final. The
+        // abstention RATE is the reported measurement, deliberately not an
+        // assertion — a model is not a deterministic component.
+        #expect(answered == 10, "all ten cold-control turns answered a typed final")
+    }
 }

@@ -285,9 +285,10 @@ pub async fn chat_turn(
     // evidence can only fabricate, so "say plainly when it is not" becomes
     // a wire fact HERE, before any generation. The notice IS the answer of
     // record; the pair persists like any final, flagged `abstained`; and
-    // the spine's own D1 fallback table (plan 25 — pre-stream refusals) is
-    // composed with, never bypassed: that table covers a kernel that
-    // refused, this covers a store that held nothing.
+    // the spine's own fallback table for the pre-stream refusal postures
+    // the shell's pure classification) is composed with, never bypassed:
+    // that table covers a kernel that refused, this covers a store that
+    // held nothing.
     if abstains_without_bridge(
         grounding_event["decision"].as_str().unwrap_or_default(),
         grounding_hit_count,

@@ -361,7 +361,7 @@ fn the_witnessed_sequence_refuses_while_live_then_marks_then_reinstalls() {
         &["plugin", "install", &path.display().to_string(), "--yes"],
     );
     assert_eq!(code, 0, "the re-offer is a fresh decision: {stderr}");
-    let (register, rules, plugin_rows, roles, removed_at) = counts(&packed.db);
+    let (register, rules, plugin_rows, _roles, removed_at) = counts(&packed.db);
     assert_eq!(register, 1, "one row stays one row");
     assert_eq!(removed_at, None, "the re-install lifts the mark");
     assert_eq!(rules, 2, "the unchanged rules replay-skip (the C1 law)");
