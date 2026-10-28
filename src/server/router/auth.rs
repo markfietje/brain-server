@@ -151,12 +151,24 @@ pub async fn rbac_middleware(
 
     if verdict.is_deny() {
         let reason = verdict.as_str().to_string();
-        // The subject is hashed through the existing mask (GDPR personal-data
-        // class). With no principal there is no subject to name, and inventing
-        // one would be a worse lie than saying so.
+        // THE DENY-ARM ATTRIBUTION: a refused caller the roster lane resolved
+        // audits under the ROSTER NAME — the plugin principal's sub IS the
+        // name the roster issued — so `?principal=<name>` shows the
+        // footprint's refusals beside its OK-acts. Every other class keeps
+        // the masked/anon form byte-for-byte: a JWT sub is not a roster name
+        // (the kind is the only key), the agent loopback is not a person, and
+        // no principal is no name. OBSERVATION-PLANE LAW: the response below
+        // is untouched — the attribution changes what the audit SAYS, never
+        // what the API does.
         let actor = principal.map_or_else(
             || "no_principal".to_string(),
-            |p| handlers::mask_sub(&p.sub),
+            |p| {
+                if p.kind == auth::PrincipalKind::Plugin {
+                    p.sub.clone()
+                } else {
+                    handlers::mask_sub(&p.sub)
+                }
+            },
         );
         let target = format!("{method} {route}");
         // One hash-chained row per denial. A denial writes no business row, so
@@ -426,10 +438,25 @@ pub async fn jwt_auth_middleware(
             // to the deny below with the ORIGINAL verification code.
             match resolve_plugin_principal(&s.pool, &raw_for_fallback).await {
                 Ok(Some(principal)) => {
-                    req.extensions_mut().insert(principal);
+                    // The clone is the audit's: `next.run` consumes the
+                    // request, and the refusal row needs the name after it.
+                    req.extensions_mut().insert(principal.clone());
                     let resp = next.run(req).await;
                     if resp.status() == axum::http::StatusCode::FORBIDDEN {
-                        audit_auth_failure(&s.db_path, &path_owned, "plugin_forbidden").await;
+                        // THE AUTHORIZE_ROLE SEAM'S REFUSAL, UNDER THE
+                        // ROSTER NAME: the credential RESOLVED, so this 403
+                        // is authZ — the row names the owner label the
+                        // roster minted, not the authN `api`. The response
+                        // is the caller's; this is the audit.
+                        let owner = handlers::gate::principal_to_owner(&Some(principal))
+                            .unwrap_or_else(|| "api".to_string());
+                        audit_handler_refusal_as(
+                            &s.db_path,
+                            &path_owned,
+                            "plugin_forbidden",
+                            &owner,
+                        )
+                        .await;
                     }
                     return resp;
                 }
@@ -561,6 +588,42 @@ pub(crate) async fn audit_auth_failure(db_path: &std::path::Path, path: &str, co
                 &conn,
                 audit::AuditKind::Auth,
                 "api",
+                &path,
+                audit::AuditStatus::Denied,
+                &code,
+            );
+        }
+    })
+    .await;
+}
+
+/// The attributed refusal write: the same best-effort, `spawn_blocking` row
+/// `audit_auth_failure` writes, with the actor NAMED BY THE CALLER — the
+/// established `principal_to_owner(...).unwrap_or("api")` pattern, computed
+/// at the site that holds the resolved principal. Its only callers are the
+/// plugin lane's
+/// handler-refusal audits: a 403 a RESOLVED roster principal earned at the
+/// `authorize`/`authorize_role` seams, so the row carries the roster name
+/// and `?principal=<name>` shows the refusal beside the OK-acts. The authN
+/// failures keep `audit_auth_failure` and its `api` label byte-for-byte —
+/// two seams, so the vocabularies cannot drift back together. The caller
+/// decides the HTTP response; this write is the observation plane only.
+pub(crate) async fn audit_handler_refusal_as(
+    db_path: &std::path::Path,
+    path: &str,
+    code: &str,
+    actor: &str,
+) {
+    let db_path = db_path.to_path_buf();
+    let path = path.to_string();
+    let code = code.to_string();
+    let actor = actor.to_string();
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Ok(conn) = rusqlite::Connection::open(db_path) {
+            audit::record(
+                &conn,
+                audit::AuditKind::Auth,
+                &actor,
                 &path,
                 audit::AuditStatus::Denied,
                 &code,
@@ -733,10 +796,17 @@ pub async fn auth_middleware(
         // every other denial at this boundary.
         match resolve_plugin_principal(&s.pool, &presented_owned).await {
             Ok(Some(principal)) => {
-                req.extensions_mut().insert(principal);
+                // The clone is the audit's: `next.run` consumes the
+                // request, and the refusal row needs the name after it.
+                req.extensions_mut().insert(principal.clone());
                 let resp = next.run(req).await;
                 if resp.status() == axum::http::StatusCode::FORBIDDEN {
-                    audit_auth_failure(&s.db_path, &path, "plugin_forbidden").await;
+                    // THE AUTHORIZE_ROLE SEAM'S REFUSAL, UNDER THE ROSTER
+                    // NAME — the opaque mode's same arm, the same
+                    // attribution, the same untouched response.
+                    let owner = handlers::gate::principal_to_owner(&Some(principal))
+                        .unwrap_or_else(|| "api".to_string());
+                    audit_handler_refusal_as(&s.db_path, &path, "plugin_forbidden", &owner).await;
                 }
                 return resp;
             }

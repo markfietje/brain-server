@@ -4348,3 +4348,391 @@ async fn the_roster_approve_is_digest_bound_and_audited_under_the_roster_name() 
         "the agent's filter shows no reconcile act — attribution is per-name"
     );
 }
+
+// ═══ THE AUDIT-FILTER ROUND (C2 G-6 item 3, built) ═══════════════════════
+// The observation-plane law, stated first: this round changes WHAT THE AUDIT
+// SAYS, never WHAT THE API DOES — every refusal's HTTP response is
+// byte-identical before and after (status, code, body). A refusal that
+// behaves differently is a defect, not a side effect.
+
+/// THE ROSTER NAME ON A REFUSAL (the audit-filter round's headline pin): a
+/// roster principal whose recall or approve the server refuses is audited
+/// under the ROSTER NAME — the name the operator issued — so the existing
+/// `?principal=<name>` filter (M3-g) shows the footprint's REFUSALS beside
+/// its OK-acts. The refusals ride the LIVE wire (the plugin lane resolves
+/// the bearer; the handlers' authorize/authorize_role seams speak their own
+/// 403 vocabulary); the OK-act rides the same audit::record the handlers
+/// write. The refusal responses are captured BYTE-FOR-BYTE here (status +
+/// body) — the observation-plane pin inside the attribution pin.
+#[tokio::test]
+async fn a_roster_principals_refused_recall_and_approve_audit_under_the_roster_name() {
+    let srv = build_server();
+    grant_roster_on(
+        &srv,
+        "edu-plugin",
+        "plugin",
+        "education",
+        &[],
+        "refusal-bearer-one",
+    );
+    let admin = mint(
+        &srv,
+        "aud-filter-admin",
+        "user:admin",
+        "global",
+        &["admin:*/*"],
+        &["admin"],
+    );
+
+    // THE REFUSED RECALL: the plugin principal's only scope is Write on its
+    // own domain, so the recall handler's Read-on-global authorize refuses —
+    // a handler-level 403 the plugin lane audits. The response bytes are the
+    // observation plane: status + body, exact.
+    let (st, text) = send_body(
+        &srv,
+        Some("refusal-bearer-one"),
+        "/recall",
+        "POST",
+        r#"{"query":"education"}"#,
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "the recall must refuse: {text}");
+    assert_eq!(
+        text,
+        r#"{"error":{"code":"forbidden","message":"no scope grants Read on global/global","details":{"action":"Read","domain":"global","team":"global"}}}"#,
+        "the refused recall's body is the observation plane — byte-exact"
+    );
+
+    // THE REFUSED APPROVE: the same bearer at the authorize_role seam — the
+    // `plugin` role carries no `approve` capability, and the role gate fires
+    // BEFORE any proposal lookup, so the refusal is the seam's alone.
+    let (st, text) = send_body(
+        &srv,
+        Some("refusal-bearer-one"),
+        "/proposals/424242/approve",
+        "POST",
+        r#"{}"#,
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "the approve must refuse: {text}");
+    assert_eq!(
+        text,
+        r#"{"error":{"code":"forbidden","message":"no scope grants Write on global/global","details":{"action":"Write","domain":"global","team":"global"}}}"#,
+        "the refused approve's body is the observation plane — byte-exact"
+    );
+
+    // THE OK-ACT beside the refusals, through the same audit::record the
+    // handlers write (the M3-g filter-pin's own shape).
+    {
+        let conn = srv.state.pool.get().expect("pool");
+        brain_server::audit::record(
+            &conn,
+            brain_server::audit::AuditKind::Ingest,
+            "edu-plugin",
+            "memory:ok-act",
+            brain_server::audit::AuditStatus::Ok,
+            "the ok act the refusals sit beside",
+        );
+    }
+
+    // THE FOOTPRINT: `?principal=edu-plugin` shows BOTH statuses — pre-round
+    // the refusals audit under the authN `api` label and this listing holds
+    // only the planted OK row.
+    let (st, text) = send_body(&srv, Some(&admin), "/audit?principal=edu-plugin", "GET", "").await;
+    assert_eq!(st, StatusCode::OK, "{text}");
+    let audit: serde_json::Value = serde_json::from_str(&text).expect("audit answers JSON");
+    let events = audit["events"].as_array().expect("events array");
+    let refusals: Vec<_> = events
+        .iter()
+        .filter(|e| e["status"].as_str() == Some("denied"))
+        .collect();
+    let ok_acts: Vec<_> = events
+        .iter()
+        .filter(|e| e["status"].as_str() == Some("ok"))
+        .collect();
+    assert_eq!(
+        refusals.len(),
+        2,
+        "BOTH refusals — recall and approve — carry the roster name: {events:?}"
+    );
+    assert!(
+        refusals
+            .iter()
+            .all(|e| e["actor"].as_str() == Some("edu-plugin")),
+        "every refusal actor is the ROSTER NAME, not the authN api label: {refusals:?}"
+    );
+    assert_eq!(ok_acts.len(), 1, "the ok act sits beside them: {events:?}");
+}
+
+/// THE NON-ROSTER FORMS ARE BYTE-IDENTICAL (the round's preservation pin):
+/// every refusal actor that is NOT a roster principal keeps its pre-round
+/// form exactly — the JWT and agent-loopback denials at the middleware's
+/// deny arm stay `mask_sub(sub)`, the principal-less denial stays
+/// `no_principal`, and the authN failures stay the literal `api` — while the
+/// SAME arm audits a roster principal under the ROSTER NAME, verbatim. The
+/// middleware arm is driven directly (a matched route outside AUTHZ_GATES
+/// is the RouteUngated deny — the same arm, the same expression, no
+/// composed-app indirection).
+#[tokio::test]
+async fn every_non_roster_refusal_actor_stays_byte_identical() {
+    let srv = build_server();
+    let rb_state = brain_server::server::router::auth::RbacMiddlewareState {
+        db_path: srv.state.db_path.clone(),
+    };
+    async fn stub() -> &'static str {
+        "ok"
+    }
+    let app = axum::Router::new()
+        .route("/ungated-stub", axum::routing::get(stub))
+        .with_state(rb_state)
+        .layer(axum::middleware::from_fn_with_state(
+            brain_server::server::router::auth::RbacMiddlewareState {
+                db_path: srv.state.db_path.clone(),
+            },
+            brain_server::server::router::auth::rbac_middleware,
+        ));
+
+    // The JWT form: mask_sub — the masked subject, byte-for-byte.
+    let jwt = brain_server::auth::Principal {
+        sub: "masked-form-pin-sub".to_string(),
+        tenant: "global".to_string(),
+        scopes: vec![],
+        jti: "pin-jti".to_string(),
+        roles: vec![],
+        manages: vec![],
+        kind: brain_server::auth::PrincipalKind::Jwt,
+    };
+    let resp = app
+        .clone()
+        .layer(axum::Extension(jwt))
+        .oneshot(
+            Request::builder()
+                .uri("/ungated-stub")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "RouteUngated denies");
+    // The loopback form: also mask_sub — the loopback is not a person.
+    let loopback = brain_server::auth::Principal::agent_loopback_for_domains(&[]);
+    let resp = app
+        .clone()
+        .layer(axum::Extension(loopback))
+        .oneshot(
+            Request::builder()
+                .uri("/ungated-stub")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "RouteUngated denies");
+    // The principal-less form: no_principal.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ungated-stub")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "RouteUngated denies");
+    // The ROSTER form at the same arm: the name the roster issued, verbatim.
+    let plugin = brain_server::auth::Principal {
+        sub: "plugin-arm-roster".to_string(),
+        tenant: "global".to_string(),
+        scopes: vec![],
+        jti: "pin-jti".to_string(),
+        roles: vec![],
+        manages: vec![],
+        kind: brain_server::auth::PrincipalKind::Plugin,
+    };
+    let resp = app
+        .clone()
+        .layer(axum::Extension(plugin))
+        .oneshot(
+            Request::builder()
+                .uri("/ungated-stub")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "RouteUngated denies");
+
+    // The authN anon form: a missing token on a gated route audits "api".
+    let (st, _) = send_body(&srv, None, "/recall", "POST", r#"{"query":"x"}"#).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "missing token 401s");
+
+    // THE ROWS: masked, masked, no_principal, api — each exact. The audit
+    // stores the target and detail as their chain hashes; the actor and the
+    // status ride raw, which is the surface the footprint filter reads.
+    {
+        let conn = srv.state.pool.get().expect("pool");
+        let mut stmt = conn
+            .prepare(
+                "SELECT actor, target_hash, detail_hash FROM audit_events \
+                 WHERE kind='auth' AND status='denied' ORDER BY id",
+            )
+            .expect("audit read");
+        let rows: Vec<(String, String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .expect("query")
+            .filter_map(|r| r.ok())
+            .collect();
+        let expected_jwt = brain_server::handlers::mask_sub("masked-form-pin-sub");
+        let expected_loopback = brain_server::handlers::mask_sub("agent@loopback");
+        let recall_hash = brain_server::audit::hash("/recall");
+        let missing_hash = brain_server::audit::hash("missing_token");
+        let jwt_rows: Vec<_> = rows.iter().filter(|(a, _, _)| *a == expected_jwt).collect();
+        let loopback_rows: Vec<_> = rows
+            .iter()
+            .filter(|(a, _, _)| *a == expected_loopback)
+            .collect();
+        let no_principal: Vec<_> = rows
+            .iter()
+            .filter(|(a, _, _)| a == "no_principal")
+            .collect();
+        let roster_rows: Vec<_> = rows
+            .iter()
+            .filter(|(a, _, _)| a == "plugin-arm-roster")
+            .collect();
+        let api_rows: Vec<_> = rows
+            .iter()
+            .filter(|(a, t, d)| a == "api" && *t == recall_hash && *d == missing_hash)
+            .collect();
+        assert_eq!(jwt_rows.len(), 1, "the JWT denial kept mask_sub: {rows:?}");
+        assert_eq!(
+            loopback_rows.len(),
+            1,
+            "the loopback denial kept mask_sub: {rows:?}"
+        );
+        assert_eq!(
+            no_principal.len(),
+            1,
+            "the principal-less denial kept no_principal: {rows:?}"
+        );
+        assert_eq!(
+            roster_rows.len(),
+            1,
+            "the middleware arm audits a roster principal under the ROSTER \
+             NAME, verbatim: {rows:?}"
+        );
+        assert_eq!(
+            api_rows.len(),
+            1,
+            "the authN failure kept the literal api: {rows:?}"
+        );
+    }
+}
+
+/// THE SEAMS CANNOT DRIFT BACK TOGETHER (structural): `audit_auth_failure`
+/// keeps the literal `api` actor and carries no attribution — it is the
+/// authN vocabulary, pinned — and the handler-refusal audits ride the
+/// attributed seam (`audit_handler_refusal_as`), whose callers are exactly
+/// the two `plugin_forbidden` sites. A third `plugin_forbidden` through the
+/// authN seam, or an attribution inside the authN writer, reds this scan.
+#[test]
+fn audit_auth_failure_stays_the_api_label_and_the_seams_cannot_drift() {
+    let src = std::fs::read_to_string("src/server/router/auth.rs").expect("auth.rs");
+    let start = src
+        .find("pub(crate) async fn audit_auth_failure")
+        .expect("audit_auth_failure moved — re-derive the scan");
+    let end = src[start..]
+        .find("/// The attributed refusal write")
+        .map(|i| start + i)
+        .expect("the attributed seam moved — re-derive the scan");
+    let writer = &src[start..end];
+    assert!(
+        writer.contains("\"api\","),
+        "audit_auth_failure must keep the literal api actor — the authN \
+         vocabulary is pinned (a caller with no valid credential has no name)"
+    );
+    assert!(
+        !writer.contains("principal_to_owner") && !writer.contains("PrincipalKind"),
+        "attribution must not enter the authN writer — recording attempted \
+         names would hand attackers an oracle; two seams, two vocabularies"
+    );
+    assert!(
+        !src.contains("audit_auth_failure(&s.db_path, &path_owned, \"plugin_forbidden\")")
+            && !src.contains("audit_auth_failure(&s.db_path, &path, \"plugin_forbidden\")"),
+        "the handler-refusal audits ride the attributed seam — a \
+         plugin_forbidden row through the authN writer hides a roster \
+         principal's refusal from ?principal="
+    );
+    let attributed = src.matches("audit_handler_refusal_as(").count();
+    assert_eq!(
+        attributed, 3,
+        "the attributed seam is the definition + exactly its two \
+         plugin_forbidden callers — a third caller must update the inventory \
+         (found {attributed})"
+    );
+}
+
+/// THE INVENTORY MATCHES THE SOURCE (structural): every `AuditStatus::Denied`
+/// site in the router's auth boundary is accounted for — the middleware deny
+/// arm attributes through the kind fence, the authN writer and the
+/// unknown-bearer deny stay the literal `api`, and the attributed write seam
+/// serves the two plugin_forbidden arms — and the count is CLOSED: a fifth
+/// site added without attribution (or without an inventory note) reds this
+/// scan and forces the register table to meet the source.
+#[test]
+fn the_deny_arm_inventory_matches_the_source() {
+    let src = std::fs::read_to_string("src/server/router/auth.rs").expect("auth.rs");
+    let sites = src.matches("AuditStatus::Denied").count();
+    assert_eq!(
+        sites, 4,
+        "the auth boundary carries exactly the four inventoried Denied \
+         sites: the middleware deny arm, audit_auth_failure, the \
+         unknown-bearer deny, and the attributed write seam (the shared \
+         write path of the two plugin_forbidden arms — a write path, not a \
+         new decision site) — a new site must join the inventory table \
+         (found {sites})"
+    );
+    // Site 1 — the middleware deny arm: the kind fence IS the attribution.
+    let deny = src
+        .split("if verdict.is_deny()")
+        .nth(1)
+        .expect("the deny arm moved — re-derive the scan")
+        .to_string();
+    let deny_window = &deny[..deny.find("next.run(req).await").expect("arm end")];
+    assert!(
+        deny_window.contains("PrincipalKind::Plugin") && deny_window.contains("mask_sub"),
+        "the middleware deny arm must attribute roster principals through the \
+         kind fence and keep mask_sub for every other class"
+    );
+    // Site 3 — the unknown-bearer deny: the literal api, unchanged.
+    let opaque = src
+        .split("audit denied auth attempts at the trust boundary")
+        .nth(1)
+        .expect("the unknown-bearer deny moved — re-derive the scan");
+    let opaque_window = &opaque[..opaque.find(".into_response()").expect("arm end")];
+    assert!(
+        opaque_window.contains("\"api\","),
+        "the unknown-bearer deny keeps the literal api — no roster resolution \
+         survives to this arm (Ok(None) fell through)"
+    );
+    // The conformance rows: the consent refusal (gate.rs) and the §3.7
+    // forbidden_scope row (service/ump_ops.rs) already attribute through the
+    // established vocabulary — they stay untouched, and the scan notices if
+    // they drift back to a literal.
+    let gate_src = std::fs::read_to_string("src/handlers/gate.rs").expect("gate.rs");
+    let consent_window = gate_src
+        .split("template send refused: no standing consent")
+        .next()
+        .unwrap_or_default();
+    assert!(
+        consent_window.contains("principal_to_owner"),
+        "the consent refusal already attributes through principal_to_owner — \
+         the established vocabulary, unchanged by this round"
+    );
+    let ump_src = std::fs::read_to_string("src/service/ump_ops.rs").expect("service/ump_ops.rs");
+    assert!(
+        ump_src.contains("principal_sub"),
+        "the §3.7 forbidden_scope audit records the principal's own label — \
+         already attributed, unchanged by this round"
+    );
+}
