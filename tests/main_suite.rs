@@ -3991,17 +3991,21 @@ Final paragraph after the rule.";
             .unwrap();
         assert_eq!(bindings, 0, "no domain is bound to a profile by default");
 
-        // the roles table exists and the 14 ship-with roles
+        // the roles table exists and the 16 ship-with roles
         // are seeded (INSERT OR IGNORE — a re-migration never overwrites an
         // operator edit). The `solo` SMB role carries every action (the
-        // simplest default); the 14th is `plugin` (M3-g, plan 27).
+        // simplest default); the 14th is `plugin` (M3-g, plan 27); the 15th
+        // and 16th are the C3 vertical staff — `educator` and `advisor`
+        // (plan 28 §3.2/§3.3), a named double act.
         let roles_seeded: i64 = db
             .query_row("SELECT COUNT(*) FROM roles", [], |r| r.get(0))
             .unwrap();
         assert_eq!(
-            roles_seeded, 14,
-            "the 14 ship-with roles are seeded — the 14th is `plugin`, the \
-             kernel-side plugin principal (M3-g, plan 27), a named act"
+            roles_seeded, 16,
+            "the 16 ship-with roles are seeded — the 14th is `plugin`, the \
+             kernel-side plugin principal (M3-g, plan 27); the 15th and 16th \
+             are the vertical staff `educator`/`advisor` (C3, plan 28), a \
+             named double act"
         );
         // the BPO client postures are among them.
         let auditor: String = db

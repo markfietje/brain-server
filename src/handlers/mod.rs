@@ -571,6 +571,15 @@ pub fn agent_class(principal: &Option<crate::auth::Principal>) -> bool {
 /// The role name the agent class is recognized by.
 const AGENT_PRESET_ROLE: &str = "agent";
 
+/// The roles whose writes ride the proposal queue REGARDLESS of
+/// `BRAIN_WRITE_POSTURE` — the agent class (the human-promotion invariant,
+/// via [`agent_class`]) and, since C3, the `advisor` (plan 28 §3.3's finance
+/// refusal made structural: no write path of the vertical bypasses the
+/// review queue). A role here is NOT the machine class: `agent_class` stays
+/// agent-only, so the taint-label and consolidate refusals keep their
+/// machine semantics.
+const REVIEW_POSTURE_ROLES: &[&str] = &[AGENT_PRESET_ROLE, "advisor"];
+
 /// The write posture that applies to THIS principal.
 ///
 /// `BRAIN_WRITE_POSTURE` decides it for everyone else, verbatim — the knob keeps
@@ -584,7 +593,13 @@ const AGENT_PRESET_ROLE: &str = "agent";
 /// The single seam every agent-facing write surface reads, so the six call
 /// sites cannot drift apart and no future surface can forget the class.
 pub fn effective_write_posture(principal: &Option<crate::auth::Principal>) -> &'static str {
-    if agent_class(principal) {
+    if agent_class(principal)
+        || principal.as_ref().is_some_and(|p| {
+            p.roles
+                .iter()
+                .any(|r| REVIEW_POSTURE_ROLES.contains(&r.as_str()))
+        })
+    {
         "review"
     } else {
         crate::config::write_posture()
@@ -1308,6 +1323,48 @@ mod tests {
         // Requesting another tenant -> 403 (cross-tenant forbidden).
         let err = audit_scope(&Some(eve), &Some("team-beta".to_string())).unwrap_err();
         assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    }
+
+    /// THE ADVISOR WRITE-PATH PIN — plan 28 §3.3's finance refusal ("any
+    /// write path that bypasses the review queue") as a posture: a principal
+    /// carrying the `advisor` role proposes instead of inserting on EVERY
+    /// write seam (the single [`effective_write_posture`] function — the six
+    /// call sites cannot drift). The agent class keeps its own arm (the
+    /// human-promotion invariant); the recruiter pattern the advisor narrows
+    /// stays under the knob, as does the educator (own-row direct writes are
+    /// the clinician pattern's posture — plan 28 §3.2 queues nothing for
+    /// them).
+    ///
+    /// Red-first (drill RUN and reverted 2026-10-28): dropping `advisor`
+    /// from the kernel-side review-posture roles reds the first arm here.
+    #[test]
+    fn advisor_writes_ride_the_proposal_queue() {
+        fn with_roles(roles: &[&str]) -> Option<crate::auth::Principal> {
+            Some(crate::auth::Principal {
+                sub: "user:staff".to_string(),
+                tenant: "t".to_string(),
+                scopes: vec![crate::auth::Scope::parse("write:t/l1").unwrap()],
+                jti: "jti-staff".to_string(),
+                roles: roles.iter().map(|s| s.to_string()).collect(),
+                manages: vec![],
+                kind: crate::auth::PrincipalKind::Jwt,
+            })
+        }
+        // The advisor proposes regardless of the knob (the test env is the
+        // open default): 202-proposal_pending, never a direct insert.
+        assert_eq!(
+            effective_write_posture(&with_roles(&["advisor"])),
+            "review",
+            "the advisor's write path rides the proposal queue — not direct"
+        );
+        // The pattern presets keep the knob's posture: the recruiter writes
+        // as the deployment chose; the educator's own-row write is direct.
+        assert_eq!(effective_write_posture(&with_roles(&["recruiter"])), "open");
+        assert_eq!(effective_write_posture(&with_roles(&["educator"])), "open");
+        // Fixture: the agent class arm is the invariant this composes.
+        assert_eq!(effective_write_posture(&with_roles(&["agent"])), "review");
+        // Role-less: the knob, verbatim (back-compat).
+        assert_eq!(effective_write_posture(&with_roles(&[])), "open");
     }
 
     /// audit-scope pass-through: a `None` (superuser) principal gets whatever

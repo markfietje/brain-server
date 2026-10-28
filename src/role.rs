@@ -420,6 +420,14 @@ pub fn effective_filter(sub: &str, manages: &[String], roles: &[Role]) -> Retrie
 /// `plugin` on the list is a decision that needs its own recorded reason and
 /// a plan to amend, never a convenience; granting the capability without the
 /// row reds `only_declared_roles_widen_the_owner_fence` on the preset.
+///
+/// The C3 vertical staff are deliberately ABSENT, each with its reason:
+/// `educator` is the clinician pattern (own rows, min-necessary) — a learner
+/// cross-owner read is the FERPA isolation the vertical exists to hold; and
+/// `advisor` is plan 28 §3.3's named refusal made structural — a finance
+/// advisor reading the shared pool IS the cross-client pooling the plan
+/// refuses, so the preset cannot inherit it even by operator edit of the
+/// pattern's shape.
 pub const SHARED_POOL_ROLES: &[&str] = &["admin", "solo", "controller", "agent", "client-auditor"];
 
 // ── the 10 ship-with roles (curated from USE_CASES.md) ─────────────────
@@ -456,6 +464,15 @@ pub const PRESETS_RAW: &[(&str, &str)] = &[
         "clinician",
         r#"{"name":"clinician","description":"Clinician: min-necessary PHI, own private memory only, read/write, no review","scopes":["private"],"owner_filter":"self","can":["read","write"],"panels_default":["overview","recall","health"],"panels_hidden":["audit","subjects","data"],"tools_allowed":["ump.recall","ump.get","ump.remember"]}"#,
     ),
+    // The 15th preset: the EDUCATOR (C3, plan 28 §3.2) — the clinician
+    // pattern byte-for-byte but the description: min-necessary learner
+    // records, own rows, read/write, NO review powers (the review queue is
+    // not the educator's to prune). The verticals' CONTENT stays private;
+    // the kernel ships the STAFF posture.
+    (
+        "educator",
+        r#"{"name":"educator","description":"Educator: min-necessary learner records, own private memory only, read/write, no review powers","scopes":["private"],"owner_filter":"self","can":["read","write"],"panels_default":["overview","recall","health"],"panels_hidden":["audit","subjects","data"],"tools_allowed":["ump.recall","ump.get","ump.remember"]}"#,
+    ),
     (
         "dpo",
         r#"{"name":"dpo","description":"Data Protection Officer: runs DSARs, no routine write, read + export + calibrate","scopes":["private","domain","team"],"owner_filter":"self","can":["read","dsar_export","calibrate","console"],"panels_default":["overview","recall","data","subjects","audit","health"],"panels_hidden":null,"tools_allowed":["ump.recall","ump.get","ump.feedback"]}"#,
@@ -463,6 +480,16 @@ pub const PRESETS_RAW: &[(&str, &str)] = &[
     (
         "recruiter",
         r#"{"name":"recruiter","description":"Recruiter: per-candidate private memory, own + team pools, uses the review queue","scopes":["private","domain","team"],"owner_filter":"reports","can":["read","write","reject"],"panels_default":["overview","ingest","recall","review","health"],"panels_hidden":["audit","subjects"],"tools_allowed":["ump.recall","ump.get","ump.remember"]}"#,
+    ),
+    // The 16th preset: the ADVISOR (C3, plan 28 §3.3) — the recruiter
+    // pattern (per-client private memory, uses the review queue) with the
+    // finance refusal carried kernel-side: every write rides the proposal
+    // queue (`effective_write_posture`'s advisor arm — no direct insert),
+    // because "any write path that bypasses the review queue" is plan 28
+    // §3.3's named refusal for the vertical.
+    (
+        "advisor",
+        r#"{"name":"advisor","description":"Finance advisor: per-client private memory, uses the review queue — every write proposes, none inserts directly","scopes":["private","domain","team"],"owner_filter":"reports","can":["read","write","reject"],"panels_default":["overview","ingest","recall","review","health"],"panels_hidden":["audit","subjects"],"tools_allowed":["ump.recall","ump.get","ump.remember"]}"#,
     ),
     (
         "controller",
@@ -540,11 +567,13 @@ mod tests {
         );
         assert_eq!(
             all.len(),
-            14,
-            "14 ship-with roles — the 14th is `plugin` (M3-g, plan 27): the kernel-side \
-             plugin principal, a NARROWING of `agent` (one domain, own rows, no shared \
-             pool, no tools until the operator names them). A named act, not a silent \
-             bump — the next preset round moves this count the same way."
+            16,
+            "16 ship-with roles — the 15th and 16th are the C3 vertical staff \
+             (plan 28 §3.2/§3.3): `educator` on the clinician pattern and \
+             `advisor` on the recruiter pattern, the kernel's two STAFF \
+             postures for the education + finance verticals. A named double \
+             act, not a silent bump — the next preset round moves this count \
+             the same way."
         );
         for r in &all {
             validate(r).unwrap_or_else(|e| panic!("role {} invalid: {e}", r.name));
@@ -887,5 +916,76 @@ mod tests {
         // VERBS. Read and write, nothing else — no approve, no purge, no
         // console, no workflow.
         assert_eq!(plugin.can, vec!["read".to_string(), "write".to_string()]);
+    }
+
+    /// THE VERTICAL STAFF PIN — the two C3 presets (plan 28 §3.2/§3.3), each
+    /// a named act on its pattern preset. `educator` is the `clinician`
+    /// pattern (min-necessary, own rows, read/write, NO review powers — the
+    /// review queue is not the educator's to prune, plan 28 §3.2's refusal);
+    /// `advisor` is the `recruiter` pattern (per-client private memory, uses
+    /// the review queue) — its write-path narrowing is the kernel-side
+    /// review-posture arm pinned in `handlers`
+    /// (`advisor_writes_ride_the_proposal_queue`), because `can` alone
+    /// cannot express "direct writes refuse". Both carry a SHARED_POOL
+    /// absence reason row on [`SHARED_POOL_ROLES`]: a finance advisor
+    /// reading the shared pool is the cross-client pooling plan 28 §3.3
+    /// REFUSES.
+    ///
+    /// Red-first, arm by arm (drills RUN and reverted 2026-10-28): adding
+    /// `approve`/`reject`/`calibrate` to the educator reds the verb arm
+    /// below; adding `shared_pool` to either preset reds
+    /// `only_declared_roles_widen_the_owner_fence` (neither is on the list —
+    /// the absence is the recorded reason); dropping the advisor from the
+    /// kernel-side review-posture roles reds the handlers posture pin.
+    #[test]
+    fn the_vertical_presets_staff_the_verticals() {
+        let all = presets();
+        let educator = all.iter().find(|r| r.name == "educator").unwrap();
+        let clinician = all.iter().find(|r| r.name == "clinician").unwrap();
+        let advisor = all.iter().find(|r| r.name == "advisor").unwrap();
+        let recruiter = all.iter().find(|r| r.name == "recruiter").unwrap();
+
+        // EDUCATOR — the clinician pattern, arm by arm. Own private rows,
+        // read/write, and NO review powers: approve/reject/calibrate are the
+        // queue's verbs and none is the educator's (plan 28 §3.2's refusal:
+        // no autonomous evaluation without the human gate — and no educator
+        // gatekeeping one either).
+        assert_eq!(educator.scopes, clinician.scopes, "own private memory only");
+        assert_eq!(educator.owner_filter, clinician.owner_filter, "own rows");
+        assert_eq!(educator.can, clinician.can, "read/write, nothing else");
+        assert_eq!(
+            educator.tools_allowed, clinician.tools_allowed,
+            "the min-necessary tool trio, no more"
+        );
+        for verb in ["approve", "reject", "calibrate", "purge", "console"] {
+            assert!(
+                !educator.can(verb),
+                "the educator cannot {verb} — the review queue is not theirs"
+            );
+        }
+        assert!(
+            !educator.can("shared_pool"),
+            "no shared pool — the absence is recorded on SHARED_POOL_ROLES"
+        );
+
+        // ADVISOR — the recruiter pattern, arm by arm. Per-client private
+        // memory (the same owner fence and scope breadth), the review queue
+        // in the panels, and the reject verb the pattern carries — but the
+        // write path is the kernel-side posture arm, so `can` alone must not
+        // be read as "direct writes insert".
+        assert_eq!(advisor.scopes, recruiter.scopes);
+        assert_eq!(advisor.owner_filter, recruiter.owner_filter);
+        assert_eq!(advisor.can, recruiter.can);
+        assert_eq!(advisor.tools_allowed, recruiter.tools_allowed);
+        assert!(
+            advisor.panels_default == recruiter.panels_default,
+            "the review panel is the queue the advisor uses"
+        );
+        for verb in ["approve", "shared_pool", "purge", "console", "admin"] {
+            assert!(
+                !advisor.can(verb),
+                "the advisor cannot {verb} — no queue disposal, no pooling, no admin"
+            );
+        }
     }
 }

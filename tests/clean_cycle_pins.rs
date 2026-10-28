@@ -468,11 +468,13 @@ fn r48_the_route_tables_are_unchanged() {
         .expect("PRESETS_RAW must still be declared");
     assert_eq!(
         presets.matches("\"name\":").count(),
-        14,
-        "the role vocabulary moved to 14 presets as a NAMED ACT (M3-g, plan 27: \
-         the 14th is `plugin`, the kernel-side plugin principal — a narrowing, \
-         recorded on the preset and on SHARED_POOL_ROLES' absence row); the \
-         freeze's arity tracks the named count, never a silent bump"
+        16,
+        "the role vocabulary moved to 16 presets as a NAMED ACT (C3, plan 28 \
+         §3.2/§3.3: the 15th and 16th are the vertical staff — `educator` on \
+         the clinician pattern, `advisor` on the recruiter pattern with its \
+         write path pinned to the proposal queue; both recorded on \
+         SHARED_POOL_ROLES' absence rows); the freeze's arity tracks the \
+         named count, never a silent bump"
     );
 }
 
