@@ -377,10 +377,11 @@ pub fn presets() -> Vec<Profile> {
         .collect()
 }
 
-/// The 13 ship-with presets as (name, json) — the exact bytes `migration`
+/// The 14 ship-with presets as (name, json) — the exact bytes `migration`
 /// seeds and the parse test validates. `presets()` is the parsed view. The
-/// 13th is `finance-mifid` (C3, plan 28 §3.3), the first deny-list profile —
-/// a named act; the education profile follows in the same round.
+/// 13th is `finance-mifid` (plan 28 §3.3), the first deny-list profile; the
+/// 14th is `education` (plan 28 §3.2), the learner-records posture — both
+/// named acts of the same round.
 pub const PRESETS_RAW: &[(&str, &str)] = &[
     (
         "gov-fedramp",
@@ -420,6 +421,23 @@ pub const PRESETS_RAW: &[(&str, &str)] = &[
     (
         "finance-mifid",
         r#"{"name":"finance-mifid","description":"Finance (MiFID/FINRA): card and account identifiers refused at ingest, 7-year retention shape, legal-hold default, verbose audit","default_access_scope":"private","pii_mode":"strict","retention":{"fact":2555,"episodic":1825,"procedure":2555,"decision":2555},"audit_level":"verbose","kinds":["fact","episodic","procedure","decision"],"connectors_allowed":["crm"],"legal_hold_default":true,"deny_patterns":["pan","iban"]}"#,
+    ),
+    // The 14th preset: EDUCATION (plan 28 §3.2) — the learner-records
+    // posture: strict write-time masking, per-educator private default, the
+    // permanent record never decays, curriculum artifacts and evaluation
+    // decisions on long clocks, air-gap connectors (LMS ingest is a future
+    // K5 connector). The COPPA consent artifact is a NAMED GAP, not a
+    // feature: the measured reason is that ingest has no subject key to
+    // check a consent artifact against (`apply_profile_ingest` names no
+    // subject; the consent_registry keys domain+subject+channel+purpose
+    // with outreach-vocabulary enums), so the honest mechanism is a new
+    // ingest seam, not a small one — recorded on the gate-law register;
+    // until that round, an operator binding this profile gets the strict
+    // posture but NOT consent-before-collection (docs/pia-education.md owns
+    // the sentence).
+    (
+        "education",
+        r#"{"name":"education","description":"Education (FERPA/COPPA posture): learner records strict-masked, per-educator private memory, the permanent record never decays, air-gap connectors — COPPA consent artifacts are a named gap (see the gate-law register)","default_access_scope":"private","pii_mode":"strict","retention":{"fact":null,"episodic":365,"procedure":1825,"decision":2555},"audit_level":"verbose","kinds":["fact","episodic","procedure","decision"],"connectors_allowed":[],"legal_hold_default":false}"#,
     ),
     (
         "smb-simple",
@@ -461,10 +479,11 @@ mod tests {
         let ps = presets();
         assert_eq!(
             ps.len(),
-            13,
-            "the 13 ship-with presets — the 13th is \
-             finance-mifid (C3, plan 28 §3.3), the first deny-list profile, a \
-             named act"
+            14,
+            "the 14 ship-with presets — the 13th is finance-mifid (plan 28 \
+             §3.3, the first deny-list profile), the 14th is education (plan \
+             28 §3.2, the learner-records posture); both named acts of one \
+             round"
         );
         for p in &ps {
             p.validate().unwrap_or_else(|e| panic!("{}: {e}", p.name));
@@ -497,6 +516,40 @@ mod tests {
         assert!(bad.validate().is_err());
         bad.deny_patterns = Some(vec!["iban".to_string()]);
         assert!(bad.validate().is_ok());
+    }
+
+    /// THE EDUCATION PROFILE PIN (plan 28 §3.2) — the learner-records arms:
+    /// strict masking, the permanent record never decays (fact = null), the
+    /// air-gap connector posture, and NO deny-list (the refuse arm is the
+    /// finance profile's law; education's data classes are not card data).
+    /// The COPPA consent artifact is a named gap, recorded on the preset
+    /// comment and the gate-law register — this pin holds the honest arms
+    /// that DID land, so a future consent round narrows from here.
+    #[test]
+    fn education_holds_the_learner_records_arms() {
+        let edu = presets()
+            .into_iter()
+            .find(|p| p.name == "education")
+            .unwrap();
+        assert!(edu.pii_strict(), "learner records mask at write");
+        assert!(
+            edu.deny_list().is_empty(),
+            "no deny-list — the refuse arm is the finance profile's law"
+        );
+        let m = edu
+            .retention_map()
+            .expect("education carries a retention map");
+        assert_eq!(m.get("fact"), None, "the permanent record never decays");
+        assert_eq!(m.get("episodic"), Some(&365));
+        assert_eq!(m.get("procedure"), Some(&1825));
+        assert_eq!(m.get("decision"), Some(&2555));
+        assert_eq!(
+            edu.connectors_allowed.as_deref(),
+            Some(&[][..]),
+            "air-gap day zero — LMS ingest is a future connector"
+        );
+        assert_eq!(edu.default_access_scope.as_deref(), Some("private"));
+        assert_eq!(edu.audit_level.as_deref(), Some("verbose"));
     }
 
     #[test]

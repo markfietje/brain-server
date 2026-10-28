@@ -3969,17 +3969,19 @@ Final paragraph after the rule.";
             "the migration never stamps the chain epoch"
         );
 
-        // the preset tables exist and the 13 ship-with
+        // the preset tables exist and the 14 ship-with
         // presets are seeded (INSERT OR IGNORE — a re-migration never
         // overwrites an operator edit). The 13th is `finance-mifid`
-        // (plan 28 §3.3), the first deny-list profile, a named act.
+        // (plan 28 §3.3), the first deny-list profile; the 14th is
+        // `education` (plan 28 §3.2) — named acts of one round.
         let seeded: i64 = db
             .query_row("SELECT COUNT(*) FROM profiles", [], |r| r.get(0))
             .unwrap();
         assert_eq!(
-            seeded, 13,
-            "the 13 ship-with presets are seeded — the 13th is `finance-mifid` \
-             (plan 28 §3.3), the first deny-list profile, a named act"
+            seeded, 14,
+            "the 14 ship-with presets are seeded — the 13th is `finance-mifid` \
+             (plan 28 §3.3, the first deny-list profile), the 14th is \
+             `education` (plan 28 §3.2, the learner-records posture)"
         );
         let hipaa: String = db
             .query_row(
@@ -12481,11 +12483,12 @@ Final paragraph after the rule.";
             (status, v)
         }
 
-        // The wizard's pick list: 13 seeded presets (the 13th is
-        // `finance-mifid`, the deny-list profile), health-hipaa among them.
+        // The wizard's pick list: 14 seeded presets (the 13th is
+        // `finance-mifid`, the deny-list profile; the 14th is `education`),
+        // health-hipaa among them.
         let (status, v) = req(&app, "GET", "/profiles", serde_json::json!({})).await;
         assert_eq!(status, axum::http::StatusCode::OK);
-        assert_eq!(v["profiles"].as_array().map(Vec::len), Some(13));
+        assert_eq!(v["profiles"].as_array().map(Vec::len), Some(14));
 
         // ── (3) the wizard bind: domain → health-hipaa ──────────────────
         let (status, v) = req(
