@@ -682,14 +682,37 @@ pub(crate) async fn ingest_one(
         let conn = state.pool.get().map_err(HandlerError::db_down)?;
         crate::profile::profile_for_domain(&conn, &domain_label).map_err(HandlerError::internal)?
     };
-    let (title_for_store, content, access_scope) = crate::service::ingest::apply_profile_ingest(
+    let profile_applied = crate::service::ingest::apply_profile_ingest(
         profile.as_ref(),
         &title_for_store,
         &content,
         req.access_scope.clone(),
         req.memory_kind.as_deref(),
-    )
-    .map_err(map_ingest_error)?;
+    );
+    // The deny-list refusal is audited (plan 28 §3.3): one hash-chained
+    // row naming the refused CLASS — the content itself never rides the
+    // chain (no PII in the audit evidence). Best-effort write before the 400
+    // lands; a failed audit store must not mask the refusal.
+    if let Err(e @ crate::service::ingest::IngestError::DenyListHit { .. }) = &profile_applied {
+        let actor = super::recall::principal_label(principal);
+        let detail = e.to_string();
+        let target = format!("domain:{domain_label}");
+        let audit_pool = state.pool.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Ok(conn) = audit_pool.get() {
+                crate::audit::record(
+                    &conn,
+                    crate::audit::AuditKind::Ingest,
+                    &actor,
+                    &target,
+                    crate::audit::AuditStatus::Denied,
+                    &detail,
+                );
+            }
+        })
+        .await;
+    }
+    let (title_for_store, content, access_scope) = profile_applied.map_err(map_ingest_error)?;
     req.access_scope = access_scope;
     // whether this domain's bound profile is a
     // strict-posture one — the flag that marks a record with no documented
@@ -801,6 +824,12 @@ fn map_ingest_error(e: crate::service::ingest::IngestError) -> HandlerError {
             "kind_not_allowed",
             format!("memory_kind '{effective}' is not in profile '{profile}''s allowed kinds"),
         ),
+        E::DenyListHit { pattern, profile } => HandlerError::bad_request(
+            "deny_list_refused",
+            format!(
+                "content matches profile '{profile}''s deny-list class '{pattern}' — refused, not masked"
+            ),
+        ),
         E::ProfileChanged => HandlerError::conflict_with(
             "profile_changed",
             "the domain's bound profile changed during ingest — retry",
@@ -816,6 +845,37 @@ fn map_ingest_error(e: crate::service::ingest::IngestError) -> HandlerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THE DENY-LIST REFUSAL IS AUDITED (E-2, plan 28 §3.3) — the funnel's
+    /// DenyListHit arm carries one hash-chained row (kind Ingest, status
+    /// Denied) BEFORE the 400 lands, naming the refused CLASS and never the
+    /// content (no PII in the audit evidence). Structural pin, the repo's
+    /// source-scan class: the audit must live at the funnel arm (the ONE
+    /// site every write path crosses), not at an individual route.
+    #[test]
+    fn the_deny_list_refusal_arm_audits_before_the_400() {
+        let src = include_str!("ingest.rs");
+        let arm = src
+            .split("if let Err(e @ crate::service::ingest::IngestError::DenyListHit { .. }) = &profile_applied {")
+            .nth(1)
+            .expect("the funnel's DenyListHit audit arm must exist");
+        let arm = arm
+            .split("let (title_for_store, content, access_scope)")
+            .next()
+            .unwrap();
+        assert!(
+            arm.contains("AuditKind::Ingest"),
+            "the refusal audits as an ingest row"
+        );
+        assert!(
+            arm.contains("AuditStatus::Denied"),
+            "the refusal's status is Denied, not Ok"
+        );
+        assert!(
+            arm.contains("detail = e.to_string()"),
+            "the audit detail is the error's text — the CLASS, never the content"
+        );
+    }
 
     /// M2: a UMP record lowers into the ingest shape with every overlay
     /// field mapped onto the knowledge columns + the persisted meta string.

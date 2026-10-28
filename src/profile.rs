@@ -36,6 +36,13 @@ pub const PII_MODES: &[&str] = &["off", "standard", "strict"];
 /// Valid `audit_level` values.
 pub const AUDIT_LEVELS: &[&str] = &["minimal", "standard", "verbose"];
 
+/// The deny-list classes (C3, plan 28 §3.3): a CLOSED vocabulary, each with
+/// a detector in `pii_mask` — `pan` = a Luhn-valid 13–19 digit run, `iban` =
+/// the ISO 13616 shape. A profile that names classes REFUSES matching
+/// content at ingest (naming the class), profile-gated: masking remains the
+/// standard/strict posture everywhere else, untouched.
+pub const DENY_PATTERNS: &[&str] = &["pan", "iban"];
+
 /// A profile name must be filename/URL-safe (it becomes a path param and an
 /// FK key): lowercase alnum + hyphen, 1..=63 chars — the domain charset.
 pub fn is_valid_profile_name(name: &str) -> bool {
@@ -83,6 +90,12 @@ pub struct Profile {
     /// here it is a stored flag only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legal_hold_default: Option<bool>,
+    /// C3 (plan 28 §3.3): deny-list classes REFUSED at ingest under the
+    /// bound domain (not masked — refused, naming the class). Absent = no
+    /// deny-list (every existing profile's posture, byte-unchanged). The
+    /// delta IS the profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deny_patterns: Option<Vec<String>>,
 }
 
 impl Profile {
@@ -148,6 +161,18 @@ impl Profile {
                 }
             }
         }
+        if let Some(list) = &self.deny_patterns {
+            // CLOSED vocabulary, unlike the free-shape lists: an unknown
+            // class would silently refuse nothing (fail-open), so validate()
+            // refuses the profile instead.
+            for k in list {
+                if !DENY_PATTERNS.contains(&k.as_str()) {
+                    return Err(format!(
+                        "deny_patterns item '{k}' unknown — the closed vocabulary is {DENY_PATTERNS:?}"
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -165,6 +190,13 @@ impl Profile {
 
     pub fn pii_strict(&self) -> bool {
         self.pii_mode.as_deref() == Some("strict")
+    }
+
+    /// The deny-list classes this profile refuses at ingest, or `&[]` when
+    /// the profile carries none — the accessor the ingest arm reads, so the
+    /// call site never re-implements the absent-means-off law.
+    pub fn deny_list(&self) -> &[String] {
+        self.deny_patterns.as_deref().unwrap_or(&[])
     }
 
     /// does this profile permit the connector `kind` for
@@ -345,8 +377,10 @@ pub fn presets() -> Vec<Profile> {
         .collect()
 }
 
-/// The 12 ship-with presets as (name, json) — the exact bytes `migration`
-/// seeds and the parse test validates. `presets()` is the parsed view.
+/// The 13 ship-with presets as (name, json) — the exact bytes `migration`
+/// seeds and the parse test validates. `presets()` is the parsed view. The
+/// 13th is `finance-mifid` (C3, plan 28 §3.3), the first deny-list profile —
+/// a named act; the education profile follows in the same round.
 pub const PRESETS_RAW: &[(&str, &str)] = &[
     (
         "gov-fedramp",
@@ -375,6 +409,17 @@ pub const PRESETS_RAW: &[(&str, &str)] = &[
     (
         "finance-sox",
         r#"{"name":"finance-sox","description":"Finance: SOX 7-year retention, legal-hold default, immutable audit trail","default_access_scope":"private","pii_mode":"standard","retention":{"fact":2555,"episodic":2555,"procedure":2555,"decision":2555},"audit_level":"verbose","kinds":["fact","episodic","procedure","decision"],"connectors_allowed":["erp-gl-readonly"],"legal_hold_default":true}"#,
+    ),
+    // The 13th preset: FINANCE-MIFID (C3, plan 28 §3.3) — finance-sox's
+    // regulated spine plus the round's one behavioral inversion: the
+    // deny-list. PAN (Luhn-valid) and IBAN-shaped content REFUSES at ingest
+    // naming the class — never credentials, never card numbers, never
+    // account identifiers in the advisor's memory (the memory is context,
+    // not a ledger). 7-year retention shape; the jurisdiction clocks
+    // themselves are rule rows (the C2 rules door), not this map.
+    (
+        "finance-mifid",
+        r#"{"name":"finance-mifid","description":"Finance (MiFID/FINRA): card and account identifiers refused at ingest, 7-year retention shape, legal-hold default, verbose audit","default_access_scope":"private","pii_mode":"strict","retention":{"fact":2555,"episodic":1825,"procedure":2555,"decision":2555},"audit_level":"verbose","kinds":["fact","episodic","procedure","decision"],"connectors_allowed":["crm"],"legal_hold_default":true,"deny_patterns":["pan","iban"]}"#,
     ),
     (
         "smb-simple",
@@ -414,10 +459,44 @@ mod tests {
     #[test]
     fn all_presets_parse_and_validate() {
         let ps = presets();
-        assert_eq!(ps.len(), 12, "the 12 ship-with presets");
+        assert_eq!(
+            ps.len(),
+            13,
+            "the 13 ship-with presets — the 13th is \
+             finance-mifid (C3, plan 28 §3.3), the first deny-list profile, a \
+             named act"
+        );
         for p in &ps {
             p.validate().unwrap_or_else(|e| panic!("{}: {e}", p.name));
         }
+    }
+
+    /// THE DENY-LIST PIN (E-2, plan 28 §3.3) — the profile-level arms of the
+    /// refuse arm; the ingest-level arms live in `service::ingest`. The
+    /// preset carries the closed vocabulary; validation refuses an unknown
+    /// class (fail-closed — an unknown class would silently refuse nothing).
+    #[test]
+    fn finance_mifid_carries_the_deny_list_and_validation_is_closed() {
+        let mifid = presets()
+            .into_iter()
+            .find(|p| p.name == "finance-mifid")
+            .unwrap();
+        assert_eq!(mifid.deny_list(), ["pan", "iban"]);
+        assert!(mifid.pii_strict(), "the deny-list rides the strict posture");
+        // Every OTHER preset is deny-list-free: the delta IS the profile.
+        let ps = presets();
+        assert!(
+            ps.iter()
+                .filter(|p| p.name != "finance-mifid")
+                .all(|p| p.deny_list().is_empty()),
+            "no other preset refuses at ingest — masking stays the universal posture"
+        );
+        // An unknown class is refused (fail-closed), a known one accepted.
+        let mut bad = mifid.clone();
+        bad.deny_patterns = Some(vec!["sin".to_string()]);
+        assert!(bad.validate().is_err());
+        bad.deny_patterns = Some(vec!["iban".to_string()]);
+        assert!(bad.validate().is_ok());
     }
 
     #[test]

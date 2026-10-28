@@ -2233,6 +2233,17 @@ fn render_knobs(p: &serde_json::Value) -> Vec<String> {
     if let Some(h) = p["legal_hold_default"].as_bool() {
         out.push(format!("legal hold default:    {h}"));
     }
+    if let Some(ds) = p["deny_patterns"].as_array() {
+        let parts: Vec<&str> = ds.iter().filter_map(|d| d.as_str()).collect();
+        out.push(format!(
+            "deny list (refused):   {}",
+            if parts.is_empty() {
+                "(none — masking only)".to_string()
+            } else {
+                parts.join(", ")
+            }
+        ));
+    }
     out
 }
 
@@ -7603,6 +7614,21 @@ fn setup_render_knobs_shows_every_set_knob() {
     let e: serde_json::Value =
         serde_json::from_str(r#"{"name":"smb-simple","retention":{}}"#).unwrap();
     assert!(render_knobs(&e).join("\n").contains("no decay"));
+    // The deny-list knob renders: the finance profile shows what it
+    // REFUSES; a profile without one shows nothing (absent = off).
+    let f: serde_json::Value = serde_json::from_str(
+        r#"{"name":"finance-mifid","pii_mode":"strict","deny_patterns":["pan","iban"]}"#,
+    )
+    .unwrap();
+    let lines = render_knobs(&f).join("\n");
+    assert!(
+        lines.contains("deny list (refused):   pan, iban"),
+        "{lines}"
+    );
+    assert!(
+        !render_knobs(&p).join("\n").contains("deny list"),
+        "a deny-list-free profile renders no deny-list line"
+    );
 }
 
 fn cmd_workflow(args: &[String]) -> Result<(), String> {

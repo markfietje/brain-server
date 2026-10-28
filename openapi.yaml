@@ -10425,6 +10425,14 @@ components:
         kinds: { type: array, items: { type: string }, description: Allowed memory_kind vocabulary; an out-of-vocabulary ingest is 422. }
         connectors_allowed: { type: array, items: { type: string }, description: Stored + surfaced only in v1.21 (enforcement lands with the v1.24 connector work). }
         legal_hold_default: { type: boolean, description: Stored flag; enforcement is v1.22.0 "Regulated". }
+        deny_patterns:
+          type: array
+          items: { type: string, enum: [pan, iban] }
+          description: >
+            C3 — deny-list classes REFUSED at ingest under the bound domain
+            (naming the class), not masked. Closed vocabulary; absent = no
+            deny-list (masking remains the universal posture). The delta IS
+            the profile.
     ProfileUpsert:
       type: object
       description: POST /profiles/{name} body — a Profile minus the name (the path is the name).
@@ -10441,6 +10449,7 @@ components:
         kinds: { type: array, items: { type: string } }
         connectors_allowed: { type: array, items: { type: string } }
         legal_hold_default: { type: boolean }
+        deny_patterns: { type: array, items: { type: string, enum: [pan, iban] } }
     Role:
       type: object
       description: >

@@ -96,6 +96,8 @@ pub struct ProfileUpsertRequest {
     pub connectors_allowed: Option<Vec<String>>,
     #[serde(default)]
     pub legal_hold_default: Option<bool>,
+    #[serde(default)]
+    pub deny_patterns: Option<Vec<String>>,
 }
 
 /// `POST /profiles/{name}` — create or edit a profile (Admin + audited).
@@ -118,6 +120,7 @@ pub async fn upsert_profile(
         kinds: req.kinds,
         connectors_allowed: req.connectors_allowed,
         legal_hold_default: req.legal_hold_default,
+        deny_patterns: req.deny_patterns,
     };
     p.validate()
         .map_err(|e| HandlerError::bad_request("profile_invalid", e))?;
@@ -174,6 +177,7 @@ pub async fn domain_profile_get(
                 "kinds": p.kinds,
                 "connectors_allowed": p.connectors_allowed,
                 "legal_hold_default": p.legal_hold_default,
+                "deny_patterns": p.deny_patterns,
             },
             "effective": {
                 // What retrieval will actually apply for this domain:

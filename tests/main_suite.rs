@@ -3969,13 +3969,18 @@ Final paragraph after the rule.";
             "the migration never stamps the chain epoch"
         );
 
-        // the preset tables exist and the 12 ship-with
+        // the preset tables exist and the 13 ship-with
         // presets are seeded (INSERT OR IGNORE — a re-migration never
-        // overwrites an operator edit).
+        // overwrites an operator edit). The 13th is `finance-mifid`
+        // (plan 28 §3.3), the first deny-list profile, a named act.
         let seeded: i64 = db
             .query_row("SELECT COUNT(*) FROM profiles", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(seeded, 12, "the 12 ship-with presets are seeded");
+        assert_eq!(
+            seeded, 13,
+            "the 13 ship-with presets are seeded — the 13th is `finance-mifid` \
+             (plan 28 §3.3), the first deny-list profile, a named act"
+        );
         let hipaa: String = db
             .query_row(
                 "SELECT json FROM profiles WHERE name = 'health-hipaa'",
@@ -12476,10 +12481,11 @@ Final paragraph after the rule.";
             (status, v)
         }
 
-        // The wizard's pick list: 12 seeded presets, health-hipaa among them.
+        // The wizard's pick list: 13 seeded presets (the 13th is
+        // `finance-mifid`, the deny-list profile), health-hipaa among them.
         let (status, v) = req(&app, "GET", "/profiles", serde_json::json!({})).await;
         assert_eq!(status, axum::http::StatusCode::OK);
-        assert_eq!(v["profiles"].as_array().map(Vec::len), Some(12));
+        assert_eq!(v["profiles"].as_array().map(Vec::len), Some(13));
 
         // ── (3) the wizard bind: domain → health-hipaa ──────────────────
         let (status, v) = req(

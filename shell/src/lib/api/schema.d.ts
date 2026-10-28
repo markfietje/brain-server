@@ -4966,6 +4966,8 @@ export interface components {
             connectors_allowed?: string[];
             /** @description Stored flag; enforcement is v1.22.0 "Regulated". */
             legal_hold_default?: boolean;
+            /** @description C3 — deny-list classes REFUSED at ingest under the bound domain (naming the class), not masked. Closed vocabulary; absent = no deny-list (masking remains the universal posture). The delta IS the profile. */
+            deny_patterns?: ("pan" | "iban")[];
         };
         /** @description POST /profiles/{name} body — a Profile minus the name (the path is the name). */
         ProfileUpsert: {
@@ -4982,6 +4984,7 @@ export interface components {
             kinds?: string[];
             connectors_allowed?: string[];
             legal_hold_default?: boolean;
+            deny_patterns?: ("pan" | "iban")[];
         };
         /** @description v1.23.0 — a named bundle of scopes + panel visibility + an action `can` allowlist, resolved from a JWT principal's `roles` claim. The server enforces the data gate (access_scopes + owner) and the action gate (can); panel visibility is client UX (defense-in-depth, not the only gate). `admin` short-circuits to unrestricted data. */
         Role: {

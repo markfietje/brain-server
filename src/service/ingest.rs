@@ -56,6 +56,10 @@ pub enum IngestError {
     TtlDaysInvalid(i64),
     /// The bound profile's `kinds` fence: the effective kind is not allowed.
     KindNotAllowed { effective: String, profile: String },
+    /// The bound profile's deny-list fence (C3, plan 28 §3.3): the content
+    /// matches a refused class (`pan` | `iban`) — refused at ingest naming
+    /// the class, never stored, never merely masked. Profile-gated.
+    DenyListHit { pattern: String, profile: String },
     /// The domain's bound profile changed between the pre-tx read and the
     /// write lock — the caller retries (the strict-posture race guard).
     ProfileChanged,
@@ -77,6 +81,10 @@ impl std::fmt::Display for IngestError {
             IngestError::KindNotAllowed { effective, profile } => write!(
                 f,
                 "memory_kind '{effective}' is not in profile '{profile}''s allowed kinds"
+            ),
+            IngestError::DenyListHit { pattern, profile } => write!(
+                f,
+                "content matches profile '{profile}''s deny-list class '{pattern}' — refused, not masked"
             ),
             IngestError::ProfileChanged => write!(
                 f,
@@ -115,6 +123,11 @@ pub fn ttl_days_to_expires(
 
 /// the pure ingest-defaults core. The invariant: the
 /// profile sets DEFAULTS, the row wins —
+///   - the deny-list (`deny_patterns`, C3 plan 28 §3.3) REFUSES: a
+///     PAN/IBAN-class match under a profile that names the class is
+///     [`IngestError::DenyListHit`], checked BEFORE any masking (refuse
+///     beats mask) — profile-gated, never global; masking remains the
+///     universal posture everywhere else;
 ///   - `pii_mode: strict` masks title + content at the write boundary
 ///     (one-way, the existing `[redacted:*]` maskers; no vault);
 ///   - `default_access_scope` only fills an ABSENT access_scope;
@@ -139,6 +152,31 @@ pub fn apply_profile_ingest(
     let Some(p) = profile else {
         return Ok((title.to_string(), content.to_string(), access_scope));
     };
+    // The deny-list arm: refuse on the RAW text, naming the class. Same
+    // detectors the maskers define (one definition of the classes), but a
+    // refusal — the finance vertical's law is that card/account identifiers
+    // never enter the store in any form, placeholder or raw.
+    for class in p.deny_list() {
+        let hit = match class.as_str() {
+            "pan" => {
+                crate::pii_mask::has_luhn_valid_card(title)
+                    || crate::pii_mask::has_luhn_valid_card(content)
+            }
+            "iban" => {
+                crate::pii_mask::has_iban_shape(title) || crate::pii_mask::has_iban_shape(content)
+            }
+            // validate() keeps the vocabulary closed; an unknown class that
+            // somehow reached the stored row refuses nothing (fail-open here
+            // is unreachable by construction, and must NOT refuse everything).
+            _ => false,
+        };
+        if hit {
+            return Err(IngestError::DenyListHit {
+                pattern: class.clone(),
+                profile: p.name.clone(),
+            });
+        }
+    }
     let (title, content) = if p.pii_strict() {
         (
             crate::gate::screen_source_prompt(title),
@@ -805,6 +843,108 @@ mod tests {
             c2, "mail bob@example.com",
             "standard mode does not mask at write"
         );
+    }
+
+    /// THE DENY-LIST PIN (E-2, plan 28 §3.3) — the one behavioral inversion:
+    /// under a profile that names the class, a PAN/IBAN match REFUSES at
+    /// ingest naming the class; the same content under a standard profile
+    /// passes byte-unchanged, and under a deny-list-free strict profile it
+    /// MASKS as today — the delta IS the profile. Red-proved by disabling
+    /// the deny-list arm (the pins stayed red), then restored (2026-10-28).
+    #[test]
+    fn the_deny_list_refuses_under_the_finance_profile_only() {
+        let fin = crate::profile::Profile {
+            name: "finance-mifid".into(),
+            pii_mode: Some("strict".into()),
+            deny_patterns: Some(vec!["pan".into(), "iban".into()]),
+            ..Default::default()
+        };
+        // The PAN arm: refused, naming the class — never stored, never masked.
+        let err = apply_profile_ingest(
+            Some(&fin),
+            "Meeting note",
+            "client card 4111111111111111 on file",
+            None,
+            None,
+        )
+        .unwrap_err();
+        match &err {
+            IngestError::DenyListHit { pattern, profile } => {
+                assert_eq!(pattern, "pan");
+                assert_eq!(profile, "finance-mifid");
+            }
+            other => panic!("expected DenyListHit, got {other:?}"),
+        }
+        // The IBAN arm: the same refusal, naming its class.
+        let err = apply_profile_ingest(
+            Some(&fin),
+            "Wire details",
+            "send to DE89370400440532013000",
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("iban"),
+            "the refusal names the class: {err}"
+        );
+        // The false-positive arm: a Luhn-failing digit string is not a PAN.
+        let (_, c, _) = apply_profile_ingest(
+            Some(&fin),
+            "Order ref",
+            "order 4111111111111112 shipped",
+            None,
+            None,
+        )
+        .expect("non-card digits pass");
+        assert!(c.contains("4111111111111112"));
+
+        // THE DELTA IS THE PROFILE. Same PAN content under a standard
+        // profile: byte-unchanged (standard mode masks at READ time — the
+        // v1.14 seam this round does not touch).
+        let std = crate::profile::Profile {
+            name: "call-center".into(),
+            pii_mode: Some("standard".into()),
+            ..Default::default()
+        };
+        let (_, c, _) = apply_profile_ingest(
+            Some(&std),
+            "Meeting note",
+            "client card 4111111111111111 on file",
+            None,
+            None,
+        )
+        .expect("standard mode has no deny-list");
+        assert_eq!(c, "client card 4111111111111111 on file");
+        // And under a deny-list-FREE strict profile: masked as today.
+        let hipaa = crate::profile::Profile {
+            name: "health-hipaa".into(),
+            pii_mode: Some("strict".into()),
+            ..Default::default()
+        };
+        let (_, c, _) = apply_profile_ingest(
+            Some(&hipaa),
+            "Meeting note",
+            "client card 4111111111111111 on file",
+            None,
+            None,
+        )
+        .expect("no deny-list, strict masks");
+        assert!(
+            c.contains("[redacted:card]"),
+            "masking is untouched outside the deny-list: {c}"
+        );
+        // The bound-elsewhere law: an unbound domain (no profile) is
+        // byte-identical legacy behavior even for card content.
+        let (_, c, _) = apply_profile_ingest(
+            None,
+            "Meeting note",
+            "client card 4111111111111111 on file",
+            None,
+            None,
+        )
+        .expect("no profile, no fence");
+        assert!(c.contains("4111111111111111"));
     }
 
     /// the kind vocabulary is a constraint — the

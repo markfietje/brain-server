@@ -158,6 +158,87 @@ pub fn redact_unconditional(s: &str) -> String {
     out
 }
 
+/// The deny-list detectors (C3, plan 28 §3.3): the finance profile REFUSES
+/// these classes at ingest instead of masking them. Same walk as the maskers
+/// — one definition of the classes — but a boolean verdict, and the refuse
+/// arm runs BEFORE any masking (masked content can never match, and a
+/// refusal must name the class it refused).
+///
+/// A Luhn-valid 13–19 digit run: the exact class `mask_card` masks. The
+/// false-positive arm is the pin: a digit string that fails Luhn (an order
+/// number, a phone run) is NOT this class and passes.
+pub fn has_luhn_valid_card(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let mut digit_run: Vec<u8> = Vec::new();
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                digit_run.push(bytes[i]);
+                i += 1;
+            }
+            if (13..=19).contains(&digit_run.len()) && luhn_ok(&digit_run) {
+                return true;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+/// IBAN-shaped (ISO 13616): after folding single separating spaces, 2
+/// uppercase letters + 2 check digits + 9–28 more alphanumeric — 15..=34
+/// chars total — standing alone (not inside a longer alnum run). Shape only,
+/// by the plan's law ("IBAN-SHAPED"): mod-97 validation would refuse
+/// mistyped-but-sensitive data the profile exists to keep out.
+pub fn has_iban_shape(s: &str) -> bool {
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+    while i < n {
+        if chars[i].is_ascii_uppercase()
+            && i + 1 < n
+            && chars[i + 1].is_ascii_uppercase()
+            && i + 2 < n
+            && chars[i + 2].is_ascii_digit()
+            && i + 3 < n
+            && chars[i + 3].is_ascii_digit()
+        {
+            // Fold the candidate: letters/digits, single spaces between groups.
+            let mut j = i;
+            let mut folded = String::new();
+            let mut prev_space = false;
+            while j < n {
+                let c = chars[j];
+                if c.is_ascii_alphanumeric() {
+                    folded.push(c);
+                    prev_space = false;
+                } else if c == ' ' && !prev_space && !folded.is_empty() {
+                    prev_space = true;
+                } else {
+                    break;
+                }
+                j += 1;
+            }
+            let total = folded.chars().count();
+            if (15..=34).contains(&total)
+                && folded[2..4].chars().all(|c| c.is_ascii_digit())
+                && folded[4..].chars().all(|c| c.is_ascii_alphanumeric())
+                && // not inside a longer alnum run
+                (i == 0 || !chars[i - 1].is_ascii_alphanumeric())
+                && (j >= n || !chars[j].is_ascii_alphanumeric())
+            {
+                return true;
+            }
+            i = j.max(i + 1);
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,5 +256,42 @@ mod tests {
     fn luhn_rejects_bad_checksum() {
         assert!(luhn_ok(b"4111111111111111"));
         assert!(!luhn_ok(b"4111111111111112"));
+    }
+
+    #[test]
+    fn deny_list_pan_matches_only_luhn_valid_runs() {
+        assert!(has_luhn_valid_card("pay 4111111111111111 today"));
+        assert!(
+            !has_luhn_valid_card("pay 4111 1111 1111 1111"),
+            "spaced card runs are the masker's business, not the deny-list's — the refusal names what it can prove"
+        );
+        assert!(
+            !has_luhn_valid_card("order 4111111111111112"),
+            "the false-positive arm: a Luhn-failing digit string is not a PAN"
+        );
+        assert!(!has_luhn_valid_card("short 41111"));
+        assert!(!has_luhn_valid_card("no digits at all"));
+    }
+
+    #[test]
+    fn deny_list_iban_matches_iso_shape_standing_alone() {
+        assert!(has_iban_shape("wire to DE89370400440532013000"));
+        assert!(has_iban_shape("GB82WEST12345698765432 ok"));
+        assert!(
+            has_iban_shape("DE89 3704 0044 0532 0130 00"),
+            "single-space group folding is the printed form"
+        );
+        assert!(
+            !has_iban_shape("see AB1234567890123456789012345678901234567890"),
+            "a 40-char run is not an IBAN — the shape has a ceiling"
+        );
+        assert!(
+            !has_iban_shape("code ab12"),
+            "lowercase is not the IBAN shape"
+        );
+        assert!(
+            !has_iban_shape("inside WORDDE89370400440532013000TAIL"),
+            "an IBAN inside a longer alnum run is not standing alone"
+        );
     }
 }
