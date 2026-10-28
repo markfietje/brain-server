@@ -1249,4 +1249,114 @@ mod pins {
              decision, and an unrecorded decision reads as an oversight"
         );
     }
+
+    /// THE PIA MAPPINGS NAME THEIR SURFACES (the C3 round, plan 28's
+    /// method): every duty section in `docs/pia-education.md` and
+    /// `docs/pia-finance.md` must name the tree surface that owns it AND
+    /// the pin that proves it — and every pin name the docs cite must
+    /// EXIST in the tree, so a renamed test reds the doc instead of
+    /// silently orphaning the mapping. The COPPA honesty sentence is
+    /// pinned verbatim: a PIA that dressed the consent gap as a feature
+    /// would be the exact failure this doc class exists to prevent.
+    #[test]
+    fn the_pia_mappings_name_their_surfaces_and_their_pins_exist() {
+        let edu = doc("docs/pia-education.md");
+        let fin = doc("docs/pia-finance.md");
+
+        // The surfaces, by name: a duty sentence that cannot name what owns
+        // it is aspiration, not a mapping.
+        for surface in [
+            "effective_filter",
+            "apply_profile_ingest",
+            "consent_registry",
+            "effective_write_posture",
+            "SHARED_POOL_ROLES",
+        ] {
+            assert!(
+                edu.contains(surface),
+                "pia-education lost `{surface}` — every duty names its surface"
+            );
+        }
+        for surface in [
+            "deny_patterns",
+            "ingest_one",
+            "brain rules insert",
+            "decay.rs",
+            "refuse_if_held",
+            "REVIEW_POSTURE_ROLES",
+            "DENY_PATTERNS",
+        ] {
+            assert!(
+                fin.contains(surface),
+                "pia-finance lost `{surface}` — every duty names its surface"
+            );
+        }
+
+        // The pins the docs cite must exist in the tree (the doc-truth
+        // contract, aimed at test names): a cited pin that no longer
+        // compiles into the tree reds HERE.
+        for pin in [
+            "the_vertical_presets_staff_the_verticals",
+            "education_holds_the_learner_records_arms",
+            "only_declared_roles_widen_the_owner_fence",
+        ] {
+            assert!(
+                doc("src/role.rs").contains(pin) || doc("src/profile.rs").contains(pin),
+                "pia-education cites `{pin}` — the test must exist in the tree it cites"
+            );
+        }
+        for (pin, file) in [
+            (
+                "the_deny_list_refuses_under_the_finance_profile_only",
+                "src/service/ingest.rs",
+            ),
+            (
+                "finance_mifid_carries_the_deny_list_and_validation_is_closed",
+                "src/profile.rs",
+            ),
+            (
+                "the_deny_list_refusal_arm_audits_before_the_400",
+                "src/handlers/ingest.rs",
+            ),
+            (
+                "advisor_writes_ride_the_proposal_queue",
+                "src/handlers/mod.rs",
+            ),
+        ] {
+            assert!(
+                doc(file).contains(pin),
+                "pia-finance cites `{pin}` — the test must exist in {file}"
+            );
+        }
+
+        // THE REFUSALS, written down: plan 28 §3.2/§3.3's "what to refuse
+        // here" — a PIA that omits them reads as if nothing was refused.
+        for refusal in ["Autonomous evaluation", "ad-tech", "Cross-owner reads"] {
+            assert!(
+                edu.contains(refusal),
+                "pia-education must keep the named refusal `{refusal}`"
+            );
+        }
+        for refusal in [
+            "system of record",
+            "Cross-client pooling",
+            "bypasses the review queue",
+        ] {
+            assert!(
+                fin.contains(refusal),
+                "pia-finance must keep the named refusal `{refusal}`"
+            );
+        }
+
+        // THE COPPA HONESTY SENTENCE: the gap is named a gap.
+        assert!(
+            edu.contains("does not exist yet"),
+            "pia-education must say the COPPA consent door does not exist yet — \
+             a PIA that dresses the gap as a feature is the failure mode"
+        );
+        assert!(
+            fin.contains("witnessed live"),
+            "pia-finance must carry the witnessed proof, not an assumed one"
+        );
+    }
 }
