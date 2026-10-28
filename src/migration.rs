@@ -3216,8 +3216,8 @@ pub fn run_migration_with_store_dim(
     }
 
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.27')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.27';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.28')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.28';",
         [],
     )?;
 
@@ -3535,6 +3535,15 @@ pub fn run_migration_with_store_dim(
     // import act's audit row id. The installer owns the re-install law:
     // same id+version REFUSED (a tampered re-offer must not silently pass
     // as idempotent success); a higher version updates the row.
+    //
+    // The uninstall round adds the lifecycle's other half: `removed_at`
+    // (unix seconds) marks the REGISTRATION removed — the row is marked,
+    // NEVER deleted (the audit chain carries hashes; a pack's import
+    // history is exactly what an auditor needs after the operator changes
+    // their mind). NULL = a live registration; every pre-uninstall row
+    // backfills NULL by default. The re-install law reads the mark: a
+    // removed row's same-version re-offer is a FRESH decision (the C2
+    // refusal guarded a tampered re-offer riding a LIVE registration).
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS installed_packs(
             id              INTEGER PRIMARY KEY,
@@ -3545,9 +3554,34 @@ pub fn run_migration_with_store_dim(
             archive_hash    TEXT NOT NULL,
             file_count      INTEGER NOT NULL,
             import_audit_id INTEGER,
-            imported_at     INTEGER NOT NULL
+            imported_at     INTEGER NOT NULL,
+            removed_at      INTEGER
         );",
     )?;
+    // The register's `removed_at` column (the uninstall round): the mark
+    // that takes a pack off the upgrade path without deleting a row —
+    // history is kept, not deleted. Presence-guarded ALTER so a DB created
+    // before the column replay-safely gains it; the CREATE TABLE above
+    // covers fresh DBs.
+    {
+        let col = "removed_at";
+        let present: bool = db
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('installed_packs') WHERE name='{col}'"
+                ),
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(
+                &format!("ALTER TABLE installed_packs ADD COLUMN {col} INTEGER"),
+                [],
+            )?;
+        }
+    }
 
     // ── Parity check: assert vec0 absorbed all valid legacy vectors ──────
     // A silent partial backfill (e.g. skipped non-512-dim rows) would otherwise

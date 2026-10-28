@@ -36,6 +36,7 @@ use crate::role;
 pub mod archive;
 pub mod install;
 pub mod signature;
+pub mod uninstall;
 
 // ── the allowlist ───────────────────────────────────────────────────────────
 

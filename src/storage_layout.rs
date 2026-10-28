@@ -309,6 +309,14 @@ pub const SCHEMA_VERSION_V1_32_26: &str = "1.32.26";
 /// operator-only roster; no column dropped, none rebuilt, no foreign key
 /// declared (the table's own no-FK house law).
 pub const SCHEMA_VERSION_V1_32_27: &str = "1.32.27";
+/// The pack lifecycle's other half: `installed_packs.removed_at` (additive,
+/// NULLable) — the uninstall round's REGISTRATION mark. The row is marked,
+/// never deleted: NULL = a live registration, a timestamp = the pack left
+/// the upgrade path while its imported DATA stays put (the erasure boundary
+/// — content erasure rides the doors that exist, `brain source-delete` and
+/// `brain shred`, never an uninstall act). Presence-guarded ALTER (the A-1
+/// replay pattern); no column dropped, none rebuilt.
+pub const SCHEMA_VERSION_V1_32_28: &str = "1.32.28";
 
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
@@ -330,7 +338,7 @@ pub const SCHEMA_VERSION_V0_9_9: &str = "0.9.9";
 /// Security posture: a source DB stamped NEWER than this is refused loudly
 /// ([`refuse_newer_schema`]) — migrating *down* would silently drop columns
 /// the newer release added, i.e. data loss dressed as a migration.
-pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_27;
+pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_28;
 
 /// Numeric dotted-version compare (std-only, no semver dependency).
 /// Non-numeric components are skipped (the `schema_ge` precedent in the
@@ -790,13 +798,15 @@ mod tests {
         // model-citation-key round moved the ceiling to 1.32.25, so the probe moved to 1.32.26, and the
         // proposal-edge round moved the ceiling to 1.32.26, so the probe moved to 1.32.27, and the
         // approve-action round (the roster `manages` column) moved the ceiling to 1.32.27, so the
-        // probe moved to 1.32.28.
+        // probe moved to 1.32.28, and the
+        // uninstall round (the register `removed_at` column) moved the ceiling to 1.32.28, so the
+        // probe moved to 1.32.29.
         // A probe
         // pinned AT the ceiling silently tests `Equal`, not `Greater` — the assertion
         // would keep passing while a NEWER-schema database was blessed instead of
         // refused, which is the one failure this function exists to prevent.
-        assert!(is_newer_than_known(Some("1.32.28")));
-        assert!(!is_newer_than_known(Some("1.32.27")));
+        assert!(is_newer_than_known(Some("1.32.29")));
+        assert!(!is_newer_than_known(Some("1.32.28")));
         assert!(!is_newer_than_known(Some("1.32.9")));
         assert!(!is_newer_than_known(Some("1.28.9")));
     }
