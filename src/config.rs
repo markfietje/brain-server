@@ -408,6 +408,33 @@ impl GdlProviderPosture {
     }
 }
 
+/// The GDL provider transport kind (`BRAIN_GDL_PROVIDER_KIND`) — the pilot
+/// round's D-P1 decision. `http` (the default) is today's OpenAI-compatible
+/// seam, byte-unchanged; `afm-stdio` routes the loop's propose calls through
+/// the kernel's ONE egress to `brain-afm` (`agentloop/bridge_afm.rs`, the
+/// chat spine's own client) — stdio JSONL, no new network surface. The
+/// alternatives were DECLINED with reasons: a Swift-side HTTP server would
+/// put a network listener on a deliberately-stdio process; a hosted
+/// provider would move case data off the machine, which the local-first
+/// posture refuses for the pilot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GdlProviderKind {
+    Http,
+    AfmStdio,
+}
+
+/// Resolve the configured kind. Absent → `http` (the byte-unchanged
+/// default); any other value — including an empty one — is an error
+/// (fail-closed: an unknown kind must never silently mean http).
+pub(crate) fn gdl_provider_kind() -> Result<GdlProviderKind, String> {
+    match std::env::var("BRAIN_GDL_PROVIDER_KIND").as_deref() {
+        Err(_) => Ok(GdlProviderKind::Http),
+        Ok("http") => Ok(GdlProviderKind::Http),
+        Ok("afm-stdio") => Ok(GdlProviderKind::AfmStdio),
+        Ok(other) => Err(format!("unknown BRAIN_GDL_PROVIDER_KIND value {other:?}")),
+    }
+}
+
 /// Resolve the current redacted posture without reading a bearer or retaining a
 /// provider path. This is safe for `/ready` and reports a changed environment
 /// honestly; normal bootstrap separately refuses invalid configuration.
@@ -418,8 +445,30 @@ pub(crate) fn gdl_provider_posture() -> GdlProviderPosture {
 /// Validate the complete-or-absent profile during normal serving bootstrap.
 /// URL shape and static profile bounds are checked here; secret contents and
 /// provider reachability remain launch-time checks at the existing reader and
-/// constructor seams.
+/// constructor seams. The `afm-stdio` kind takes NO HTTP profile at all — the
+/// bridge binary's presence is likewise a launch-time check (the constructor
+/// seam's named refusal), so the posture here is the configuration's SHAPE,
+/// never the child's health.
 pub(crate) fn validate_gdl_provider_config() -> Result<GdlProviderPosture, String> {
+    let kind = gdl_provider_kind()?;
+    if kind == GdlProviderKind::AfmStdio {
+        // A mixed posture — any HTTP profile key beside the stdio kind — is
+        // an INVALID configuration, not an ignored one: an operator must
+        // never believe a key is doing work it is not. Presence matches
+        // `from_env`'s own law (any var_os occurrence counts).
+        let mixed = [
+            "BRAIN_GDL_PROVIDER_BASE_URL",
+            "BRAIN_GDL_PROVIDER_MODEL",
+            "BRAIN_GDL_PROVIDER_SECRET_FILE",
+            "BRAIN_GDL_PROVIDER_SECRET_ROOT",
+        ]
+        .iter()
+        .any(|key| std::env::var_os(key).is_some());
+        if mixed {
+            return Err("the afm-stdio provider kind takes no HTTP provider profile".to_string());
+        }
+        return Ok(GdlProviderPosture::Configured);
+    }
     let profile = GdlProviderProfile::from_env()
         .map_err(|_| "GDL provider configuration is invalid or incomplete".to_string())?;
     let Some(profile) = profile else {
@@ -2401,6 +2450,108 @@ pub(crate) mod tests {
                 );
                 assert_eq!(body["status"], "OK");
                 assert_eq!(body["gdl_provider"], "configured");
+            },
+        );
+    }
+
+    /// P-1 (D-P1): the transport kind. Absent → http, the byte-unchanged
+    /// default; unknown → an error, never a silent http; afm-stdio is
+    /// Configured with NO HTTP profile at all; a mixed posture (any HTTP
+    /// key beside the stdio kind) is Invalid, never ignored.
+    #[test]
+    fn the_provider_kind_defaults_to_http_and_fails_closed() {
+        with_envs(&[("BRAIN_GDL_PROVIDER_KIND", None)], || {
+            assert_eq!(gdl_provider_kind(), Ok(GdlProviderKind::Http));
+        });
+        with_envs(&[("BRAIN_GDL_PROVIDER_KIND", Some("http"))], || {
+            assert_eq!(gdl_provider_kind(), Ok(GdlProviderKind::Http));
+        });
+        with_envs(&[("BRAIN_GDL_PROVIDER_KIND", Some("afm-stdio"))], || {
+            assert_eq!(gdl_provider_kind(), Ok(GdlProviderKind::AfmStdio));
+        });
+        for bad in ["", "stdio", "AFM-STDIO", "ssh"] {
+            with_envs(&[("BRAIN_GDL_PROVIDER_KIND", Some(bad))], || {
+                assert!(
+                    gdl_provider_kind().is_err(),
+                    "kind {bad:?} must fail closed, never default"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn the_afm_stdio_kind_is_configured_without_an_http_profile() {
+        with_envs(
+            &[
+                ("BRAIN_GDL_PROVIDER_KIND", Some("afm-stdio")),
+                ("BRAIN_GDL_PROVIDER_BASE_URL", None),
+                ("BRAIN_GDL_PROVIDER_MODEL", None),
+                ("BRAIN_GDL_PROVIDER_SECRET_FILE", None),
+                ("BRAIN_GDL_PROVIDER_SECRET_ROOT", None),
+            ],
+            || {
+                assert_eq!(gdl_provider_posture(), GdlProviderPosture::Configured);
+                assert_eq!(
+                    gdl_provider_kind(),
+                    Ok(GdlProviderKind::AfmStdio),
+                    "the child's health is a launch-time fact; the posture is the config's shape"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn the_afm_stdio_kind_refuses_a_mixed_profile() {
+        for mixed_key in [
+            "BRAIN_GDL_PROVIDER_BASE_URL",
+            "BRAIN_GDL_PROVIDER_MODEL",
+            "BRAIN_GDL_PROVIDER_SECRET_FILE",
+            "BRAIN_GDL_PROVIDER_SECRET_ROOT",
+        ] {
+            with_envs(
+                &[
+                    ("BRAIN_GDL_PROVIDER_KIND", Some("afm-stdio")),
+                    (mixed_key, Some("anything")),
+                ],
+                || {
+                    let error = validate_gdl_provider_config().unwrap_err();
+                    assert_eq!(
+                        error,
+                        "the afm-stdio provider kind takes no HTTP provider profile"
+                    );
+                    assert_eq!(gdl_provider_posture(), GdlProviderPosture::Invalid);
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn the_explicit_http_kind_keeps_todays_complete_or_absent_law() {
+        with_envs(
+            &[
+                ("BRAIN_GDL_PROVIDER_KIND", Some("http")),
+                ("BRAIN_GDL_PROVIDER_BASE_URL", None),
+                ("BRAIN_GDL_PROVIDER_MODEL", None),
+                ("BRAIN_GDL_PROVIDER_SECRET_FILE", None),
+                ("BRAIN_GDL_PROVIDER_SECRET_ROOT", None),
+            ],
+            || {
+                assert_eq!(gdl_provider_posture(), GdlProviderPosture::Disabled);
+            },
+        );
+        with_envs(
+            &[
+                ("BRAIN_GDL_PROVIDER_KIND", Some("http")),
+                (
+                    "BRAIN_GDL_PROVIDER_BASE_URL",
+                    Some("https://provider.example/v1/stream"),
+                ),
+                ("BRAIN_GDL_PROVIDER_MODEL", Some("server-model")),
+                ("BRAIN_GDL_PROVIDER_SECRET_FILE", Some("provider.key")),
+                ("BRAIN_GDL_PROVIDER_SECRET_ROOT", Some("/tmp/gdl-root")),
+            ],
+            || {
+                assert_eq!(gdl_provider_posture(), GdlProviderPosture::Configured);
             },
         );
     }

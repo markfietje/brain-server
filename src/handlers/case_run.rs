@@ -311,6 +311,40 @@ async fn read_server_secret_header(
 }
 
 async fn build_provider_from_server_profile() -> Result<Arc<dyn LlmProvider>, HandlerError> {
+    // The transport kind is the pilot round's D-P1 decision: `http` (the
+    // default) is the seam below, byte-unchanged; `afm-stdio` rides the
+    // kernel's ONE egress to brain-afm — the chat spine's own bridge client,
+    // no new network surface — and the alternatives (a Swift-side HTTP
+    // server, a hosted provider) were declined with reasons at the config
+    // seam's kind doc.
+    match crate::config::gdl_provider_kind().map_err(|_| provider_config_error())? {
+        crate::config::GdlProviderKind::Http => build_http_provider_from_server_profile().await,
+        crate::config::GdlProviderKind::AfmStdio => {
+            // The child's presence is a launch-time fact (the posture is the
+            // configuration's SHAPE, not the child's health): absent → a
+            // named 503, never a crash and never a half-built provider.
+            let bridge = crate::agentloop::bridge_afm::chat_bridge().ok_or_else(|| {
+                HandlerError::internal_with(
+                    "gdl_bridge_unavailable",
+                    "the AFM bridge binary is not available; the afm-stdio provider kind cannot serve",
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                )
+            })?;
+            let provider = crate::agentloop::provider_afm::AfmBridgeProvider::for_bridge(bridge)
+                .await
+                .map_err(|_| {
+                    HandlerError::internal_with(
+                        "gdl_bridge_unavailable",
+                        "the AFM bridge did not answer capabilities",
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    )
+                })?;
+            Ok(Arc::new(provider))
+        }
+    }
+}
+
+async fn build_http_provider_from_server_profile() -> Result<Arc<dyn LlmProvider>, HandlerError> {
     let profile = crate::config::GdlProviderProfile::from_env()
         .map_err(|_| provider_config_error())?
         .ok_or_else(provider_config_error)?;
