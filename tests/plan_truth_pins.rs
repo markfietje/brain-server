@@ -74,6 +74,12 @@ const ANCHORS: &[(&str, &str, usize, &str)] = &[
         333,
         "fn reserve_child",
     ),
+    (
+        "LL-01/T2 — the header's NOT-do list admits the one re-check child by name",
+        "src/workflow/gdl.rs",
+        33,
+        "ADVERSARIAL_RECHECK",
+    ),
 ];
 
 /// True when the private plan checkout exists at all. Absent on a public CI
@@ -144,4 +150,114 @@ fn the_plan_sets_load_bearing_citations_still_resolve() {
              this pin exists to catch. Re-derive BOTH in one commit."
         );
     }
+}
+
+/// LL-01 (doc truth pass, 2026-10-28): the corrected plan sentences must stay
+/// corrected. Each assertion is two-door (the private plan checkout, like the
+/// cross-check above) and each carries both halves — the LIE must be absent and
+/// the TRUTH must be present — because a doc that simply drops the false claim
+/// without stating the real machine would satisfy a one-sided pin while leaving
+/// the reader with no working description. The lies this pins against are the
+/// ones LL-01 removed: the Verify→Hypothesize edge the forward-only machine
+/// does not have, the per-case weights/threshold pinning the GDL chain does not
+/// do, and the roadmap header's "1.29–1.31 unshipped".
+#[test]
+fn the_loop_learning_doc_truth_corrections_hold() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !plans_present() {
+        eprintln!(
+            "LL-01: private plan checkout absent (public runner) — the doc-truth \
+             corrections are skipped by the two-door rule."
+        );
+        return;
+    }
+
+    let read = |rel: &str| -> String {
+        let path = root.join("../brain-steward-ip").join(rel);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{rel} must exist once the sibling does: {e}"))
+    };
+    // Whitespace-collapsed so a markdown reflow cannot pass or fail a phrase.
+    let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    // T1 — the assessment draws the machine that exists: a gate-fail retries
+    // the SAME phase, attempt-3 routes to a human, and a law-clean pass:false
+    // is the TERMINAL VerifyFailed. No V→H edge, and the correction is stated.
+    // (`&lt;` is the mermaid file's own `<` escape; a reintroduced edge matches
+    // under either spelling. The LIE-half is scoped to the diagram itself,
+    // because the correction's own blockquote QUOTES the removed edge — a
+    // whole-document check would fail on the correction, row 166's lesson in a
+    // second key: scope a phrase check to where the claim lives.)
+    let assessment = read("plans/ASSESSMENT_SIX_LOOPS_2026-10-18.md");
+    let section = assessment
+        .split("### 2.3")
+        .nth(1)
+        .unwrap_or_else(|| panic!("the assessment must keep its `### 2.3` section"));
+    let diagram: String = section
+        .split("```mermaid")
+        .nth(1)
+        .and_then(|rest| rest.split("```").next())
+        .unwrap_or_else(|| panic!("the 2.3 section must keep its mermaid diagram"))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        !diagram.contains("fails, attempts < 3| H")
+            && !diagram.contains("fails, attempts &lt; 3| H"),
+        "the assessment's GDL diagram reintroduced the Verify→Hypothesize edge — \
+         the machine is forward-only (gdl_checkpoint.rs advance: phases += 1 on \
+         pass, next.attempt = change.attempt on fail); iteration within a case \
+         is LL-07's preregistered work, not a drawn edge"
+    );
+    assert!(
+        diagram.contains("gate-fail, attempt &lt; 3| V"),
+        "the assessment's GDL diagram must draw the real gate-fail path — the \
+         SAME-phase retry — not a backward edge"
+    );
+    let flat_assessment = flat(&assessment);
+    assert!(
+        flat_assessment.contains("There is no Verify→Hypothesize edge at HEAD"),
+        "the assessment must keep the explicit no-backward-edge sentence under \
+         §2.3 — the sentence is what tells a reader the iteration question is \
+         LL-07's preregistered work, not a drawn edge"
+    );
+
+    // T3 — the spec addendum claims only the pinning the chain actually does,
+    // and names the owed item.
+    let addendum = flat(&read(
+        "plans/SPEC_ADDENDUM_GDL_DIAGNOSTIC_GAPS_2026-09-21.md",
+    ));
+    assert!(
+        !addendum.contains(
+            "pinned per-case (model version + weights digest + thresholds) on the audit chain"
+        ),
+        "the spec addendum reintroduced the unqualified per-case pinning claim — \
+         the chain pins policy_identity, per-exchange usage, and eval-row prompt \
+         hashes; the weights digest and sampling thresholds are OWED (LL-05), and \
+         the checkpoint's own comment reads \"validate shape, not a pinned digest\""
+    );
+    assert!(
+        addendum.contains("Not yet pinned per case:") && addendum.contains("owed under LL-05"),
+        "the spec addendum must carry the measured-truth sentence with the owed \
+         item named"
+    );
+
+    // T4 — the roadmap's lanes are lane names: the stale unshipped header is
+    // gone, the column is Lane, and the Lane-NN scheme with its mapping is
+    // stated.
+    let roadmap = flat(&read("plans/ROADMAP_1.30_to_2.0_Loop.md"));
+    assert!(
+        !roadmap.contains("1.29–1.31 unshipped") && !roadmap.contains("| Version · Name |"),
+        "the roadmap reintroduced the stale \"1.29–1.31 unshipped\" chain header or \
+         the \"Version · Name\" column — 1.29.x shipped (crate 1.29.x, tags prove \
+         the series) and the lane labels are names, not versions"
+    );
+    assert!(
+        roadmap.contains("| Lane · Name |")
+            && roadmap.contains("Lane-00 · Loop-core")
+            && roadmap.contains("1.32.N → Lane-0N")
+            && roadmap.contains("unrelated to schema 1.32.28"),
+        "the roadmap must carry the Lane-NN scheme, the mechanical mapping from \
+         the retired 1.32.N labels, and the schema-axis disclaimer"
+    );
 }

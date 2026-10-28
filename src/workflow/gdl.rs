@@ -29,11 +29,11 @@
 //! verify under failing conditions · L7 no premature closure · L8
 //! escalation = evidence handoff · L9 no fix from memory.
 //!
-//! What this deliberately does NOT do: no subagent fan-out or adversarial
-//! verification (1.32.2), no follow-the-sun handoff policy (1.32.3), no
-//! provider code (the loopback fixture carries the tests), no live
-//! routing claims, and no auto-publish of anything the loop captures —
-//! capture lands as proposals on the human review queue or not at all.
+//! What this deliberately does NOT do: no subagent fan-out beyond the single
+//! adversarial re-check child (`ADVERSARIAL_RECHECK_*`), no follow-the-sun
+//! handoff policy, no provider code in-tree, no live routing claims, and no
+//! auto-publish of anything the loop captures — capture lands as proposals
+//! on the human review queue or not at all.
 
 use rusqlite::{Connection, OptionalExtension};
 use std::sync::Arc;

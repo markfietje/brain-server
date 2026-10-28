@@ -1158,6 +1158,47 @@ mod pins {
         );
     }
 
+    /// LL-01 (doc truth pass, 2026-10-28): `gdl.rs`'s module header used to
+    /// read "no subagent fan-out or adversarial verification" — in the same
+    /// file that implements the adversarial re-check child. A header that
+    /// denies what the file does is the exact defect class this module exists
+    /// to catch, so the NOT-do list is held to the constructive truth: it must
+    /// carve out the one re-check child by name, and the named machinery must
+    /// exist in the file the header describes.
+    #[test]
+    fn the_gdl_module_header_denies_only_what_the_file_does_not_do() {
+        let src = doc("src/workflow/gdl.rs");
+
+        // Scope to the module doc — everything before the first `use` — so a
+        // symbol elsewhere in 12k lines cannot satisfy (or dodge) the pin.
+        let header = src
+            .split("\nuse ")
+            .next()
+            .expect("gdl.rs must have a module doc region");
+
+        assert!(
+            !header.contains("no subagent fan-out or adversarial"),
+            "gdl.rs's header again claims no adversarial verification — the file \
+             implements it (ADVERSARIAL_RECHECK_PROMPT, the SubagentSpec \
+             delegation, the contradiction handling). A NOT-do list that denies \
+             a mechanism the same file runs is the lie this module refuses."
+        );
+        assert!(
+            header.contains("ADVERSARIAL_RECHECK"),
+            "the header's NOT-do list must carve out the single adversarial \
+             re-check child by name — \"no subagent fan-out\" unqualified is \
+             false the moment the file runs one"
+        );
+
+        // The admission must match a real mechanism: the named const is the
+        // re-check's prompt, and the delegation is its only consumer.
+        assert!(
+            src.contains("const ADVERSARIAL_RECHECK_PROMPT"),
+            "the header admits `ADVERSARIAL_RECHECK_*` but the file no longer \
+             defines it — re-derive the header and this pin together"
+        );
+    }
+
     /// F16, second half: the delegation table's rows must name what the code
     /// does now — inherited posture, tighten-only bounds, and the production
     /// ask's tightening to the case ceiling. Each of the three was missing,
