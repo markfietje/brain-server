@@ -66,6 +66,9 @@ export interface StoredTurn {
 	readonly content: string;
 	readonly grounding: Record<string, unknown> | null;
 	readonly tier: string | null;
+	/** The kernel's cite-or-abstain verdict (LL-04, additive; assistant
+	 * rows). Verbatim wire name — the page validates the vocabulary. */
+	readonly support: string | null;
 	readonly created_at: number;
 }
 
@@ -151,12 +154,14 @@ function parseTurn(value: unknown): StoredTurn | null {
 	}
 	const grounding = value['grounding'];
 	const tier = value['tier'];
+	const support = value['support'];
 	return {
 		seq,
 		role,
 		content,
 		grounding: isRecord(grounding) ? grounding : null,
 		tier: typeof tier === 'string' ? tier : null,
+		support: typeof support === 'string' ? support : null,
 		created_at: createdAt
 	};
 }

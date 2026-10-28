@@ -53,6 +53,17 @@ const FINAL_FRAME =
 	'event: final\n' +
 	'data: {"text":"The gate is read-first.","tier":"on_device","turn":3,"inputTokens":12,"outputTokens":340}\n\n';
 
+const TYPED_FINAL_FRAME =
+	'event: final\n' +
+	'data: {"text":"Green tea is steamed Camellia sinensis.","tier":"on_device","turn":1,"inputTokens":40,"outputTokens":12,"abstain":false,"claims":[{"text":"Green tea is steamed Camellia sinensis.","cites":[0,2]}]}\n\n';
+
+const ABSTAIN_FINAL_FRAME =
+	'event: final\n' +
+	'data: {"text":"Nothing in your memory answers this question, so I am not guessing an answer.","tier":"deterministic","turn":0,"inputTokens":0,"outputTokens":0,"abstain":true,"claims":[]}\n\n';
+
+const SUPPORT_FRAME = (decision = 'partial') =>
+	`event: support\ndata: ${JSON.stringify({ cited: 1, uncited: 1, unknown_refs: 0, decision })}\n\n`;
+
 const ERROR_FRAME = (code: string, message?: string) =>
 	`event: error\ndata: ${JSON.stringify(
 		message === undefined ? { code } : { code, message }
@@ -134,6 +145,7 @@ function resetResponse(before: string[]): Response {
 interface Recorder extends SpineHandlers {
 	events: string[];
 	finals: unknown[];
+	supports: unknown[];
 	errors: unknown[];
 	refusals: unknown[];
 	faults: string[];
@@ -143,6 +155,7 @@ function recorder(): Recorder {
 	const record: Recorder = {
 		events: [],
 		finals: [],
+		supports: [],
 		errors: [],
 		refusals: [],
 		faults: [],
@@ -154,6 +167,9 @@ function recorder(): Recorder {
 		},
 		onFinal(final) {
 			record.finals.push(final);
+		},
+		onSupport(support) {
+			record.supports.push(support);
 		},
 		onStreamError(error) {
 			record.errors.push(error);
@@ -297,6 +313,87 @@ describe('the SSE parser', () => {
 		]);
 		expect(parser.malformed).toBe(1);
 	});
+
+	// ── LL-04 — the typed final and the trailing support verdict ─────────
+
+	test('the_typed_final_parses_abstain_and_claims_verbatim', async () => {
+		const { mod } = await withFetchAnswering(() => sseResponse([TYPED_FINAL_FRAME]));
+		const parser = mod.createSpineParser();
+		const events = parser.push(TYPED_FINAL_FRAME);
+		expect(events).toEqual([
+			{
+				kind: 'final',
+				text: 'Green tea is steamed Camellia sinensis.',
+				tier: 'on_device',
+				turn: 1,
+				inputTokens: 40,
+				outputTokens: 12,
+				abstain: false,
+				claims: [{ text: 'Green tea is steamed Camellia sinensis.', cites: [0, 2] }]
+			}
+		]);
+	});
+
+	test('the_support_verdict_dispatches_after_the_final_and_is_not_overflow', async () => {
+		const { mod } = await withFetchAnswering(() =>
+			sseResponse([GROUNDING_FRAME, DELTA_FRAME('An answer.'), TYPED_FINAL_FRAME, SUPPORT_FRAME('unsupported')])
+		);
+		const parser = mod.createSpineParser();
+		const events = parser.push(GROUNDING_FRAME + DELTA_FRAME('An answer.') + TYPED_FINAL_FRAME + SUPPORT_FRAME('unsupported'));
+		expect(events.map((e) => e.kind)).toEqual(['grounding', 'delta', 'final', 'support']);
+		expect(events[3]).toEqual({ kind: 'support', cited: 1, uncited: 1, unknownRefs: 0, decision: 'unsupported' });
+		expect(parser.terminalOverflow, 'the contract trailing frame is NOT overflow').toBe(0);
+		expect(parser.closed).toBe(true);
+		expect(parser.supportDelivered).toBe(true);
+	});
+
+	test('a_second_frame_after_the_support_is_still_overflow', async () => {
+		const { mod } = await withFetchAnswering(() => sseResponse([TYPED_FINAL_FRAME]));
+		const parser = mod.createSpineParser();
+		parser.push(TYPED_FINAL_FRAME + SUPPORT_FRAME('supported'));
+		const events = parser.push(SUPPORT_FRAME('supported'));
+		expect(events).toEqual([]);
+		expect(parser.terminalOverflow, 'support follows final EXACTLY once').toBe(1);
+	});
+
+	test('a_support_before_any_terminal_is_malformed', async () => {
+		const { mod } = await withFetchAnswering(() => sseResponse([SUPPORT_FRAME('supported')]));
+		const parser = mod.createSpineParser();
+		const events = parser.push(SUPPORT_FRAME('supported'));
+		expect(events).toEqual([]);
+		expect(parser.malformed, 'the contract shape is support-after-terminal').toBe(1);
+	});
+
+	test('a_drifted_support_vocabulary_is_malformed_not_a_sixth_decision', async () => {
+		const { mod } = await withFetchAnswering(() => sseResponse([TYPED_FINAL_FRAME]));
+		const parser = mod.createSpineParser();
+		const events = parser.push(
+			TYPED_FINAL_FRAME +
+				'event: support\ndata: {"cited":1,"uncited":0,"unknown_refs":0,"decision":"hallucinated"}\n\n'
+		);
+		expect(events.filter((e) => e.kind === 'support')).toEqual([]);
+		expect(parser.malformed).toBe(1);
+	});
+
+	test('a_drifted_claim_shape_makes_the_final_malformed', async () => {
+		const { mod } = await withFetchAnswering(() => sseResponse([TYPED_FINAL_FRAME]));
+		const parser = mod.createSpineParser();
+		const events = parser.push(
+			'event: final\ndata: {"text":"x","abstain":false,"claims":[{"text":42,"cites":[0]}]}\n\n'
+		);
+		expect(events).toEqual([]);
+		expect(parser.malformed).toBe(1);
+	});
+
+	test('an_abstaining_final_parses_with_the_typed_keys_and_no_claims', async () => {
+		const { mod } = await withFetchAnswering(() => sseResponse([ABSTAIN_FINAL_FRAME, SUPPORT_FRAME('abstained')]));
+		const parser = mod.createSpineParser();
+		const abstainedSupport =
+			'event: support\ndata: {"cited":0,"uncited":0,"unknown_refs":0,"decision":"abstained"}\n\n';
+		const events = parser.push(ABSTAIN_FINAL_FRAME + abstainedSupport);
+		expect(events[0]).toMatchObject({ kind: 'final', abstain: true, claims: [] });
+		expect(events[1]).toEqual({ kind: 'support', cited: 0, uncited: 0, unknownRefs: 0, decision: 'abstained' });
+	});
 });
 
 // ── 11 · the flush buffer ────────────────────────────────────────────────
@@ -395,7 +492,17 @@ describe('the spine consumer', () => {
 
 		expect(record.events).toEqual(['grounding:ok:2', 'delta:append:The gate ', 'delta:append:is read-first.']);
 		expect(record.finals).toEqual([
-			{ text: 'The gate is read-first.', tier: 'on_device', turn: 3, inputTokens: 12, outputTokens: 340 }
+			{
+				text: 'The gate is read-first.',
+				tier: 'on_device',
+				turn: 3,
+				inputTokens: 12,
+				outputTokens: 340,
+				// The pre-LL-04 fixture carries neither typed key: both read
+				// null — the additive law, on the consumer side.
+				abstain: null,
+				claims: null
+			}
 		]);
 		expect(record.errors).toEqual([]);
 		expect(record.faults).toEqual([]);
@@ -422,6 +529,42 @@ describe('the spine consumer', () => {
 		expect(record.finals, 'no terminal arrives after Stop').toEqual([]);
 		expect(record.events.every((e) => !e.startsWith('delta:append:after'))).toBe(true);
 		expect(captured.signal?.aborted, 'the fetch signal was aborted').toBe(true);
+	});
+
+	test('the_verdict_fires_after_the_final_and_before_done', async () => {
+		// LL-04 on the LIVE consumer path: final lands the answer of record,
+		// the trailing support patches the kernel's label, THEN the turn
+		// resolves — and the body is cancelled, the wire over.
+		const order: string[] = [];
+		const { mod } = await withFetchAnswering(() =>
+			sseResponse([GROUNDING_FRAME, TYPED_FINAL_FRAME, SUPPORT_FRAME('partial')])
+		);
+		const record = recorder();
+		record.onFinal = (final) => {
+			order.push(`final:${final.abstain === null ? 'untyped' : final.abstain ? 'abstain' : 'claim'}`);
+			record.finals.push(final);
+		};
+		record.onSupport = (support) => {
+			order.push(`support:${support.decision}`);
+			record.supports.push(support);
+		};
+		const turn = mod.turnSpine(REQUEST, record);
+		await turn.done;
+		expect(order).toEqual(['final:claim', 'support:partial']);
+		expect(record.faults).toEqual([]);
+		expect(record.errors).toEqual([]);
+	});
+
+	test('a_stream_without_support_still_completes_cleanly', async () => {
+		// An old kernel (pre-LL-04) never sends the verdict: the turn ends at
+		// the final, no contract violation, no support.
+		const { mod } = await withFetchAnswering(() => sseResponse([GROUNDING_FRAME, FINAL_FRAME]));
+		const record = recorder();
+		const turn = mod.turnSpine(REQUEST, record);
+		await turn.done;
+		expect(record.finals).toHaveLength(1);
+		expect(record.supports).toEqual([]);
+		expect(record.errors, 'no contract violation for a missing verdict').toEqual([]);
 	});
 
 	test('a_503_bridge_refusal_classifies_as_the_bridge_posture', async () => {
@@ -869,7 +1012,19 @@ describe('the envelope law', () => {
 		// five locales — grew the built JS to 211,244 bytes gzipped (+676
 		// over the A-4 midpoint). The bound is a named act, the band's
 		// midpoint moves to the measurement, and the register row carries it.
-		const R0_BASELINE = 211_244;
+		//
+		// NAMED ACT (LL-04 §1.4, the cite-or-abstain render, measured
+		// 2026-10-28): the answer's support surface — the pure claims module
+		// (`lib/chat/claims.ts`: the sentence↔claim mapping, index-resolved
+		// chips), the spine's typed-final + trailing-support parse, the
+		// generated arm's abstained card / provenance chips / dimmed
+		// unsupported sentences / verdict line, the replayed verdict, and
+		// seven message keys × five locales — grew the built JS to 213,910
+		// bytes gzipped (+2,666 over the F-2 midpoint). §1.4 is a BUILD
+		// round, not a refactor: the surface grew by a named act, the
+		// band's midpoint moves to the measurement, and the register row
+		// carries it.
+		const R0_BASELINE = 213_910;
 		const BAND = 512;
 		expect(
 			Math.abs(total - R0_BASELINE),

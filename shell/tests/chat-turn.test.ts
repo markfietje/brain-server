@@ -248,8 +248,9 @@ describe('M3-c replay maps the stored turn page purely', () => {
 		role: 'user' | 'assistant',
 		content: string,
 		grounding: Record<string, unknown> | null = null,
-		tier: string | null = null
-	) => ({ seq, role, content, grounding, tier, created_at: 1_760_000_000 });
+		tier: string | null = null,
+		support: string | null = null
+	) => ({ seq, role, content, grounding, tier, support, created_at: 1_760_000_000 });
 
 	test('a_pair_maps_to_one_generated_turn_carrying_the_answer_and_the_grounding', () => {
 		const turns = replayTurns([

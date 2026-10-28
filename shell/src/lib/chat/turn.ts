@@ -48,10 +48,40 @@ import type { Passage, RecallOutcome } from '../api/recall';
  * (the search ran and found nothing vs the store could not answer), and
  * `refused` stays apart from both because it is a fact about the READER.
  */
+/**
+ * The kernel's cite-or-abstain verdict (LL-04), as the support event named
+ * it — THE vocabulary, parsed not trusted: a label outside the five makes
+ * the spine's frame malformed before it ever reaches here. The kernel
+ * owns the decision; the shell renders it, never re-derives it.
+ */
+export type SupportLabel = 'supported' | 'partial' | 'unsupported' | 'abstained' | 'degraded';
+
+/** One sentence-level claim from the typed final (the model's sentence and
+ * the grounding-hit indices it asserted — verbatim, unjudged). */
+export interface AnswerClaim {
+	readonly text: string;
+	readonly cites: readonly number[];
+}
+
 export type TurnRendering =
 	| { kind: 'pending'; query: string }
 	| { kind: 'answered'; query: string; passages: Passage[]; confidence: number | null }
-	| { kind: 'generated'; query: string; answer: string; tier: string | null; passages: Passage[] }
+	| {
+			kind: 'generated';
+			query: string;
+			answer: string;
+			tier: string | null;
+			passages: Passage[];
+			/** THE TYPED FINAL (LL-04): the model's abstention and its
+			 * per-claim cites, verbatim. `false`/null on a pre-LL-04 kernel.
+			 * `abstain: true` renders as first-class abstained content. */
+			abstain: boolean;
+			claims: readonly AnswerClaim[] | null;
+			/** The kernel's verdict (the support event) — arrives AFTER the
+			 * final and is patched on; `null` until then and on replay rows
+			 * that predate the verdict. */
+			support: SupportLabel | null;
+	  }
 	| { kind: 'streaming'; query: string; text: string; passages: Passage[] }
 	| {
 			kind: 'stream_failed';
@@ -172,13 +202,56 @@ export function streamingTurn(query: string, text: string, passages: Passage[]):
 
 /** The terminal: the final text IS the answer of record (the deltas were
  * presentation), so the turn lands as `generated` — the same member replay
- * produces, which is what makes replay == live (plan 25 §5.5). */
+ * produces, which is what makes replay == live (plan 25 §5.5). The typed
+ * fields ride along (LL-04): the model's abstention + claims, verbatim,
+ * with the verdict still to come as the trailing support event. */
 export function generatedFromFinal(
 	query: string,
-	final: { text: string; tier: string | null },
+	final: {
+		text: string;
+		tier: string | null;
+		abstain: boolean | null;
+		claims: readonly { text: string; cites: readonly number[] }[] | null;
+	},
 	passages: Passage[]
 ): TurnRendering {
-	return { kind: 'generated', query, answer: final.text, tier: final.tier, passages };
+	return {
+		kind: 'generated',
+		query,
+		answer: final.text,
+		tier: final.tier,
+		passages,
+		abstain: final.abstain ?? false,
+		claims: final.claims,
+		support: null
+	};
+}
+
+/** The trailing verdict (LL-04): patches the kernel's label onto the
+ * generated turn. The label is THE decision of record — the shell renders
+ * it, never re-derives it from the claims. */
+export function withSupportLabel(
+	rendering: TurnRendering,
+	label: SupportLabel
+): TurnRendering {
+	if (rendering.kind !== 'generated') return rendering;
+	return { ...rendering, support: label };
+}
+
+/** Parse a stored verdict name (the replay wire / the DB's vocabulary).
+ * Anything outside the five is not a label — `null`, and the turn renders
+ * unlabeled rather than mislabeled. */
+export function parseSupportLabel(raw: unknown): SupportLabel | null {
+	switch (raw) {
+		case 'supported':
+		case 'partial':
+		case 'unsupported':
+		case 'abstained':
+		case 'degraded':
+			return raw;
+		default:
+			return null;
+	}
 }
 
 /** The named end: the model spoke (or was stopped, or the wire died mid-

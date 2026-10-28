@@ -17,8 +17,20 @@
  *
  *   event: grounding  data: {"decision":"ok","hits":[{id,title,score,domain,flagged}]}
  *   event: delta      data: {"text":"…","replace":false}      (zero or more)
- *   event: final      data: {"text":"…","tier":"on_device","turn":n,…}   (terminal)
+ *   event: final      data: {"text":"…","tier":"on_device","turn":n,…,
+ *                            "abstain":false,"claims":[{text,cites:[…]}]}
+ *   event: support    data: {"cited":n,"uncited":n,"unknown_refs":n,"decision":"…"}
  *   event: error      data: {"code":"…","message":"…","shortfallTokens":n}  (terminal)
+ *
+ * `final` and `support` arrived with LL-04 (additive): the final carries
+ * the model's TYPED assertion (abstain + per-claim hit indices, verbatim,
+ * unjudged), and support trails it EXACTLY ONCE with the kernel's
+ * cite-or-abstain VERDICT — pure index arithmetic on the kernel side, and
+ * the ONLY source of the label here. The shell never re-derives the
+ * decision: two gates would drift. `support` is the ONE frame allowed
+ * after the terminal; it is dispatched, not counted as overflow. An OLD
+ * spine reading this stream still renders the answer (the extra frame is
+ * ignored-and-counted) — old consumers unaffected.
  *
  * Between events, axum's `KeepAlive` emits comment-only frames (`: …`), which
  * the parser tolerates and never counts as malformed. Between reads, frames
@@ -66,6 +78,35 @@ export interface SpineHit {
 	readonly flagged: boolean;
 }
 
+/** One sentence-level claim from the typed final: the model's sentence and
+ * the grounding-hit indices it asserts. VERBATIM, unjudged — the verdict is
+ * the kernel's `support` event, never re-derived here. */
+export interface SpineClaim {
+	readonly text: string;
+	readonly cites: readonly number[];
+}
+
+/** The kernel's cite-or-abstain verdict (LL-04): the five decisions the
+ * support event can name. A label outside this set makes the whole frame
+ * malformed — the vocabulary is the contract. */
+export type SpineSupportDecision = 'supported' | 'partial' | 'unsupported' | 'abstained' | 'degraded';
+
+/** The support event's payload. */
+export interface SpineSupport {
+	readonly cited: number;
+	readonly uncited: number;
+	readonly unknownRefs: number;
+	readonly decision: SpineSupportDecision;
+}
+
+const SUPPORT_DECISIONS: readonly SpineSupportDecision[] = [
+	'supported',
+	'partial',
+	'unsupported',
+	'abstained',
+	'degraded'
+];
+
 export type SpineEvent =
 	| { kind: 'grounding'; decision: string; hits: SpineHit[] }
 	| { kind: 'delta'; text: string; replace: boolean }
@@ -76,7 +117,12 @@ export type SpineEvent =
 			turn: number | null;
 			inputTokens: number | null;
 			outputTokens: number | null;
+			/** The typed final (LL-04), additive: `null` on a pre-LL-04 kernel
+			 * that carries neither key. The model's assertion, verbatim. */
+			abstain: boolean | null;
+			claims: readonly SpineClaim[] | null;
 	  }
+	| { kind: 'support'; cited: number; uncited: number; unknownRefs: number; decision: SpineSupportDecision }
 	| { kind: 'error'; code: string; message: string | null; shortfallTokens: number | null };
 
 /**
@@ -144,14 +190,51 @@ function parsePayload(eventName: string, data: string): SpineEvent | null {
 			const turn = record['turn'];
 			const inputTokens = record['inputTokens'];
 			const outputTokens = record['outputTokens'];
+			// THE TYPED FIELDS (LL-04), additive and all-or-nothing per key:
+			// an absent pair is the pre-LL-04 shape (`null`), a present pair
+			// must carry the typed shapes or the frame is malformed.
+			const abstain = record['abstain'];
+			const rawClaims = record['claims'];
+			let claims: readonly SpineClaim[] | null = null;
+			if (Array.isArray(rawClaims)) {
+				claims = [];
+				for (const raw of rawClaims) {
+					if (typeof raw !== 'object' || raw === null) return null;
+					const claimRecord = raw as Record<string, unknown>;
+					const claimText = claimRecord['text'];
+					const cites = claimRecord['cites'];
+					if (typeof claimText !== 'string' || !Array.isArray(cites)) return null;
+					if (cites.some((c) => typeof c !== 'number')) return null;
+					(claims as SpineClaim[]).push({ text: claimText, cites: [...(cites as number[])] });
+				}
+			} else if (rawClaims !== undefined) {
+				return null;
+			}
 			return {
 				kind: 'final',
 				text,
 				tier: typeof tier === 'string' ? tier : null,
 				turn: typeof turn === 'number' ? turn : null,
 				inputTokens: typeof inputTokens === 'number' ? inputTokens : null,
-				outputTokens: typeof outputTokens === 'number' ? outputTokens : null
+				outputTokens: typeof outputTokens === 'number' ? outputTokens : null,
+				abstain: typeof abstain === 'boolean' ? abstain : null,
+				claims
 			};
+		}
+		case 'support': {
+			// THE VERDICT (LL-04): counts are non-negative integers and the
+			// decision names the five-word vocabulary — anything else is a
+			// frame this contract cannot lawfully carry.
+			const cited = record['cited'];
+			const uncited = record['uncited'];
+			const unknownRefs = record['unknown_refs'];
+			const decision = record['decision'];
+			const isCount = (v: unknown): v is number =>
+				typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+			if (!isCount(cited) || !isCount(uncited) || !isCount(unknownRefs)) return null;
+			if (typeof decision !== 'string' || !SUPPORT_DECISIONS.includes(decision as SpineSupportDecision))
+				return null;
+			return { kind: 'support', cited, uncited, unknownRefs, decision: decision as SpineSupportDecision };
 		}
 		case 'error': {
 			const code = record['code'];
@@ -180,10 +263,13 @@ export interface SpineParser {
 	end(): SpineEvent[];
 	/** Unreadable frames skipped (never emitted). */
 	readonly malformed: number;
-	/** Complete frames dropped after the terminal. */
+	/** Complete frames dropped after the terminal — EXCEPT the contract's
+	 * one trailing `support` frame, which dispatches (LL-04). */
 	readonly terminalOverflow: number;
 	/** True once the terminal event has been emitted. */
 	readonly closed: boolean;
+	/** True once the trailing support frame has been dispatched. */
+	readonly supportDelivered: boolean;
 }
 
 interface PendingFrame {
@@ -196,6 +282,7 @@ export function createSpineParser(): SpineParser {
 	let malformed = 0;
 	let terminalOverflow = 0;
 	let closed = false;
+	let supportDelivered = false;
 	let pending: PendingFrame = { eventName: null, dataLines: [] };
 	// A chunk may end with `\r` whose `\n` is in the NEXT chunk; remembering
 	// the CR is what makes a CRLF split across reads parse.
@@ -208,10 +295,31 @@ export function createSpineParser(): SpineParser {
 		// not malformed — it is liveness.
 		if (frame.eventName === null && frame.dataLines.length === 0) return;
 		if (closed) {
+			// THE ONE TRAILING FRAME (LL-04): the contract's support verdict
+			// follows the terminal exactly once — it DISPATCHES (the label is
+			// the kernel's, and the turn is not complete on the wire without
+			// it). Every further frame after that is overflow, as before.
+			if (frame.eventName === 'support' && !supportDelivered) {
+				const event = parsePayload('support', frame.dataLines.join('\n'));
+				if (event === null) {
+					malformed += 1;
+					return;
+				}
+				supportDelivered = true;
+				out.push(event);
+				return;
+			}
 			terminalOverflow += 1;
 			return;
 		}
 		if (frame.eventName === null || frame.dataLines.length === 0) {
+			malformed += 1;
+			return;
+		}
+		// The verdict's only lawful position is AFTER the terminal it judges
+		// (the kernel emits it there, exactly once). A support frame before
+		// any final/error is a shape the contract cannot carry — malformed.
+		if (frame.eventName === 'support') {
 			malformed += 1;
 			return;
 		}
@@ -294,6 +402,9 @@ export function createSpineParser(): SpineParser {
 		},
 		get closed() {
 			return closed;
+		},
+		get supportDelivered() {
+			return supportDelivered;
 		}
 	};
 }
@@ -417,6 +528,19 @@ export interface SpineFinal {
 	readonly turn: number | null;
 	readonly inputTokens: number | null;
 	readonly outputTokens: number | null;
+	/** The typed final (LL-04): the model's abstention decision and its
+	 * per-claim hit indices, verbatim and UNJUDGED. `null` on a pre-LL-04
+	 * kernel. The verdict arrives separately, as the support event. */
+	readonly abstain: boolean | null;
+	readonly claims: readonly SpineClaim[] | null;
+}
+
+/** The kernel's verdict, as the support event carried it. */
+export interface SpineSupportEvent {
+	readonly cited: number;
+	readonly uncited: number;
+	readonly unknownRefs: number;
+	readonly decision: SpineSupportDecision;
 }
 
 export interface SpineErrorEvent {
@@ -439,6 +563,9 @@ export interface SpineHandlers {
 	onGrounding(hits: readonly SpineHit[], decision: string): void;
 	onDelta(text: string, replace: boolean): void;
 	onFinal(final: SpineFinal): void;
+	/** The kernel's cite-or-abstain verdict (LL-04): follows `final` exactly
+	 * once. THE label of record — the shell renders it, never re-derives it. */
+	onSupport(support: SpineSupportEvent): void;
 	/** A NAMED failure on the stream — renders ON THE TURN, never the banner. */
 	onStreamError(error: SpineErrorEvent): void;
 	/** A pre-stream refusal — the kernel SPOKE and said no. */
@@ -547,9 +674,12 @@ export function turnSpine(request: SpineRequest, handlers: SpineHandlers): Spine
 		const decoder = new TextDecoder();
 
 		const dispatch = (event: SpineEvent): boolean => {
-			// Returns false when the turn is over — the terminal is terminal. The
-			// handlers receive the DTO, not the parsed frame: the page branches on
-			// WHICH handler ran, never on a second discriminant.
+			// Returns false when the turn is over — the terminal is terminal.
+			// THE ONE QUALIFICATION (LL-04): `final` keeps reading, because
+			// the support verdict trails it exactly once; `support` and
+			// `error` end the wire. The handlers receive the DTO, not the
+			// parsed frame: the page branches on WHICH handler ran, never on
+			// a second discriminant.
 			switch (event.kind) {
 				case 'grounding':
 					handlers.onGrounding(event.hits, event.decision);
@@ -563,7 +693,17 @@ export function turnSpine(request: SpineRequest, handlers: SpineHandlers): Spine
 						tier: event.tier,
 						turn: event.turn,
 						inputTokens: event.inputTokens,
-						outputTokens: event.outputTokens
+						outputTokens: event.outputTokens,
+						abstain: event.abstain,
+						claims: event.claims
+					});
+					return true;
+				case 'support':
+					handlers.onSupport({
+						cited: event.cited,
+						uncited: event.uncited,
+						unknownRefs: event.unknownRefs,
+						decision: event.decision
 					});
 					return false;
 				case 'error':

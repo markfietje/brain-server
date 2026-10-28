@@ -25,9 +25,10 @@
 		type RecallRequest,
 		type Passage
 	} from '#lib/api/recall.js';
-	import { renderTurn, renderingToken, streamFailureToken, generatedFromFinal, streamingTurn, streamFailedTurn, type TurnRendering } from '#lib/chat/turn.js';
+	import { renderTurn, renderingToken, streamFailureToken, generatedFromFinal, streamingTurn, streamFailedTurn, withSupportLabel, type TurnRendering, type SupportLabel } from '#lib/chat/turn.js';
 	import { provenanceBlock, type ProvenanceBlock } from '#lib/chat/provenance.js';
 	import { hitToPassage } from '#lib/chat/replay.js';
+	import { splitSentences, mapClaimsToSentences, citeTitles, type SentenceRender } from '#lib/chat/claims.js';
 	import {
 		turnSpine,
 		createDeltaBuffer,
@@ -355,6 +356,49 @@
 		);
 	}
 
+	// ── LL-04 §1.4 — the support render ──────────────────────────────────
+	//
+	// The kernel's verdict arrives as the trailing support event and is
+	// patched onto the generated turn AS A LABEL — the shell renders the
+	// decision, it never re-derives it from the claims (two gates drift).
+	// The sentence mapping (which sentence carries a provenance chip, which
+	// renders dimmed with the `unsupported` chip) is `lib/chat/claims.ts`'s
+	// pure work; this file only draws it.
+
+	function mappedSentences(rendering: Extract<TurnRendering, { kind: 'generated' }>): SentenceRender[] {
+		return mapClaimsToSentences(splitSentences(rendering.answer), rendering.claims);
+	}
+
+	/** The grounding hits, as the claim chips resolve them — the passages the
+	 * turn already carries, by INDEX (a cite is an index into the hits, the
+	 * kernel's own universe). */
+	function hitsOf(turnId: number): { id: number; title: string | null; domain: string | null }[] {
+		const turn = turns.find((t) => t.id === turnId);
+		if (turn === undefined || turn.provenance === null) return [];
+		return turn.provenance.citations.map((citation) => ({
+			id: citation.id,
+			title: citation.title.kind === 'present' ? citation.title.value : null,
+			domain: citation.domain.kind === 'present' ? citation.domain.value : null
+		}));
+	}
+
+	/** The verdict's sentence. Copy maps by label — a label the shell does
+	 * not know cannot reach here (the vocabulary is the type). */
+	function supportSentence(label: SupportLabel): string {
+		switch (label) {
+			case 'supported':
+				return m['chat.support.supported']();
+			case 'partial':
+				return m['chat.support.partial']();
+			case 'unsupported':
+				return m['chat.support.unsupported']();
+			case 'abstained':
+				return m['chat.support.abstained']();
+			case 'degraded':
+				return m['chat.support.degraded']();
+		}
+	}
+
 	/**
 	 * D1 — THE FALLBACK IS A DECISION, NOT A FAILURE (plan 25 §4, the round's
 	 * law change). A named posture renders the DETERMINISTIC `/recall` answer —
@@ -460,6 +504,15 @@
 				buffer.flushNow();
 				answered = true;
 				updateTurn(id, { rendering: generatedFromFinal(query, final, passages) });
+			},
+			onSupport: (support) => {
+				// THE KERNEL'S VERDICT (LL-04): patch the label on, render it,
+				// never re-derive it. The turn is already `generated` — the
+				// final always precedes the verdict on the wire.
+				const current = turns.find((t) => t.id === id);
+				if (current !== undefined && current.rendering.kind === 'generated') {
+					updateTurn(id, { rendering: withSupportLabel(current.rendering, support.decision) });
+				}
 			},
 			onStreamError: (err) => {
 				buffer.flushNow();
@@ -922,8 +975,53 @@
 					     produces it today): the ANSWER TEXT is the turn of record
 					     — the deltas were presentation — and the grounding hits
 					     ride beside it as evidence, collapsed like every other
-					     citation block (plan 21 §3). -->
-					<p class="text-sm whitespace-pre-wrap">{turn.rendering.answer}</p>
+					     citation block (plan 21 §3). LL-04 §1.4: an ABSTAINING
+					     answer renders as first-class abstained content, never a
+					     toast; a claimed answer renders its sentences with
+					     provenance chips where the model named a hit and dimmed
+					     with the `unsupported` chip where it did not; the kernel's
+					     verdict shows as the labeled line, never re-derived. -->
+					{#if turn.rendering.abstain}
+						<div class="grid gap-1 rounded-xl border border-brand/50 p-4 text-sm" data-testid="chat-answer-abstained">
+							<p class="font-semibold">{m['chat.answer.abstained_title']()}</p>
+							<p class="text-muted-foreground whitespace-pre-wrap">{turn.rendering.answer}</p>
+						</div>
+					{:else if turn.rendering.claims !== null && turn.rendering.claims.length > 0}
+						<!-- The splitter consumes the whitespace between sentences, so
+						     each piece carries its own trailing margin — spacing is a
+						     style, never a text node the template could collapse. -->
+						<p class="text-sm leading-relaxed" data-testid="chat-answer" data-support={turn.rendering.support ?? ''}>
+							{#each mappedSentences(turn.rendering) as piece, i (i)}
+								<span class="mr-2">
+									{#if piece.claim !== null}
+										<span data-cited={piece.claim.cites.join(',')}>{piece.text}</span>
+										{#each citeTitles(piece.claim.cites, hitsOf(turn.id)) as chip, j (j)}
+											<span class="ml-1 text-xs text-brand" data-testid="chat-cited-chip">{chip}</span>
+										{/each}
+									{:else}
+										<span class="opacity-60" data-testid="chat-unsupported-sentence">
+											{piece.text}
+											<span class="ml-1 text-xs text-destructive" data-testid="chat-unsupported-chip">
+												{m['chat.answer.unsupported_chip']()}
+											</span>
+										</span>
+									{/if}
+								</span>
+							{/each}
+						</p>
+					{:else}
+						<p class="text-sm whitespace-pre-wrap">{turn.rendering.answer}</p>
+					{/if}
+					{#if turn.rendering.support !== null}
+						<p
+							role="status"
+							class="text-xs text-muted-foreground"
+							data-testid="chat-support"
+							data-support={turn.rendering.support}
+						>
+							{supportSentence(turn.rendering.support)}
+						</p>
+					{/if}
 					{#if turn.rendering.tier}
 						<p class="text-xs text-muted-foreground" data-testid="chat-tier">
 							{m['chat.tier']({ tier: turn.rendering.tier })}

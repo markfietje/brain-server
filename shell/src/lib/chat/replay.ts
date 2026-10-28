@@ -36,6 +36,7 @@
 
 import type { Passage } from '../api/recall';
 import type { StoredTurn } from '../shell/sessions.svelte.js';
+import { parseSupportLabel } from './turn.js';
 
 /** One grounding hit, as the kernel's grounding event carries it. */
 interface GroundingHit {
@@ -104,6 +105,14 @@ export interface ReplayedTurn {
 		answer: string;
 		tier: string | null;
 		passages: Passage[];
+		/** The stored verdict (LL-04): the kernel's label, validated to the
+		 * five-word vocabulary and replayed — an `unsupported` turn stays
+		 * flagged in history. Claims are NOT stored, so replay carries no
+		 * sentence mapping: the answer renders plain with the label line,
+		 * which is the honest shape of what the row holds. */
+		abstain: boolean;
+		claims: readonly { text: string; cites: readonly number[] }[] | null;
+		support: ReturnType<typeof parseSupportLabel>;
 	};
 	/** The grounding passages, for the page's provenance block. */
 	readonly passages: Passage[];
@@ -134,7 +143,14 @@ export function replayTurns(turns: readonly StoredTurn[]): ReplayedTurn[] {
 				query: open.query,
 				answer: turn.content,
 				tier: turn.tier,
-				passages
+				passages,
+				// The abstain flag is not stored as a column; the deterministic
+				// abstain's notice text is the answer of record and renders as
+				// the abstained card by its own label below. `false` here —
+				// the stored shape has no boolean.
+				abstain: false,
+				claims: null,
+				support: parseSupportLabel(turn.support)
 			},
 			passages
 		});
