@@ -1553,8 +1553,12 @@ paths:
         (`{cited, uncited, unknown_refs, decision}` — the kernel's
         cite-or-abstain verdict, pure index arithmetic over the hits the
         kernel sent: supported · partial · unsupported · abstained ·
-        degraded), or `error`. Errors are named codes —
-        chat_bridge_unavailable (503, before the stream),
+        degraded), or `error`. When grounding found nothing usable (a
+        low-confidence or degraded decision with zero hits), the kernel
+        answers deterministically WITHOUT calling the model: `final`
+        carries `abstain:true` and the plain notice, `support` names
+        `abstained`, and no `delta` is ever streamed. Errors are named
+        codes — chat_bridge_unavailable (503, before the stream),
         locale_not_supported (400), and the bridge's own
         conversation_does_not_fit / generation_failed on the stream.
       operationId: chatTurn

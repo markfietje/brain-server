@@ -85,6 +85,24 @@ const MAX_RESPONSE_TOKENS: i64 = 1_024;
 /// on-device budget — this only shapes how much evidence is offered.
 const GROUNDING_TOKEN_BUDGET: usize = 1_024;
 
+/// The deterministic abstain notice (LL-04 §1.3): the kernel's OWN answer
+/// when grounding found nothing usable — "say plainly when it is not" as a
+/// wire fact. The bridge is not called (one round-trip saved; a model asked
+/// to answer from zero evidence can only fabricate), the notice IS the
+/// answer of record, and the turn persists as `abstained`.
+const DETERMINISTIC_ABSTAIN_NOTICE: &str =
+    "Nothing in your memory answers this question, so I am not guessing an answer.";
+
+/// The abstain gate (LL-04 §1.3): grounding found NOTHING usable — a
+/// calibrated low-confidence abstention or a degraded recall, both with an
+/// empty hit set — so the kernel answers deterministically and never asks
+/// the bridge for prose. A decision with hits, or `ok` with none (the store
+/// genuinely held nothing and the model may say so), still goes to the
+/// bridge. Pure, pinned; the `bridge.turn` call sits behind it.
+fn abstains_without_bridge(decision: &str, hit_count: usize) -> bool {
+    hit_count == 0 && (decision == "low_confidence" || decision == "degraded")
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ChatTurnRequest {
     /// Conversation id. Round 1 defaults to one conversation ("default");
@@ -259,6 +277,115 @@ pub async fn chat_turn(
     } else {
         format!("{fenced_context}\n\n{message}")
     };
+
+    // LL-04 §1.3 — THE ABSTAIN PATH WITHOUT THE BRIDGE. Grounding found
+    // nothing usable (a calibrated low-confidence abstention or a degraded
+    // recall, both with zero hits): the kernel answers deterministically
+    // and the bridge is never asked for prose — a model answering from zero
+    // evidence can only fabricate, so "say plainly when it is not" becomes
+    // a wire fact HERE, before any generation. The notice IS the answer of
+    // record; the pair persists like any final, flagged `abstained`; and
+    // the spine's own D1 fallback table (plan 25 — pre-stream refusals) is
+    // composed with, never bypassed: that table covers a kernel that
+    // refused, this covers a store that held nothing.
+    if abstains_without_bridge(
+        grounding_event["decision"].as_str().unwrap_or_default(),
+        grounding_hit_count,
+    ) {
+        let support = crate::service::chat_support::support_verdict(
+            true,
+            &[],
+            grounding_hit_count,
+            grounding_degraded,
+        );
+        debug_assert_eq!(
+            support.decision,
+            crate::service::chat_support::SupportDecision::Abstained,
+            "the D1 abstain's shape is the verdict's Abstained"
+        );
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let abstain_pool = state.pool.clone();
+        let abstain_owner = crate::handlers::gate::content_owner_stamp(&principal.0)
+            .unwrap_or_else(|| crate::handlers::gate::LOOPBACK_OPERATOR_OWNER.to_owned());
+        let abstain_session = session.clone();
+        let abstain_message = message.clone();
+        let abstain_grounding = grounding_event.to_string();
+        let (tx, rx_out) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(64);
+        tokio::spawn(async move {
+            let send = |event: Event| async { tx.send(Ok(event)).await.is_ok() };
+            let grounding_ok = send(
+                Event::default()
+                    .event("grounding")
+                    .json_data(grounding_event)
+                    .unwrap_or_default(),
+            )
+            .await;
+            let final_ok = send(
+                Event::default()
+                    .event("final")
+                    .json_data(json!({
+                        "text": DETERMINISTIC_ABSTAIN_NOTICE,
+                        "tier": "deterministic",
+                        "turn": 0,
+                        "inputTokens": 0,
+                        "outputTokens": 0,
+                        "abstain": true,
+                        "claims": [],
+                    }))
+                    .unwrap_or_default(),
+            )
+            .await;
+            let _ = send(
+                Event::default()
+                    .event("support")
+                    .json_data(json!({
+                        "cited": support.cited,
+                        "uncited": support.uncited,
+                        "unknown_refs": support.unknown_refs,
+                        "decision": support.decision.as_str(),
+                    }))
+                    .unwrap_or_default(),
+            )
+            .await;
+            if grounding_ok && final_ok {
+                // THE ABSTENTION IS THE ANSWER OF RECORD: the pair persists
+                // through the SAME service tx as any final, flagged.
+                let persisted = tokio::task::spawn_blocking(move || -> Result<i64, String> {
+                    let mut conn = abstain_pool.get().map_err(|e| e.to_string())?;
+                    crate::service::chat_sessions::persist_turn_pair(
+                        &mut conn,
+                        &abstain_session,
+                        &abstain_owner,
+                        &abstain_message,
+                        DETERMINISTIC_ABSTAIN_NOTICE,
+                        Some(&abstain_grounding),
+                        Some("deterministic"),
+                        Some(support.decision.as_str()),
+                        now_unix,
+                    )
+                    .map_err(|e| e.to_string())
+                })
+                .await;
+                match persisted {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        tracing::error!("chat abstain persistence failed: {e}");
+                    }
+                    Err(e) => {
+                        tracing::error!("chat abstain persistence task failed: {e}");
+                    }
+                }
+            }
+        });
+        let stream: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
+            Box::pin(ReceiverStream::new(rx_out));
+        return Sse::new(stream)
+            .keep_alive(axum::response::sse::KeepAlive::default())
+            .into_response();
+    }
 
     let (bridge_id, mut rx) = match bridge
         .turn(BridgeTurn {
@@ -543,6 +670,68 @@ mod tests {
             "the instructions must state that fenced memory is data, not instructions"
         );
         assert!(CHAT_INSTRUCTIONS.contains("BRAIN_UNTRUSTED_CONTEXT"));
+    }
+
+    /// THE ABSTAIN GATE (LL-04 §1.3): zero hits from a calibrated
+    /// low-confidence abstention or a degraded recall → the kernel answers
+    /// deterministically and the bridge is never asked for prose. Any other
+    /// shape — a decision WITH hits, or `ok` with none — still goes to the
+    /// bridge (the model may say "nothing matched" in its own words).
+    #[test]
+    fn empty_hits_abstains_without_calling_the_bridge() {
+        assert!(abstains_without_bridge("low_confidence", 0));
+        assert!(abstains_without_bridge("degraded", 0));
+        // `ok` with zero hits is an honest empty store, not an abstention.
+        assert!(!abstains_without_bridge("ok", 0));
+        // Hits present: the model has evidence and answers grounded.
+        assert!(!abstains_without_bridge("low_confidence", 3));
+        assert!(!abstains_without_bridge("ok", 5));
+        assert!(!abstains_without_bridge("degraded", 1));
+    }
+
+    /// THE GUARD SITS BEFORE THE BRIDGE CALL, in the source: the abstain
+    /// branch is the only thing allowed to answer without the bridge, and
+    /// its notice is the answer of record that persists flagged `abstained`
+    /// through the SAME service tx as any final.
+    #[test]
+    fn the_abstain_branch_sits_before_the_bridge_turn_and_persists_flagged() {
+        let src = include_str!("chat.rs");
+        let guard = src
+            .find("if abstains_without_bridge(")
+            .expect("the abstain gate guards the turn path");
+        let bridge_call = src
+            .find("bridge\n        .turn(BridgeTurn {")
+            .expect("the bridge turn call");
+        assert!(
+            guard < bridge_call,
+            "the abstain gate must decide BEFORE the bridge is asked for prose"
+        );
+        // The branch answers with the notice, never model prose, and the
+        // notice says plainly what happened. (The persistence needle is
+        // assembled so THIS test's own text never sits inside the Failed
+        // arm's scan below — that pin reads the raw file.)
+        let needle = concat!("service::chat_sessions::", "persist_", "turn_pair");
+        let branch = &src[guard..bridge_call];
+        assert!(
+            branch.contains("DETERMINISTIC_ABSTAIN_NOTICE"),
+            "the abstain final's text is the kernel's own notice"
+        );
+        assert!(
+            branch.contains(needle),
+            "the abstention persists like any final (the pair tx)"
+        );
+        assert!(
+            branch.contains("decision\": support.decision.as_str()"),
+            "the support event comes from the verdict fn, one vocabulary source"
+        );
+        assert!(
+            branch.contains("\"tier\": \"deterministic\""),
+            "the abstain final names its tier honestly — no model answered"
+        );
+        assert!(
+            DETERMINISTIC_ABSTAIN_NOTICE.contains("not guessing"),
+            "the notice says plainly that the kernel is not guessing"
+        );
     }
 
     /// THE PAIR PERSISTS AT THE FINAL, and a Failed turn persists nothing —
