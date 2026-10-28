@@ -824,6 +824,74 @@ pub(crate) mod tests {
         assert_eq!(v["error"]["code"], "provider_config_invalid", "body: {v}");
     }
 
+    /// P-2, the switch-off witness (in-test): the kind UNSET with no HTTP
+    /// profile is the deterministic posture — the same named 400 as always,
+    /// the run untouched. (The kind-absent default is byte-unchanged; the
+    /// config pins hold that.)
+    #[test]
+    fn route_kind_unset_without_profile_stays_deterministic() {
+        let f = fixture();
+        let run_id = seed_run(&f.state, "acme");
+        let (status, v) = {
+            let _env = crate::test_support::lock_env();
+            let _restore = ProfileEnvRestore::capture();
+            unsafe { std::env::remove_var("BRAIN_GDL_PROVIDER_KIND") };
+            for key in PROFILE_ENV_KEYS {
+                unsafe { std::env::remove_var(key) };
+            }
+            test_runtime().block_on(async {
+                body_bytes(post_launch(&f.state, run_id, launch_body("t", ""), None).await).await
+            })
+        };
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "body: {v}");
+        assert_eq!(v["error"]["code"], "provider_config_invalid", "body: {v}");
+    }
+
+    /// P-2, the switch-on refusal arm: the kind ON with the bridge binary
+    /// ABSENT refuses BY NAME — a 503 carrying `gdl_bridge_unavailable`,
+    /// before any provider contact and before any run mutation (the run
+    /// stays fresh; a relaunch after fixing the posture is a first launch).
+    /// The presence arm (a real child answering) is owned by the
+    /// provider-level round-trip pin and the pilot's live runs.
+    #[test]
+    fn route_afm_stdio_without_a_bridge_refuses_by_name() {
+        let f = fixture();
+        let run_id = seed_run(&f.state, "acme");
+        let (status, v) = {
+            let _env = crate::test_support::lock_env();
+            let _restore = ProfileEnvRestore::capture();
+            unsafe { std::env::set_var("BRAIN_GDL_PROVIDER_KIND", "afm-stdio") };
+            for key in PROFILE_ENV_KEYS {
+                unsafe { std::env::remove_var(key) };
+            }
+            // The process-wide bridge singleton resolves from the env; in
+            // the test process there is no brain-afm beside the test binary
+            // and this path names nothing — the singleton is None either
+            // way, which is exactly the posture under test.
+            unsafe { std::env::set_var("BRAIN_AFM_BRIDGE", "/nonexistent/brain-afm") };
+            test_runtime().block_on(async {
+                body_bytes(post_launch(&f.state, run_id, launch_body("t", ""), None).await).await
+            })
+        };
+        assert_eq!(
+            status,
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "body: {v}"
+        );
+        assert_eq!(v["error"]["code"], "gdl_bridge_unavailable", "body: {v}");
+        // The run is untouched: the refusal preceded every mutation.
+        let conn = f.state.pool.get().unwrap();
+        let (status, revision): (String, i64) = conn
+            .query_row(
+                "SELECT status, state_revision FROM workflow_runs WHERE id = ?1",
+                [run_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "active");
+        assert_eq!(revision, 0, "a refused launch leaves the run fresh");
+    }
+
     struct RawErrorProvider;
 
     impl LlmProvider for RawErrorProvider {

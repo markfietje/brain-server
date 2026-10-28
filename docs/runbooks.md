@@ -344,6 +344,47 @@ left running in the background. The stable public classes are
 `provider_unavailable`, `provider_refused`, `provider_response_invalid`,
 `provider_timeout`, and `provider_cancelled`.
 
+## The education pilot: switch the live loop on, and off
+
+The pilot's transport is `afm-stdio`: the loop's provider calls ride the
+kernel's ONE egress to `brain-afm` (the chat spine's own bridge client, JSONL
+over stdio). No HTTP profile is configured for the pilot — a hosted provider
+was declined because case data must not leave the machine.
+
+### Switch on
+
+1. Build the bridge child (`swift build` in `shell-macos/`) and either place
+   `brain-afm` beside the server binary or set `BRAIN_AFM_BRIDGE` to its path.
+   The child's only network is Apple's own framework (PCC), which is refused
+   unless an app-level entitlement exists — generation stays on-device.
+2. Set `BRAIN_GDL_PROVIDER_KIND=afm-stdio` — and NOTHING else from the HTTP
+   profile. A mixed posture (any `BRAIN_GDL_PROVIDER_*` HTTP key beside the
+   stdio kind) is invalid configuration and readiness reports `invalid`.
+3. Check `/ready`: `gdl_provider: "configured"` is the configuration's shape.
+   The bridge child's health is a launch-time fact — the first case launch
+   answers an absent or already-exited child with HTTP 503
+   `gdl_bridge_unavailable` and leaves the run fresh (a relaunch after fixing
+   it is a first launch).
+4. Bind the education profile before ingesting (`brain setup education
+   --profile education --yes`). The profile's laws (strict masking, the
+   retention map, the air-gap connector posture, verbose audit) hold against
+   every write, live-model or not.
+
+### Switch off
+
+1. Relaunch the server WITHOUT `BRAIN_GDL_PROVIDER_KIND` (or with `http` to
+   restore the HTTP seam). The kind is read at the provider-construction seam
+   per case launch, so the relaunch — not the config file — is the flip; a
+   running process serves its boot-time kind until it stops.
+2. With the kind removed and no HTTP profile set, the loop returns to the
+   deterministic posture: `/ready` reports `gdl_provider: "disabled"` and a
+   case launch answers 400 `provider_config_invalid` — the same named refusal
+   as before the pilot existed. Stored cases, reflections, and audit rows are
+   untouched; the pilot's writes carry the domain's own retention clocks.
+3. The bridge child may keep running (the chat spine owns it); switching the
+   loop off never stops chat. Nothing about the pilot outlives its
+   configuration except its measured evidence.
+
 ## Next steps
 
 - **[One Brain for the Whole Team](./team-workflow.md)** — where procedures fit in the shared-store workflow.

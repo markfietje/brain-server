@@ -86,6 +86,12 @@ scrape posture + the knowledge columns, `storage_layout.rs`) — learner
 profiling for ad-tech cannot re-purpose stored rows, because the purpose
 travels with the row and nothing rewrites it.
 
+The GDL pilot (the DepEd beachhead, `BRAIN_GDL_PROVIDER_KIND=afm-stdio`)
+runs LOCAL: the loop's provider calls ride the on-device `brain-afm` bridge
+and no hosted provider is configured — nothing about a learner record
+leaves the machine, structurally (`docs/runbooks.md`, the pilot's
+switch-on/switch-off sequence).
+
 ## What this vertical REFUSES (plan 28 §3.2, written down)
 
 1. **Autonomous evaluation decisions with no human in the loop** — the HITL
