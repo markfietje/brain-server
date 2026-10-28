@@ -199,6 +199,10 @@ pub struct TurnRow {
     /// The grounding event verbatim (assistant rows), already JSON text.
     pub grounding_json: Option<String>,
     pub tier: Option<String>,
+    /// The cite-or-abstain verdict (assistant rows, LL-04): the wire name of
+    /// the `support.decision` the kernel labeled the turn with. `None` =
+    /// predates the verdict (every pre-LL-04 row).
+    pub support_decision: Option<String>,
     pub created_at: i64,
 }
 
@@ -266,7 +270,7 @@ pub fn list_turns(
         |r| r.get(0),
     )?;
     let mut stmt = conn.prepare(
-        "SELECT seq, role, content, grounding_json, tier, created_at
+        "SELECT seq, role, content, grounding_json, tier, support_decision, created_at
          FROM chat_turns WHERE session_id = ?1
          ORDER BY seq ASC
          LIMIT ?2 OFFSET ?3",
@@ -279,7 +283,8 @@ pub fn list_turns(
                 content: r.get(2)?,
                 grounding_json: r.get(3)?,
                 tier: r.get(4)?,
-                created_at: r.get(5)?,
+                support_decision: r.get(5)?,
+                created_at: r.get(6)?,
             })
         })?
         .flatten()
@@ -303,6 +308,10 @@ fn role_of(raw: &str) -> &'static str {
 /// tx — an empty session row is unrepresentable), bumping the activity
 /// counters, and writing the audit evidence inside the same tx.
 ///
+/// `support_decision` is the cite-or-abstain verdict's wire name (LL-04,
+/// `service::chat_support`), stored on the assistant row: an Unsupported
+/// turn is STORED FLAGGED — visible, never silently an answer.
+///
 /// A failed generation NEVER reaches this function — the handler calls it
 /// only after the FINAL event landed, so the orphan-user-row shape has no
 /// path here.
@@ -317,6 +326,7 @@ pub fn persist_turn_pair(
     assistant_text: &str,
     grounding_json: Option<&str>,
     tier: Option<&str>,
+    support_decision: Option<&str>,
     now_unix: i64,
 ) -> Result<i64, ChatSessionError> {
     let key = bounded_session_key(session_key)?;
@@ -324,6 +334,13 @@ pub fn persist_turn_pair(
         return Err(ChatSessionError::Storage(
             "a chat session is always attributable; the owner stamp was empty".to_owned(),
         ));
+    }
+    if let Some(raw) = support_decision {
+        if crate::service::chat_support::SupportDecision::parse(raw).is_none() {
+            return Err(ChatSessionError::Storage(format!(
+                "unknown support decision {raw:?} — the vocabulary is the verdict enum's"
+            )));
+        }
     }
     let user_stored = screened(user_message);
     let assistant_stored = screened(assistant_text);
@@ -373,19 +390,20 @@ pub fn persist_turn_pair(
         |r| r.get(0),
     )?;
     tx.execute(
-        "INSERT INTO chat_turns(session_id, seq, role, content, grounding_json, tier, created_at)
-         VALUES (?1, ?2, 'user', ?3, NULL, NULL, ?4)",
+        "INSERT INTO chat_turns(session_id, seq, role, content, grounding_json, tier, support_decision, created_at)
+         VALUES (?1, ?2, 'user', ?3, NULL, NULL, NULL, ?4)",
         params![session_id, next_seq, user_stored, now_unix],
     )?;
     tx.execute(
-        "INSERT INTO chat_turns(session_id, seq, role, content, grounding_json, tier, created_at)
-         VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6)",
+        "INSERT INTO chat_turns(session_id, seq, role, content, grounding_json, tier, support_decision, created_at)
+         VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7)",
         params![
             session_id,
             next_seq + 1,
             assistant_stored,
             grounding_json,
             tier,
+            support_decision,
             now_unix
         ],
     )?;
@@ -559,6 +577,7 @@ mod tests {
             "the gate is read-first.",
             Some(r#"{"decision":"ok","hits":[]}"#),
             Some("on_device"),
+            None,
             T0,
         )
         .expect("persist");
@@ -589,6 +608,7 @@ mod tests {
             OWNER,
             "again",
             "again answered.",
+            None,
             None,
             None,
             T0 + 5,
@@ -630,7 +650,7 @@ mod tests {
     #[test]
     fn a_foreign_session_is_404_shaped_like_an_unknown_one() {
         let mut conn = db();
-        persist_turn_pair(&mut conn, "s-owned", OWNER, "q", "a", None, None, T0).unwrap();
+        persist_turn_pair(&mut conn, "s-owned", OWNER, "q", "a", None, None, None, T0).unwrap();
         // Unrestricted (loopback/Admin) sees it.
         let (_, total) = list_sessions(&conn, &OwnerScope::unrestricted(), 20, 0).unwrap();
         assert_eq!(total, 1);
@@ -669,7 +689,7 @@ mod tests {
         let mut conn = db();
         for i in 0..52 {
             let key = format!("s-{i:02}");
-            persist_turn_pair(&mut conn, &key, OWNER, "q", "a", None, None, T0 + i).unwrap();
+            persist_turn_pair(&mut conn, &key, OWNER, "q", "a", None, None, None, T0 + i).unwrap();
         }
         // 52 asked, 50 served — the ceiling holds — and the total is the
         // count of every row, not the page's length.
@@ -683,8 +703,18 @@ mod tests {
         assert_eq!(rest.len(), 2);
         // The turn page caps identically over one long session.
         for i in 0..30 {
-            persist_turn_pair(&mut conn, "s-00", OWNER, "q", "a", None, None, T0 + 100 + i)
-                .unwrap();
+            persist_turn_pair(
+                &mut conn,
+                "s-00",
+                OWNER,
+                "q",
+                "a",
+                None,
+                None,
+                None,
+                T0 + 100 + i,
+            )
+            .unwrap();
         }
         let (turns, turn_total) =
             list_turns(&conn, &OwnerScope::unrestricted(), "s-00", 51, 0).unwrap();
@@ -696,7 +726,7 @@ mod tests {
     #[test]
     fn rename_round_trips_and_holds_the_label_ceiling() {
         let mut conn = db();
-        persist_turn_pair(&mut conn, "s-r", OWNER, "q", "a", None, None, T0).unwrap();
+        persist_turn_pair(&mut conn, "s-r", OWNER, "q", "a", None, None, None, T0).unwrap();
         let renamed = rename_session(
             &mut conn,
             &OwnerScope::unrestricted(),
@@ -729,8 +759,19 @@ mod tests {
     #[test]
     fn delete_removes_turns_and_session_atomically_and_audits_it() {
         let mut conn = db();
-        persist_turn_pair(&mut conn, "s-del", OWNER, "q1", "a1", None, None, T0).unwrap();
-        persist_turn_pair(&mut conn, "s-del", OWNER, "q2", "a2", None, None, T0 + 1).unwrap();
+        persist_turn_pair(&mut conn, "s-del", OWNER, "q1", "a1", None, None, None, T0).unwrap();
+        persist_turn_pair(
+            &mut conn,
+            "s-del",
+            OWNER,
+            "q2",
+            "a2",
+            None,
+            None,
+            None,
+            T0 + 1,
+        )
+        .unwrap();
         let erased =
             delete_session(&mut conn, &OwnerScope::unrestricted(), "s-del", OWNER).unwrap();
         assert_eq!(
@@ -783,6 +824,7 @@ mod tests {
                 &format!("a{i}"),
                 None,
                 None,
+                None,
                 T0 + i,
             )
             .unwrap();
@@ -819,6 +861,7 @@ mod tests {
             "answer with ![x]<script></script>(url) inside",
             None,
             None,
+            None,
             T0,
         )
         .unwrap();
@@ -835,6 +878,73 @@ mod tests {
         assert_eq!(turns.len(), 2, "the screened pair still pairs");
     }
 
+    /// STORED FLAGGED, NEVER SILENTLY AN ANSWER (LL-04 §1.2): the verdict's
+    /// wire name rides the assistant row and reads back verbatim; an
+    /// `unsupported` turn is distinguishable from a `supported` one by the
+    /// ROW, not by re-parsing prose. An unknown decision name refuses the
+    /// write — storage never holds a value the verdict enum cannot mean.
+    #[test]
+    fn the_support_verdict_is_stored_flagged_and_unknown_names_refuse() {
+        let mut conn = db();
+        persist_turn_pair(
+            &mut conn,
+            "s-flag",
+            OWNER,
+            "what is in green tea?",
+            "Green tea contains EGCG [8].",
+            None,
+            Some("on_device"),
+            Some("unsupported"),
+            T0,
+        )
+        .unwrap();
+        persist_turn_pair(
+            &mut conn,
+            "s-flag",
+            OWNER,
+            "and?",
+            "It is steamed.",
+            None,
+            Some("on_device"),
+            Some("supported"),
+            T0 + 1,
+        )
+        .unwrap();
+        let (turns, _) = list_turns(&conn, &OwnerScope::unrestricted(), "s-flag", 50, 0).unwrap();
+        assert_eq!(turns[1].support_decision.as_deref(), Some("unsupported"));
+        assert_eq!(turns[3].support_decision.as_deref(), Some("supported"));
+        // A pre-LL-04 row (support_decision NULL) reads back None.
+        persist_turn_pair(
+            &mut conn,
+            "s-flag",
+            OWNER,
+            "legacy",
+            "legacy answer",
+            None,
+            None,
+            None,
+            T0 + 2,
+        )
+        .unwrap();
+        let (turns, _) = list_turns(&conn, &OwnerScope::unrestricted(), "s-flag", 50, 0).unwrap();
+        assert_eq!(turns[5].support_decision, None);
+        // The vocabulary is the verdict enum's: an unknown name refuses.
+        let refused = persist_turn_pair(
+            &mut conn,
+            "s-flag",
+            OWNER,
+            "q",
+            "a",
+            None,
+            None,
+            Some("hallucinated"),
+            T0 + 3,
+        );
+        assert!(matches!(refused, Err(ChatSessionError::Storage(_))));
+        let (_, total) = list_turns(&conn, &OwnerScope::unrestricted(), "s-flag", 50, 0).unwrap();
+        assert_eq!(total, 6, "the refused write persisted nothing");
+    }
+
     /// THE KEY FENCE at the storage boundary: the shape `/chat/turns`
     /// enforces at the wire is re-asserted here, so a future caller cannot
     /// bypass the wire bound.
@@ -844,7 +954,7 @@ mod tests {
         for bad in ["", "   ", "two words", &*"x".repeat(65)] {
             assert!(
                 matches!(
-                    persist_turn_pair(&mut conn, bad, OWNER, "q", "a", None, None, T0),
+                    persist_turn_pair(&mut conn, bad, OWNER, "q", "a", None, None, None, T0),
                     Err(ChatSessionError::InvalidKey)
                 ),
                 "the key {bad:?} must refuse at the storage boundary"

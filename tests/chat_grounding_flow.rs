@@ -202,7 +202,57 @@ async fn the_green_tea_chat_turn_is_grounded_fenced_and_streamed() {
     let delta_count = events.iter().filter(|(name, _)| name == "delta").count();
     assert!(delta_count > 0, "the turn streamed deltas before the final");
 
-    // 4. No error event ever rode the stream.
+    // 4. THE SUPPORT VERDICT FOLLOWS THE FINAL, EXACTLY ONCE (LL-04 §1.2 —
+    //    the cite-or-abstain contract on the live wire): the kernel's pure
+    //    index arithmetic rode the stream as its own event, after the final
+    //    it judges, and named one of the five decisions.
+    let final_pos = events
+        .iter()
+        .position(|(name, _)| name == "final")
+        .expect("the stream carries a final");
+    let support_events: Vec<&(String, serde_json::Value)> = events
+        .iter()
+        .filter(|(name, _)| name == "support")
+        .collect();
+    assert_eq!(
+        support_events.len(),
+        1,
+        "support follows final EXACTLY once: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .position(|(name, _)| name == "support")
+            .unwrap()
+            > final_pos,
+        "the verdict follows the final it judges"
+    );
+    let support = support_events[0].1.clone();
+    for count in ["cited", "uncited", "unknown_refs"] {
+        assert!(
+            support[count].as_u64().is_some(),
+            "support.{count} is a count: {support}"
+        );
+    }
+    assert!(
+        matches!(
+            support["decision"].as_str(),
+            Some("supported" | "partial" | "unsupported" | "abstained" | "degraded")
+        ),
+        "the decision names the verdict vocabulary: {support}"
+    );
+
+    // 5. OLD FINAL CONSUMERS UNAFFECTED (the additive law): the final still
+    //    carries every key the v1.29.32 contract named — the typed fields
+    //    arrived BESIDE them, never instead of them.
+    for key in ["text", "tier", "turn", "inputTokens", "outputTokens"] {
+        assert!(
+            final_event.get(key).is_some(),
+            "the final keeps the pre-LL-04 key {key}"
+        );
+    }
+
+    // 6. No error event ever rode the stream.
     assert!(
         !events.iter().any(|(name, _)| name == "error"),
         "the turn completed without a named error"

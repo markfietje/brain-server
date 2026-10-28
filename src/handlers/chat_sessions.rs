@@ -144,6 +144,10 @@ pub async fn list_turns(
                 "content": content,
                 "grounding": grounding,
                 "tier": turn.tier,
+                // The cite-or-abstain verdict (LL-04, additive): the kernel's
+                // label rides the row — an Unsupported turn is visible on
+                // replay, never silently an answer.
+                "support": turn.support_decision,
                 "created_at": turn.created_at,
             })
         })

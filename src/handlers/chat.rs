@@ -6,8 +6,14 @@
 //! event: delta      data: {text, replace?}        (zero or more)
 //! event: final      data: {text, tier, turn, inputTokens, outputTokens,
 //!                          abstain, claims:[{text, cites}]}
+//! event: support    data: {cited, uncited, unknown_refs, decision}
 //! event: error      data: {code, message?, shortfallTokens?}   (terminal)
 //! ```
+//!
+//! The `support` verdict follows `final` EXACTLY ONCE — the kernel's
+//! cite-or-abstain gate (LL-04 §1.2, `service::chat_support`): pure index
+//! arithmetic over the hits the kernel actually sent, no LLM in the gate.
+//! The kernel labels what the model asserted; it never edits the prose.
 //!
 //! THE TURN. Recall grounds (the same `run_recall` core `/recall` serves,
 //! submodularly packed to a token budget), every hit crosses the untrusted
@@ -196,7 +202,8 @@ pub async fn chat_turn(
     )
     .await;
 
-    let (grounding_event, fenced_context) = match grounding {
+    let (grounding_event, fenced_context, grounding_hit_count, grounding_degraded) = match grounding
+    {
         Ok(outcome) => {
             let hits: Vec<serde_json::Value> = outcome
                 .tagged
@@ -229,7 +236,9 @@ pub async fn chat_turn(
                 })
                 .collect::<Vec<_>>()
                 .join("\n\n");
-            (event, fenced)
+            // The packed set's SIZE is the verdict's whole universe: a cite
+            // is honest iff it indexes one of THESE.
+            (event, fenced, outcome.tagged.len(), false)
         }
         Err(e) => {
             // Degraded grounding is STATED to the model, never hidden: the
@@ -239,6 +248,8 @@ pub async fn chat_turn(
                 json!({"decision": "degraded", "hits": []}),
                 "(recall is degraded — no memory evidence could be retrieved for this turn.)"
                     .to_owned(),
+                0,
+                true,
             )
         }
     };
@@ -302,6 +313,9 @@ pub async fn chat_turn(
             // Delta is the only non-terminal kind; decide before the match
             // destructure moves the payload.
             let terminal = !matches!(event, BridgeEvent::Delta { .. });
+            // The support event trails the final, exactly once (the wire
+            // contract); nothing else carries a trailing frame.
+            let mut trailing_support: Option<Event> = None;
             let sse = match event {
                 BridgeEvent::Delta { text, replace } => Event::default()
                     .event("delta")
@@ -316,15 +330,28 @@ pub async fn chat_turn(
                     abstain,
                     claims,
                 } => {
+                    // THE VERDICT, before anything leaves: pure index
+                    // arithmetic over the packed set this turn actually
+                    // sent — no LLM in the gate. The kernel labels the
+                    // model's prose; it never edits a word of it.
+                    let support = crate::service::chat_support::support_verdict(
+                        abstain,
+                        &claims,
+                        grounding_hit_count,
+                        grounding_degraded,
+                    );
                     // THE PAIR PERSISTS AT THE FINAL, before the event is
                     // forwarded: the bridge delivered the answer, so the turn
                     // of record is complete — a consumer that disconnects on
                     // this very frame still leaves a complete transcript,
                     // exactly as the bridge's own session keeps it. One tx
                     // (lazy session create + both rows + audit); a Failed
-                    // arm below persists NOTHING. A persistence failure is
-                    // logged loud and never poisons the stream — the store's
-                    // absence is a named incident, not a retriable SSE error.
+                    // arm below persists NOTHING. The support decision rides
+                    // the row: an Unsupported turn is STORED FLAGGED —
+                    // visible, never silently an answer. A persistence
+                    // failure is logged loud and never poisons the stream —
+                    // the store's absence is a named incident, not a
+                    // retriable SSE error.
                     let now_unix = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs() as i64)
@@ -337,6 +364,7 @@ pub async fn chat_turn(
                         let session = session.clone();
                         let answer = text.clone();
                         let tier = tier.clone();
+                        let decision = support.decision.as_str();
                         move || -> Result<i64, String> {
                             let mut conn = pool.get().map_err(|e| e.to_string())?;
                             crate::service::chat_sessions::persist_turn_pair(
@@ -347,6 +375,7 @@ pub async fn chat_turn(
                                 &answer,
                                 Some(&grounding),
                                 Some(tier.as_str()),
+                                Some(decision),
                                 now_unix,
                             )
                             .map_err(|e| e.to_string())
@@ -362,6 +391,19 @@ pub async fn chat_turn(
                             tracing::error!("chat turn persistence task failed: {e}");
                         }
                     }
+                    // The verdict follows the final it judges — exactly
+                    // once, then the stream is over.
+                    trailing_support = Some(
+                        Event::default()
+                            .event("support")
+                            .json_data(json!({
+                                "cited": support.cited,
+                                "uncited": support.uncited,
+                                "unknown_refs": support.unknown_refs,
+                                "decision": support.decision.as_str(),
+                            }))
+                            .unwrap_or_default(),
+                    );
                     Event::default()
                         .event("final")
                         .json_data(json!({
@@ -400,6 +442,12 @@ pub async fn chat_turn(
             if !send(sse).await {
                 bridge.cancel(&bridge_id);
                 return;
+            }
+            if let Some(support_event) = trailing_support.take() {
+                if !send(support_event).await {
+                    bridge.cancel(&bridge_id);
+                    return;
+                }
             }
             if terminal {
                 return;

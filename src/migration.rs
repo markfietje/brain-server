@@ -3216,8 +3216,8 @@ pub fn run_migration_with_store_dim(
     }
 
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.28')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.28';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.29')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.29';",
         [],
     )?;
 
@@ -3462,6 +3462,7 @@ pub fn run_migration_with_store_dim(
              content TEXT NOT NULL,
              grounding_json TEXT,
              tier TEXT,
+             support_decision TEXT,
              created_at INTEGER NOT NULL,
              UNIQUE(session_id, seq)
          );
@@ -3578,6 +3579,34 @@ pub fn run_migration_with_store_dim(
         if !present {
             db.execute(
                 &format!("ALTER TABLE installed_packs ADD COLUMN {col} INTEGER"),
+                [],
+            )?;
+        }
+    }
+
+    // ── v1.32.29 "Support": the cite-or-abstain verdict, STORED (LL-04) ──
+    // `chat_turns.support_decision` — the wire name of the verdict the
+    // kernel labeled the turn with (`service::chat_support`: pure index
+    // arithmetic over the packed hits, no LLM in the gate). An `unsupported`
+    // turn is STORED FLAGGED — visible on the row, never silently an
+    // answer. NULL means "predates the verdict": every pre-LL-04 row reads
+    // back None, and a DEFAULT would falsely date them to a label.
+    // Presence-guarded ALTER (the removed_at replay pattern) so a DB
+    // created before the column gains it replay-safely; the chat store's
+    // CREATE TABLE covers fresh DBs. No column dropped, none rebuilt.
+    {
+        let col = "support_decision";
+        let present: bool = db
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('chat_turns') WHERE name='{col}'"),
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(
+                "ALTER TABLE chat_turns ADD COLUMN support_decision TEXT",
                 [],
             )?;
         }

@@ -788,7 +788,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** One memory-grounded chat turn (the chat spine, v1.29.32). Recall grounds the turn through the same deterministic core as /recall (submodularly packed, every hit wrapped in the untrusted fence) and the AFM bridge streams the answer. SSE event sequence: `grounding` (citations), `delta`* (incremental text; `replace` marks a wholesale revision), then exactly one terminal `final` or `error`. Errors are named codes — chat_bridge_unavailable (503, before the stream), locale_not_supported (400), and the bridge's own conversation_does_not_fit / generation_failed on the stream. */
+        /** One memory-grounded chat turn (the chat spine, v1.29.32). Recall grounds the turn through the same deterministic core as /recall (submodularly packed, every hit wrapped in the untrusted fence) and the AFM bridge streams the answer. SSE event sequence: `grounding` (citations), `delta`* (incremental text; `replace` marks a wholesale revision), exactly one terminal `final` (additively carrying the typed answer: `abstain` and `claims:[{text, cites}]` — what the model asserted, verbatim), then exactly one `support` (`{cited, uncited, unknown_refs, decision}` — the kernel's cite-or-abstain verdict, pure index arithmetic over the hits the kernel sent: supported · partial · unsupported · abstained · degraded), or `error`. Errors are named codes — chat_bridge_unavailable (503, before the stream), locale_not_supported (400), and the bridge's own conversation_does_not_fit / generation_failed on the stream. */
         post: operations["chatTurn"];
         delete?: never;
         options?: never;
@@ -820,7 +820,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** One session's stored turns, oldest first — the replay page. The FINAL text is the answer of record (deltas are never stored); an assistant row carries its grounding event verbatim (the hits the turn was grounded on) and its tier. */
+        /** One session's stored turns, oldest first — the replay page. The FINAL text is the answer of record (deltas are never stored); an assistant row carries its grounding event verbatim (the hits the turn was grounded on), its tier, and its `support` verdict — the kernel's cite-or-abstain label (supported · partial · unsupported · abstained · degraded); an `unsupported` turn is stored FLAGGED, never silently an answer. NULL support predates the verdict. */
         get: operations["listChatSessionTurns"];
         put?: never;
         post?: never;
@@ -7428,6 +7428,11 @@ export interface operations {
                             /** @description The grounding event (assistant rows) verbatim. */
                             grounding?: Record<string, never> | null;
                             tier?: string | null;
+                            /**
+                             * @description The kernel's cite-or-abstain verdict (assistant rows, LL-04) — stored flagged; NULL predates the verdict.
+                             * @enum {string|null}
+                             */
+                            support?: "supported" | "partial" | "unsupported" | "abstained" | "degraded" | null;
                             created_at: number;
                         }[];
                         total: number;

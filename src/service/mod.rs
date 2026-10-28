@@ -63,6 +63,7 @@
 
 pub mod art30;
 pub mod chat_sessions;
+pub mod chat_support;
 #[cfg(feature = "compliance-pack")]
 pub mod compliance;
 pub mod create;
