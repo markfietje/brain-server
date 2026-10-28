@@ -1216,6 +1216,24 @@ paths:
             filter reads rows, it never re-verifies differently. No mint
             route exists (`brain principal grant` is the operator's local
             act); this parameter is the read side of that law.
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: >
+            The audit-filter round — an INCLUSIVE ISO-8601 (RFC 3339) lower
+            bound on the row timestamp, at the SQL layer beside
+            `kind`/`tenant`/`principal`. "Since" names a boundary moment and
+            the boundary row itself is IN the answer; the kernel normalizes
+            the value to the chain's timestamp format, so a value that does
+            not parse refuses naming the law rather than silently ignoring
+            the bound. ADDITIVE: same bounded listing, same hash discipline,
+            and the chain VERDICT is unchanged. The retired GUI advertised
+            `/audit?since&:principal`; M3-g shipped `principal` — this
+            completes the surface. A query param is not a migration: the
+            schema ceiling is unmoved.
         - name: limit
           in: query
           required: false

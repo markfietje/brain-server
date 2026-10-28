@@ -76,18 +76,27 @@ function refusalOf(error: unknown): AuditRead & ChainRead {
  * `principal` narrows the page to ONE principal's audited footprint — the
  * kernel filters at the SQL layer beside `kind`/`tenant` (M3-g, plan 27),
  * the thing the retired GUI's `/audit?principal=` URL promised and the
- * kernel never shipped until now. The chain verdict read is a SEPARATE
- * endpoint and is untouched by the filter.
+ * kernel never shipped until now. `since` is the retired GUI's OTHER
+ * promise, an INCLUSIVE ISO-8601 lower bound on the row timestamp — the
+ * kernel normalizes and refuses a value it cannot parse, so what this
+ * module sends must already be a real moment (`toISOString()`). The chain
+ * verdict read is a SEPARATE endpoint and is untouched by either filter.
  */
-export async function fetchAuditEvents(offset = 0, principal?: string): Promise<AuditRead> {
+export async function fetchAuditEvents(
+	offset = 0,
+	principal?: string,
+	since?: string
+): Promise<AuditRead> {
 	const from = Number.isSafeInteger(offset) && offset >= 0 ? offset : 0;
 	const filter = typeof principal === 'string' && principal.trim().length > 0 ? principal : undefined;
+	const bound = typeof since === 'string' && since.trim().length > 0 ? since : undefined;
 	try {
 		const result = await client.GET('/audit', {
 			params: {
-				query: filter
-					? { limit: AUDIT_PAGE, offset: from, principal: filter }
-					: { limit: AUDIT_PAGE, offset: from }
+				query:
+					filter || bound
+						? { limit: AUDIT_PAGE, offset: from, principal: filter, since: bound }
+						: { limit: AUDIT_PAGE, offset: from }
 			}
 		});
 		if (result.response.status !== 200) {

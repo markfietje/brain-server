@@ -1113,8 +1113,19 @@ fn r45_0_correction_leaves_the_audit_chain_module_byte_untouched() {
 // with its own red-first battery — and the freeze moves with the record,
 // the dependency-ceiling precedent. The pin's JOB is unchanged: the NEXT
 // round that touches the chain without naming it reds here.
+//
+// Re-pinned by the audit-filter round (2026-10-28): `recent_tenant` gains
+// the `since` clause in its SQL builder — an INCLUSIVE `ts >=` bound on the
+// LISTING path (`/audit?since=`, the retired GUI's last unshipped promise).
+// NO verdict, key, epoch, chain_link, scheme, check, or audit-row WRITE
+// shape moved: the INSERT path is byte-identical, the M3-g principal clause
+// keeps its shape, the UMP caller passes None unchanged, and the module's
+// own battery (keyed hash, tamper controls, genesis + head pins) is
+// untouched and still green. The filter reads rows; it never re-verifies
+// differently, and `/audit/verify` is pinned byte-identical across a
+// filtered call.
 const CHAIN_MODULE_SHA256: &str =
-    "30ffdec0ce656a094088db62496ec74773db1f4ff98261884d314bea873b0927";
+    "9ca3fb9d4650d30208ba502d96f7da8641e50735ef9b91cccd898a963c2f7bb5";
 
 /// E8's second half: the correction adds no key material and no audit row.
 #[test]

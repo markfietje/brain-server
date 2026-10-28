@@ -15,7 +15,10 @@
 	// "not verified", never "verified" on a guess.
 	import { onMount } from 'svelte';
 	import { m } from '$paraglide/messages.js';
+	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
+	import { SvelteURLSearchParams } from 'svelte/reactivity';
 	import type { WireFault } from '#lib/api/client.js';
 	import {
 		AUDIT_PAGE,
@@ -49,6 +52,39 @@
 	// untouched by it.
 	const principalFilter = $derived(page.url.searchParams.get('principal')?.trim() || null);
 
+	// The since filter (the audit-filter round): the retired GUI's OTHER URL
+	// promise, the last arm of `/audit?since&:principal` to ship. Same law as
+	// the principal filter — the URL is the source — plus the one affordance
+	// a moment needs: a datetime input whose Apply WRITES the URL and then
+	// re-reads, because a filter that silently changed the rows would be
+	// indistinguishable from a smaller chain. The input speaks the local wall
+	// clock; the wire speaks ISO-8601 — the conversion happens once, here,
+	// and an empty input clears the bound.
+	const sinceFilter = $derived(page.url.searchParams.get('since')?.trim() || null);
+	let sinceInput = $state('');
+	// The route's own path, resolved once: the chips' clear links ride it, and
+	// the rule-clean shape for a resolved href is the identifier itself.
+	const auditPath = resolve('/audit');
+
+	async function applySince(): Promise<void> {
+		const raw = sinceInput.trim();
+		const params = new SvelteURLSearchParams(page.url.searchParams.toString());
+		if (raw !== '') {
+			const parsed = new Date(raw);
+			if (Number.isNaN(parsed.getTime())) return;
+			params.set('since', parsed.toISOString());
+		} else {
+			params.delete('since');
+		}
+		const qs = params.toString();
+		// The Apply navigates with the query the operator asked for; resolve()
+		// names routes, not their query state — the one navigation this
+		// surface makes that resolve() cannot express.
+		// eslint-disable-next-line svelte/no-navigation-without-resolve
+		await goto(qs === '' ? auditPath : `${auditPath}?${qs}`);
+		await load();
+	}
+
 	function refusalMessage(status: number | null, fault: WireFault): string {
 		if (status === 401 || fault === 'unauthorized' || fault === 'no_credential') {
 			return m['audit.refused.unauthorized']();
@@ -61,7 +97,7 @@
 		const mine = ++generation;
 		view = { kind: 'loading' };
 		const [events, verdict] = await Promise.all([
-			fetchAuditEvents(0, principalFilter ?? undefined),
+			fetchAuditEvents(0, principalFilter ?? undefined, sinceFilter ?? undefined),
 			verifyAuditChain()
 		]);
 		if (mine !== generation) return;
@@ -85,7 +121,11 @@
 		loadingMore = true;
 		const before = view.events;
 		try {
-			const nextPage = await fetchAuditEvents(before.length, principalFilter ?? undefined);
+			const nextPage = await fetchAuditEvents(
+				before.length,
+				principalFilter ?? undefined,
+				sinceFilter ?? undefined
+			);
 			if (view.kind !== 'live') return;
 			if (nextPage.kind === 'ok') {
 				view = {
@@ -150,7 +190,7 @@
 				{m['audit.principal.filtered']({ name: principalFilter })}
 			</Badge>
 			<a
-				href="/audit"
+				href={auditPath}
 				class="text-xs text-muted-foreground underline-offset-4 hover:underline"
 				data-testid="audit-principal-clear"
 			>
@@ -158,6 +198,40 @@
 			</a>
 		</div>
 	{/if}
+
+	{#if sinceFilter !== null}
+		<div class="flex items-center gap-2 text-sm" data-testid="audit-since-filter">
+			<Badge variant="secondary" class="rounded-full px-2.5 py-1 font-mono">
+				{m['audit.since.filtered']({ ts: sinceFilter })}
+			</Badge>
+		<a
+			href={auditPath}
+			class="text-xs text-muted-foreground underline-offset-4 hover:underline"
+			data-sveltekit-reload
+			data-testid="audit-since-clear"
+			>
+				{m['audit.since.clear']()}
+			</a>
+		</div>
+	{/if}
+
+	<div class="flex flex-wrap items-end gap-2 text-sm" data-testid="audit-since-row">
+		<div class="flex flex-col gap-1">
+			<label for="audit-since-input" class="text-xs text-muted-foreground">
+				{m['audit.since.label']()}
+			</label>
+			<input
+				id="audit-since-input"
+				type="datetime-local"
+				bind:value={sinceInput}
+				class="rounded-md border border-border bg-surface px-2 py-1 font-mono text-xs"
+				data-testid="audit-since-input"
+			/>
+		</div>
+		<Button variant="outline" size="sm" onclick={() => void applySince()} data-testid="audit-since-apply">
+			{m['audit.since.apply']()}
+		</Button>
+	</div>
 
 	{#if view.kind === 'loading'}
 		<p aria-busy="true" data-testid="audit-loading">{m['audit.loading']()}</p>

@@ -4736,3 +4736,148 @@ fn the_deny_arm_inventory_matches_the_source() {
          already attributed, unchanged by this round"
     );
 }
+
+// ═══ THE `since` ARM (the retired GUI's last unshipped promise) ══════════
+// The retired GUI advertised `/audit?since&:principal`; the principal filter
+// shipped; `since` never did. Additive beside kind/tenant/principal/limit/
+// offset — an INCLUSIVE ISO-8601 lower bound on the row timestamp at the SQL
+// layer, composable with every other parameter. The schema ceiling is
+// unmoved: a query param is not a migration.
+
+/// THE `since` BOUND: rows before it are absent, the row AT it is present
+/// (the bound is inclusive — "since" names a boundary moment, and a log that
+/// silently drops its own boundary second is a smaller chain than the one it
+/// kept), rows after it are present, it composes with `principal`, a value
+/// that does not parse refuses naming the law, and the chain VERDICT is
+/// byte-identical across a filtered call — the filter reads rows, it never
+/// re-verifies differently.
+#[tokio::test]
+async fn the_audit_since_filter_bounds_rows_inclusively_and_composes_with_principal() {
+    let srv = build_server();
+    let admin = mint(
+        &srv,
+        "aud-since-admin",
+        "user:admin",
+        "global",
+        &["admin:*/*"],
+        &["admin"],
+    );
+    // Three real rows, a second apart: the chain's ts has one-second
+    // resolution, so same-second writes would blur the bound the pin proves.
+    for (actor, detail) in [
+        ("since-a", "since pin row one"),
+        ("since-b", "since pin row two"),
+        ("since-a", "since pin row three"),
+    ] {
+        {
+            let conn = srv.state.pool.get().expect("pool");
+            brain_server::audit::record(
+                &conn,
+                brain_server::audit::AuditKind::Auth,
+                actor,
+                "since-pin-target",
+                brain_server::audit::AuditStatus::Ok,
+                detail,
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    }
+
+    // THE VERDICT BEFORE (the byte the filtered sequence must return to).
+    let (vst, vbody1) = send_body(&srv, Some(&admin), "/audit/verify", "GET", "").await;
+    assert_eq!(vst, StatusCode::OK, "{vbody1}");
+
+    // UNFILTERED: the three rows with their ts values.
+    let (st, text) = send_body(&srv, Some(&admin), "/audit", "GET", "").await;
+    assert_eq!(st, StatusCode::OK, "{text}");
+    let body: serde_json::Value = serde_json::from_str(&text).expect("audit answers JSON");
+    let events = body["events"].as_array().expect("events array");
+    let mine: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e["actor"].as_str(), Some("since-a") | Some("since-b")))
+        .collect();
+    assert_eq!(mine.len(), 3, "the fixture wrote three rows: {events:?}");
+    let ts_of = |e: &serde_json::Value| e["ts"].as_str().expect("row ts").to_string();
+    let row_two_ts = mine
+        .iter()
+        .find(|e| e["actor"].as_str() == Some("since-b"))
+        .map(|e| ts_of(e))
+        .expect("the since-b row is in the listing");
+    // The chain stores CURRENT_TIMESTAMP ("YYYY-MM-DD HH:MM:SS"); the wire
+    // speaks RFC 3339 — the handler normalizes, the pin sends the wire form.
+    let bound = format!("{}Z", row_two_ts.replace(' ', "T"));
+
+    // FILTERED, INCLUSIVE: the row AT the bound is present, the row before
+    // it is absent — and the page is exactly ts >= bound, nothing else.
+    let (st, text) = send_body(
+        &srv,
+        Some(&admin),
+        &format!("/audit?since={bound}"),
+        "GET",
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{text}");
+    let body: serde_json::Value = serde_json::from_str(&text).expect("audit answers JSON");
+    let events = body["events"].as_array().expect("events array");
+    let mine: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e["actor"].as_str(), Some("since-a") | Some("since-b")))
+        .collect();
+    assert_eq!(
+        mine.len(),
+        2,
+        "the bound admits the boundary row and everything after, and nothing \
+         before: {events:?}"
+    );
+    assert!(
+        mine.iter()
+            .all(|e| ts_of(e).as_str() >= row_two_ts.as_str()),
+        "every admitted row sits at or after the bound: {mine:?}"
+    );
+    assert!(
+        mine.iter().any(|e| e["actor"].as_str() == Some("since-b")),
+        "the boundary row itself is IN the answer — inclusive, not exclusive"
+    );
+
+    // COMPOSED with principal: the intersection, not the union.
+    let (st, text) = send_body(
+        &srv,
+        Some(&admin),
+        &format!("/audit?since={bound}&principal=since-a"),
+        "GET",
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{text}");
+    let body: serde_json::Value = serde_json::from_str(&text).expect("audit answers JSON");
+    let events = body["events"].as_array().expect("events array");
+    assert_eq!(
+        events.len(),
+        1,
+        "the composition returns the bound's intersection with the \
+         principal's footprint: {events:?}"
+    );
+    assert_eq!(events[0]["actor"].as_str(), Some("since-a"), "{events:?}");
+
+    // MALFORMED: a value that does not parse refuses, naming the law — a
+    // silent ignore would leave the operator reading an unbounded listing
+    // believing it bounded.
+    let (st, text) = send_body(&srv, Some(&admin), "/audit?since=not-a-date", "GET", "").await;
+    assert_eq!(st, StatusCode::OK, "{text}");
+    let body: serde_json::Value = serde_json::from_str(&text).expect("audit answers JSON");
+    let err = body["error"].as_str().expect("the error shape");
+    assert!(
+        err.contains("since"),
+        "the refusal names the parameter it refuses: {body}"
+    );
+
+    // THE VERDICT AFTER: byte-identical across the filtered calls.
+    let (vst, vbody2) = send_body(&srv, Some(&admin), "/audit/verify", "GET", "").await;
+    assert_eq!(vst, StatusCode::OK, "{vbody2}");
+    assert_eq!(
+        vbody1, vbody2,
+        "the chain verdict is untouched by the filters — they read rows, they \
+         never re-verify differently"
+    );
+}

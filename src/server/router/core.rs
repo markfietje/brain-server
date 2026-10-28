@@ -444,6 +444,30 @@ pub(crate) async fn list_audit(
     let kind = params.kind;
     let tenant = tenant_scope;
     let principal_filter = params.principal;
+    // The `since` bound: the wire speaks RFC 3339, the chain stores
+    // CURRENT_TIMESTAMP — normalize HERE (one format, at the one door) so
+    // the SQL `ts >=` comparison is chronological. The bound is INCLUSIVE:
+    // "since" names a boundary moment, and the boundary row itself belongs
+    // to the answer. A value that does not parse refuses naming the law —
+    // a silent ignore would leave the operator reading an unbounded
+    // listing believing it bounded.
+    let since_bound = match params.since.as_deref() {
+        None => None,
+        Some(raw) => match chrono::DateTime::parse_from_rfc3339(raw.trim()) {
+            Ok(t) => Some(
+                t.with_timezone(&chrono::Utc)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string(),
+            ),
+            Err(_) => {
+                return Json(serde_json::json!({
+                    "error": "invalid since: an ISO-8601 (RFC 3339) timestamp is \
+                              required, e.g. 2026-10-28T00:00:00Z — the bound is \
+                              inclusive"
+                }));
+            }
+        },
+    };
     // The operator audit list covers EVERY registered
     // domain's chain in multi-db mode (rows carry their domain tag), not just
     // the global pool. Shim mode stays the single shared pool. Merged rows
@@ -467,6 +491,7 @@ pub(crate) async fn list_audit(
                 kind.as_deref(),
                 tenant.as_deref(),
                 principal_filter.as_deref(),
+                since_bound.as_deref(),
                 limit.saturating_add(offset),
                 0,
             ) {
@@ -512,6 +537,13 @@ pub(crate) struct AuditQuery {
     /// verdict surface (`/audit/verify`) is untouched.
     #[serde(default)]
     principal: Option<String>,
+    /// The `since` bound — an INCLUSIVE ISO-8601 (RFC 3339) lower bound on
+    /// the row timestamp, at the SQL layer beside the other filters. The
+    /// retired GUI advertised `/audit?since&:principal`; the principal arm
+    /// shipped, this completes the surface. Normalized to the chain's
+    /// timestamp format at the door; a value that does not parse refuses.
+    #[serde(default)]
+    since: Option<String>,
     #[serde(default)]
     limit: Option<usize>,
     /// pagination cursor. `offset` past the last row returns [].

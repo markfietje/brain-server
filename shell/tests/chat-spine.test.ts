@@ -861,7 +861,15 @@ describe('the envelope law', () => {
 		// midpoint). The amendment is a BUILD round, not a refactor: the
 		// surface grew by a named act, the band's midpoint moves to the
 		// measurement, and the register row carries it.
-		const R0_BASELINE = 210_568;
+		//
+		// NAMED ACT (F-2, the audit-filter round, measured 2026-10-28): the
+		// audit surface's `since` arm — the URL-read bound + its chip and
+		// clear link, the labeled datetime input whose Apply writes the URL
+		// and re-reads, the audit.ts wire param, and four message keys ×
+		// five locales — grew the built JS to 211,244 bytes gzipped (+676
+		// over the A-4 midpoint). The bound is a named act, the band's
+		// midpoint moves to the measurement, and the register row carries it.
+		const R0_BASELINE = 211_244;
 		const BAND = 512;
 		expect(
 			Math.abs(total - R0_BASELINE),

@@ -6948,6 +6948,8 @@ export interface operations {
                 tenant?: string;
                 /** @description M3-g (plan 27) — filter rows to ONE principal's audited footprint (the `actor` column, exact match, at the SQL layer beside `kind`/`tenant`). Answers "what did plugin X touch?" from the chain, not from a new telemetry. ADDITIVE: same bounded listing, same hash discipline, and the chain VERDICT is unchanged — the filter reads rows, it never re-verifies differently. No mint route exists (`brain principal grant` is the operator's local act); this parameter is the read side of that law. */
                 principal?: string;
+                /** @description The audit-filter round — an INCLUSIVE ISO-8601 (RFC 3339) lower bound on the row timestamp, at the SQL layer beside `kind`/`tenant`/`principal`. "Since" names a boundary moment and the boundary row itself is IN the answer; the kernel normalizes the value to the chain's timestamp format, so a value that does not parse refuses naming the law rather than silently ignoring the bound. ADDITIVE: same bounded listing, same hash discipline, and the chain VERDICT is unchanged. The retired GUI advertised `/audit?since&:principal`; M3-g shipped `principal` — this completes the surface. A query param is not a migration: the schema ceiling is unmoved. */
+                since?: string;
                 /** @description Max events to return (default 100, capped at MAX_MULTI_GET) */
                 limit?: number;
                 /** @description v1.16.7 — pagination cursor (rows are newest-first; offset past the last row returns []). Pair with limit for Load-more paging. */

@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
+import { pageState } from './fixtures/page-state.svelte.js';
 
 /**
  * The audit surface's pins. The kernel's hash chain is the product's
@@ -21,11 +22,22 @@ import userEvent from '@testing-library/user-event';
 
 const state = vi.hoisted(() => ({ wireStatus: 'unreachable' }));
 
-// The `$app/state` page holder (the route-a11y pattern): one mock for the
-// file, per-test URL values — the M3-g principal filter reads the URL, so a
-// test plants `?principal=` here before rendering.
-const pageState = vi.hoisted(() => ({ url: new URL('http://127.0.0.1/audit') }));
-vi.mock('$app/state', () => ({ page: pageState }));
+// The `$app/state` page holder: a REACTIVE fixture (page-state.svelte.ts) —
+// the M3-g principal filter reads the URL at mount, the since filter's Apply
+// writes it and re-reads, and the deriveds must follow the write the way
+// they follow the router's own navigation. The `$app/navigation` mock moves
+// the same proxy, exactly like the real goto.
+vi.mock('$app/state', async () => ({
+	page: (await import('./fixtures/page-state.svelte.js')).pageState
+}));
+vi.mock('$app/paths', () => ({ resolve: (p: string) => p }));
+const gotoMock = vi.hoisted(() =>
+	vi.fn(async (to: string) => {
+		const { pageState: reactive } = await import('./fixtures/page-state.svelte.js');
+		reactive.url = new URL(to, 'http://127.0.0.1/');
+	})
+);
+vi.mock('$app/navigation', () => ({ goto: gotoMock }));
 
 vi.mock('@tauri-apps/api/core', () => ({
 	invoke: vi.fn(async (command: string) => {
@@ -49,6 +61,7 @@ afterEach(() => {
 	responder = noWire;
 	state.wireStatus = 'unreachable';
 	pageState.url = new URL('http://127.0.0.1/audit');
+	gotoMock.mockClear();
 	vi.clearAllMocks();
 });
 
@@ -281,4 +294,86 @@ test('A5 no filter in the URL sends no principal param and renders no chip', asy
 	expect(requested).not.toBeNull();
 	expect(requested!.searchParams.get('principal')).toBeNull();
 	expect(screen.queryByTestId('audit-principal-filter')).toBeNull();
+});
+
+// ═══ THE SINCE ARM (the audit-filter round) ══════════════════════════════
+// The retired GUI's other URL promise. The URL is the source; the request
+// carries the bound; the chip names it; it composes with the principal
+// filter; and the input's Apply WRITES the URL and re-reads — a filter that
+// silently changed the rows would be indistinguishable from a smaller chain.
+
+const serveSince = (): { requested: () => URL | null } => {
+	const holder: { u: URL | null } = { u: null };
+	responder = async (url, _init, method) => {
+		const u = new URL(url);
+		if (method === 'GET' && u.pathname === '/audit') {
+			holder.u = u;
+			return jsonResponse({ events: [auditEvent(7)] });
+		}
+		if (method === 'GET' && u.pathname === '/audit/verify') {
+			return jsonResponse({ ok: true, domains: { global: true } });
+		}
+		return new Response('not found', { status: 404 });
+	};
+	return { requested: () => holder.u };
+};
+
+test('A8 the URL since filter reaches the wire, composes with principal, and names itself', async () => {
+	const { requested } = serveSince();
+	pageState.url = new URL(
+		'http://127.0.0.1/audit?since=2026-10-25T13%3A00%3A00Z&principal=edu-plugin'
+	);
+	await renderAudit();
+	await waitFor(() => expect(screen.getAllByTestId('audit-row')).toHaveLength(1));
+	expect(requested()!.searchParams.get('since')).toBe('2026-10-25T13:00:00Z');
+	// COMPOSITION: both filters ride the SAME request.
+	expect(requested()!.searchParams.get('principal')).toBe('edu-plugin');
+	// The chip NAMES the bound; its clear link rides the page's own "show
+	// all" vocabulary (the composition lives at the wire and at the Apply,
+	// which keeps the principal filter when it writes the bound).
+	const chip = screen.getByTestId('audit-since-filter');
+	expect(chip.textContent).toContain('2026-10-25T13:00:00Z');
+	expect(screen.getByTestId('audit-since-clear').getAttribute('href')).toBe('/audit');
+	// And the verify read rode the SAME page load, filter-free.
+	expect(screen.getByTestId('audit-chain').getAttribute('data-chain')).toBe('verified');
+});
+
+test('A9 the since input writes the URL as ISO-8601 and the rows follow the write', async () => {
+	const { requested } = serveSince();
+	await renderAudit();
+	await waitFor(() => expect(screen.getAllByTestId('audit-row')).toHaveLength(1));
+	// No bound yet: no param, no chip.
+	expect(requested()!.searchParams.get('since')).toBeNull();
+	expect(screen.queryByTestId('audit-since-filter')).toBeNull();
+
+	const user = userEvent.setup();
+	// datetime-local speaks the local wall clock; the wire gets ISO-8601.
+	await user.type(screen.getByTestId('audit-since-input'), '2026-10-25T13:00');
+	await user.click(screen.getByTestId('audit-since-apply'));
+	// The write landed on the URL, and the re-read that follows it carried
+	// the bound to the wire — the rows cannot silently disagree with the
+	// filter the URL now carries.
+	await waitFor(() => {
+		expect(gotoMock).toHaveBeenCalledTimes(1);
+		expect(requested()!.searchParams.get('since')).not.toBeNull();
+	});
+	const since = requested()!.searchParams.get('since')!;
+	expect(Number.isNaN(Date.parse(since))).toBe(false);
+	expect(since.endsWith('Z')).toBe(true);
+	// And the chip names the bound the URL now carries.
+	await waitFor(() => expect(screen.getByTestId('audit-since-filter')).toBeTruthy());
+	expect(screen.getByTestId('audit-since-filter').textContent).toContain(since);
+});
+
+test('A10 an empty since input applied clears the bound from the URL', async () => {
+	const { requested } = serveSince();
+	pageState.url = new URL('http://127.0.0.1/audit?since=2026-10-25T13%3A00%3A00Z');
+	await renderAudit();
+	await waitFor(() => expect(screen.getAllByTestId('audit-row')).toHaveLength(1));
+	expect(requested()!.searchParams.get('since')).not.toBeNull();
+
+	const user = userEvent.setup();
+	await user.click(screen.getByTestId('audit-since-apply'));
+	await waitFor(() => expect(gotoMock).toHaveBeenCalledTimes(1));
+	expect(gotoMock.mock.calls[0]?.[0]).toBe('/audit');
 });

@@ -1040,8 +1040,10 @@ pub async fn audit(
                 &conn,
                 kind.as_deref(),
                 tenant.as_deref(),
-                // the UMP surface keeps its shape — the principal filter is
-                // the operator /audit's additive wire, not this one's
+                // the UMP surface keeps its shape — the principal and since
+                // filters are the operator /audit's additive wire, not this
+                // one's
+                None,
                 None,
                 limit,
                 offset,
