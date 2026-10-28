@@ -87,9 +87,9 @@ pub fn support_verdict(
     hit_count: usize,
     degraded_grounding: bool,
 ) -> Support {
-    let mut cited: u16 = 0;
-    let mut uncited: u16 = 0;
-    let mut unknown_refs: u16 = 0;
+    let mut cited = 0;
+    let mut uncited = 0;
+    let mut unknown_refs = 0;
     for claim in claims {
         let mut known = false;
         let mut named_unknown = false;
