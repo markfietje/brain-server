@@ -451,14 +451,16 @@ pub(crate) async fn list_audit(
     // to the answer. A value that does not parse refuses naming the law —
     // a silent ignore would leave the operator reading an unbounded
     // listing believing it bounded.
-    let since_bound = match params.since.as_deref() {
-        None => None,
-        Some(raw) => match chrono::DateTime::parse_from_rfc3339(raw.trim()) {
-            Ok(t) => Some(
-                t.with_timezone(&chrono::Utc)
-                    .format("%Y-%m-%d %H:%M:%S")
-                    .to_string(),
-            ),
+    let mut since_bound = None;
+    if let Some(raw) = params.since.as_deref() {
+        match chrono::DateTime::parse_from_rfc3339(raw.trim()) {
+            Ok(t) => {
+                since_bound = Some(
+                    t.with_timezone(&chrono::Utc)
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string(),
+                );
+            }
             Err(_) => {
                 return Json(serde_json::json!({
                     "error": "invalid since: an ISO-8601 (RFC 3339) timestamp is \
@@ -466,8 +468,8 @@ pub(crate) async fn list_audit(
                               inclusive"
                 }));
             }
-        },
-    };
+        }
+    }
     // The operator audit list covers EVERY registered
     // domain's chain in multi-db mode (rows carry their domain tag), not just
     // the global pool. Shim mode stays the single shared pool. Merged rows
