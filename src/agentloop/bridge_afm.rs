@@ -43,13 +43,20 @@ pub enum BridgeEvent {
     /// (the model re-wrote its running answer): the receiver must discard
     /// prior deltas, not append.
     Delta { text: String, replace: bool },
-    /// The turn's terminal success.
+    /// The turn's terminal success. TYPED as of LL-04 (§1.1): `abstain` and
+    /// `claims` arrive through the bridge's guided generation (the Swift
+    /// child's `GroundedAnswer`, `shell-macos/Sources/AppleFMProbe/
+    /// GroundedAnswer.swift`). Both are ADDITIVE on the protocol: an old
+    /// bridge that sends neither parses as `false` / empty — never an
+    /// error. The kernel never edits these; it labels them.
     Final {
         text: String,
         tier: String,
         turn: i64,
         input_tokens: i64,
         output_tokens: i64,
+        abstain: bool,
+        claims: Vec<BridgeClaim>,
     },
     /// The turn's terminal failure, by the bridge's named code
     /// (`conversation_does_not_fit` carries `shortfall_tokens`).
@@ -58,6 +65,28 @@ pub enum BridgeEvent {
         message: Option<String>,
         shortfall_tokens: Option<i64>,
     },
+}
+
+/// One sentence-level claim the bridge's typed final carries: the model's
+/// text, verbatim, and the 0-based grounding-hit indices it asserts. The
+/// WIRE SHAPE IS OWNED by the Swift child (`GroundedClaim`); this struct
+/// mirrors it, drift surfaces in the pins. `#[serde(default)]` on both
+/// fields so a drift-shaped claim degrades to "uncited" — the honest label
+/// for a claim that proves nothing — never a dropped turn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BridgeClaim {
+    pub text: String,
+    pub cites: Vec<i64>,
+}
+
+impl Default for BridgeClaim {
+    fn default() -> Self {
+        BridgeClaim {
+            text: String::new(),
+            cites: Vec::new(),
+        }
+    }
 }
 
 /// The measured machine facts, cached by the bridge for its lifetime.
@@ -307,6 +336,8 @@ fn route_line(
             turn: 0,
             input_tokens: 0,
             output_tokens: 0,
+            abstain: false,
+            claims: Vec::new(),
         }
     } else {
         match value.get("event").and_then(|v| v.as_str()) {
@@ -341,6 +372,17 @@ fn route_line(
                     .get("outputTokens")
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0),
+                // ADDITIVE (LL-04 §1.1): absent on an old bridge → the
+                // untyped posture (no abstention, no claims), never a parse
+                // error.
+                abstain: value
+                    .get("abstain")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                claims: value
+                    .get("claims")
+                    .and_then(|v| serde_json::from_value::<Vec<BridgeClaim>>(v.clone()).ok())
+                    .unwrap_or_default(),
             },
             Some("error") => BridgeEvent::Failed {
                 code: value
@@ -457,6 +499,129 @@ mod tests {
                 assert_eq!(code, "bad_request", "the refusal is named");
             }
             other => panic!("expected the named refusal, got {other:?}"),
+        }
+    }
+
+    /// THE TYPED MIRROR (LL-04 §1.1's kernel half): a final carrying the
+    /// bridge's guided-generation fields parses into the typed event, and a
+    /// final carrying NONE of them (an old bridge, pre-LL-04) parses
+    /// additively — `false` / empty, never an error.
+    #[test]
+    fn the_typed_final_mirror_parses_and_defaults_additive() {
+        let typed = serde_json::json!({
+            "id": "t1", "event": "final",
+            "text": "Green tea contains EGCG.",
+            "tier": "on_device", "turn": 3,
+            "inputTokens": 120, "outputTokens": 24,
+            "abstain": false,
+            "claims": [
+                {"text": "Green tea contains EGCG.", "cites": [0, 2]},
+                {"text": "It also carries L-theanine.", "cites": [1]}
+            ],
+        });
+        let event = parse_final_line(typed);
+        let BridgeEvent::Final {
+            abstain, claims, ..
+        } = event
+        else {
+            panic!("the typed final parses to a Final");
+        };
+        assert!(!abstain);
+        assert_eq!(claims.len(), 2, "both claims cross verbatim");
+        assert_eq!(claims[0].cites, vec![0, 2]);
+        assert_eq!(claims[1].text, "It also carries L-theanine.");
+
+        let abstaining = serde_json::json!({
+            "id": "t2", "event": "final",
+            "text": "", "tier": "on_device", "turn": 4,
+            "inputTokens": 9, "outputTokens": 1,
+            "abstain": true, "claims": [],
+        });
+        let BridgeEvent::Final {
+            abstain, claims, ..
+        } = parse_final_line(abstaining)
+        else {
+            panic!("the abstaining final parses to a Final");
+        };
+        assert!(abstain, "the model's abstention crosses");
+        assert!(claims.is_empty(), "an abstention carries no claims");
+
+        // The ADDITIVE law: an old bridge's final has neither key.
+        let legacy = serde_json::json!({
+            "id": "t3", "event": "final",
+            "text": "prose only", "tier": "on_device", "turn": 5,
+            "inputTokens": 1, "outputTokens": 2,
+        });
+        let BridgeEvent::Final {
+            abstain, claims, ..
+        } = parse_final_line(legacy)
+        else {
+            panic!("the legacy final parses to a Final");
+        };
+        assert!(!abstain, "absent abstain defaults false");
+        assert!(claims.is_empty(), "absent claims default empty");
+    }
+
+    /// THE CROSS-SURFACE DRIFT PIN: the Rust mirror (`BridgeClaim`,
+    /// `BridgeEvent::Final`) and the Swift child's schema must name the
+    /// SAME wire vocabulary. The Swift file is not compiled in this lane,
+    /// so the pin reads the declaration out of the source tree — the same
+    /// posture the docs-truth pins take with documents. A renamed Swift
+    /// property or a renamed Rust field reds THIS pin, in THIS lane.
+    #[test]
+    fn the_swift_child_declares_the_typed_schema_the_mirror_parses() {
+        let schema = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/shell-macos/Sources/AppleFMProbe/GroundedAnswer.swift"
+        ))
+        .expect("the Swift schema file is in the tree");
+        for declaration in [
+            "@Generable",
+            "public struct GroundedAnswer",
+            "public var abstain: Bool",
+            "public var answer: String",
+            "public var claims: [GroundedClaim]",
+            "public struct GroundedClaim",
+            "public var text: String",
+            "public var cites: [Int]",
+        ] {
+            assert!(
+                schema.contains(declaration),
+                "the Swift schema drifted from the mirror: missing `{declaration}`"
+            );
+        }
+        // And the bridge child still streams the typed shape end to end.
+        let child = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/shell-macos/Sources/brain-afm/main.swift"
+        ))
+        .expect("the bridge child is in the tree");
+        assert!(
+            child.contains("generating: GroundedAnswer.self"),
+            "the child must ask the model for the TYPED answer, not prose"
+        );
+        assert!(
+            child.contains("\"abstain\": typed.abstain")
+                && child.contains("\"claims\": typed.claims"),
+            "the child's final event must carry the typed fields verbatim"
+        );
+    }
+
+    /// One `event: final` JSON line through the real parser path.
+    fn parse_final_line(value: serde_json::Value) -> BridgeEvent {
+        let pending: Arc<Mutex<HashMap<String, mpsc::Sender<BridgeEvent>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let (tx, mut rx) = mpsc::channel::<BridgeEvent>(4);
+        let id = value
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("t")
+            .to_owned();
+        pending.lock().expect("pending lock").insert(id.clone(), tx);
+        route_line(&pending, Some(id), value);
+        match rx.try_recv() {
+            Ok(event) => event,
+            Err(e) => panic!("the parser dropped the final line: {e}"),
         }
     }
 }

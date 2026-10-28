@@ -4,7 +4,8 @@
 //! ```text
 //! event: grounding  data: {decision, hits:[{id,title,score,domain}]}
 //! event: delta      data: {text, replace?}        (zero or more)
-//! event: final      data: {text, tier, turn, inputTokens, outputTokens}
+//! event: final      data: {text, tier, turn, inputTokens, outputTokens,
+//!                          abstain, claims:[{text, cites}]}
 //! event: error      data: {code, message?, shortfallTokens?}   (terminal)
 //! ```
 //!
@@ -312,6 +313,8 @@ pub async fn chat_turn(
                     turn,
                     input_tokens,
                     output_tokens,
+                    abstain,
+                    claims,
                 } => {
                     // THE PAIR PERSISTS AT THE FINAL, before the event is
                     // forwarded: the bridge delivered the answer, so the turn
@@ -367,6 +370,17 @@ pub async fn chat_turn(
                             "turn": turn,
                             "inputTokens": input_tokens,
                             "outputTokens": output_tokens,
+                            // THE TYPED FINAL (LL-04 §1.1), additive: what
+                            // the model asserted crosses VERBATIM — the
+                            // kernel has not judged it yet (the support
+                            // verdict follows as its own event).
+                            "abstain": abstain,
+                            "claims": claims
+                                .iter()
+                                .map(|claim| {
+                                    json!({"text": claim.text, "cites": claim.cites})
+                                })
+                                .collect::<Vec<_>>(),
                         }))
                         .unwrap_or_default()
                 }

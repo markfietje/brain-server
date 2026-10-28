@@ -1,6 +1,12 @@
 import Foundation
 import Testing
 
+import AppleFMProbe
+
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
+
 // Protocol pins for the `brain-afm` bridge executable. These drive the REAL
 // binary over its JSONL stdio protocol — not an in-process mock — because the
 // protocol IS the product surface the kernel depends on, and the failure
@@ -162,5 +168,85 @@ struct BrainAfmBridgeTests {
         let second = try JSONSerialization.jsonObject(with: Data(lines[1].utf8))
             as! [String: Any]
         #expect(second["code"] as? String == "bad_request")
+    }
+
+    // ── LL-04 §1.1 — the typed contract ──────────────────────────────────
+
+    /// THE SCHEMA DRIFT PIN: the GroundedAnswer round-trips through
+    /// GeneratedContent and the JSON it produces carries EXACTLY the wire
+    /// vocabulary the kernel's Rust mirror parses (`abstain`, `answer`,
+    /// `claims`, and per claim `text` + `cites`). A renamed property, a new
+    /// field, or a re-spelled key drifts the bridge protocol — this pin is
+    /// where the drift surfaces, model-free, in every lane.
+    #if canImport(FoundationModels)
+    @available(macOS 26.0, *)
+    @Test("the grounded answer schema round-trips with the contract vocabulary")
+    func groundedAnswerSchemaRoundTrips() throws {
+        let answer = GroundedAnswer(
+            abstain: false,
+            answer: "Green tea is steamed Camellia sinensis.",
+            claims: [
+                GroundedClaim(
+                    text: "Green tea is steamed Camellia sinensis.",
+                    cites: [0, 2]
+                )
+            ]
+        )
+        let content = answer.generatedContent
+        let decoded = try GroundedAnswer(content)
+        #expect(
+            decoded.generatedContent == content,
+            "the typed answer survives the GeneratedContent round-trip unchanged"
+        )
+        // The wire vocabulary, pinned key by key: the kernel's mirror and
+        // the support verdict read exactly these names.
+        guard case .structure(let properties, _) = content.kind else {
+            Issue.record("the generated content is not the declared structure")
+            return
+        }
+        #expect(
+            Set(properties.keys) == ["abstain", "answer", "claims"],
+            "schema keys drifted: \(properties.keys.sorted())"
+        )
+        let json = content.jsonString
+        #expect(json.contains("\"abstain\""), "the abstain key is on the wire")
+        #expect(json.contains("\"claims\""), "the claims key is on the wire")
+        #expect(json.contains("\"text\""), "a claim's text key is on the wire")
+        #expect(json.contains("\"cites\""), "a claim's cites key is on the wire")
+    }
+    #endif
+
+    /// THE TYPED FINAL, ON THE REAL WIRE: a driven turn's final event
+    /// carries the contract keys EXACTLY — `abstain` and `claims` present
+    /// even when the model abstains or cites nothing, because "every key is
+    /// always present" is the reader's contract. Model-backed like the rest
+    /// of this suite: where the model is unavailable the turn answers the
+    /// NAMED refusal, and that refusal is what this pin asserts instead.
+    @Test("the real bridge's typed final carries the contract keys")
+    func typedFinalCarriesTheContractKeys() async throws {
+        let replies = try Self.drive([
+            ["id": "c1", "op": "capabilities"],
+            [
+                "id": "t1", "op": "turn", "session": "ll04-typed",
+                "prompt": "Green tea is a tea made from steamed Camellia sinensis leaves. Answer with one grounded claim.",
+                "instructions":
+                    "You are a memory-grounded assistant. Answer from the given memory and cite the hit index each claim draws from; say plainly when the memory does not answer.",
+            ],
+        ])
+        let final = replies.last { $0["event"] as? String == "final" }
+        if final == nil {
+            // The model lane is unavailable on this machine: the turn must
+            // have refused BY NAME — never a halfway answer.
+            let error = replies.last { $0["event"] as? String == "error" }
+            #expect(error?["code"] as? String == "model_unavailable")
+            return
+        }
+        #expect(final?["abstain"] as? Bool != nil, "abstain is present, always")
+        let claims = final?["claims"] as? [[String: Any]]
+        #expect(claims != nil, "claims is present, always — empty is a value")
+        for claim in claims ?? [] {
+            #expect(claim["text"] is String, "a claim carries text")
+            #expect(claim["cites"] is [Int], "a claim carries hit indices")
+        }
     }
 }

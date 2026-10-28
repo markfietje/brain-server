@@ -12,9 +12,15 @@
 //    "instructions":"…"(first turn of a session only),"maxResponseTokens":512}
 //     → zero or more {"id":"t1","event":"delta","text":"…"}
 //       then exactly one terminal event:
-//       {"id":"t1","event":"final","text":"…","inputTokens":N,"outputTokens":N,
+//       {"id":"t1","event":"final","text":"…","abstain":false,
+//        "claims":[{"text":"…","cites":[0,2]}],"inputTokens":N,"outputTokens":N,
 //        "tier":"on_device","turn":N,"escalationRefused":false}
 //       {"id":"t1","event":"error","code":…,"message":…,"shortfallTokens":N?}
+//
+// The `final` event is TYPED as of LL-04 (§1.1): the answer arrives through
+// guided generation as a GroundedAnswer — abstain first, then the prose,
+// then the sentence-level claims with the hit indices they assert. The
+// kernel, not this process, judges those indices (no model in the gate).
 //
 //   {"id":"x1","op":"cancel","target":"t1"}   → abandons that turn's task
 //
@@ -137,6 +143,13 @@ enum BridgeError: Error {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// The typed answer — the @Generable schema lives in the AppleFMProbe
+// library (`Sources/AppleFMProbe/GroundedAnswer.swift`), where the protocol
+// pins can reach it: the bridge generates against it, the pins round-trip
+// it, and the kernel's Rust mirror (`bridge_afm.rs`) reads its wire shape.
+// ─────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────
 // Capabilities (measured once, cached for the process lifetime)
@@ -613,15 +626,24 @@ struct BrainAfmBridge {
         let options = GenerationOptions(
             samplingMode: .greedy, maximumResponseTokens: cap
         )
+        // THE TYPED CONTRACT (LL-04 §1.1): guided generation asks the model
+        // for a GroundedAnswer, not prose — the cite-or-abstain shape is the
+        // measured `guidedGeneration` capability, a SCHEMA rather than a
+        // regex over the text. Deltas ride the partial `answer` exactly as
+        // they rode the raw string before (suffix emit; wholesale-replace on
+        // a revision); `abstain` and `claims` are read only from the SETTLED
+        // value, never from a partial snapshot, so no reader ever sees a
+        // half-decided abstention.
         var full = ""
+        var settled: GeneratedContent?
         var inputTokens = 0
         var outputTokens = 0
         do {
             for try await snapshot in session.streamResponse(
-                to: prompt, options: options
+                to: prompt, generating: GroundedAnswer.self, options: options
             ) {
                 if Task.isCancelled { break }
-                let content = snapshot.content
+                let content = snapshot.content.answer ?? ""
                 if content.count > full.count {
                     // Snapshots are cumulative; emit only the suffix.
                     let delta = String(content.dropFirst(full.count))
@@ -636,6 +658,7 @@ struct BrainAfmBridge {
                         "replace": true
                     ])
                 }
+                settled = snapshot.rawContent
                 if #available(macOS 27.0, *) {
                     inputTokens = max(
                         inputTokens, snapshot.usage.input.totalTokenCount
@@ -655,8 +678,33 @@ struct BrainAfmBridge {
             // conversation.
             return
         }
+
+        // The COMPLETE typed answer decodes from the last snapshot's raw
+        // content — the one place the framework guarantees every field is
+        // settled. A stream that produced no content at all IS an
+        // abstention: the model said nothing, and silence is never a
+        // supported answer. A present-but-undecodable answer is a named
+        // failure, not a prose fallback — falling back to the raw string
+        // would re-open the unverified-citation hole this schema closes.
+        let typed: GroundedAnswer
+        if let settled {
+            do {
+                typed = try GroundedAnswer(settled)
+            } catch {
+                throw BridgeError.generationFailed(
+                    "the typed answer did not decode: \(String(describing: error))"
+                )
+            }
+        } else {
+            typed = GroundedAnswer(abstain: true, answer: "", claims: [])
+        }
+
         out.send([
-            "id": id, "event": "final", "text": full,
+            "id": id, "event": "final", "text": typed.answer,
+            "abstain": typed.abstain,
+            "claims": typed.claims.map { claim in
+                ["text": claim.text, "cites": claim.cites] as [String: Any]
+            },
             "inputTokens": inputTokens, "outputTokens": outputTokens,
             "tier": "on_device", "turn": turnNo,
             "escalationRefused": false
