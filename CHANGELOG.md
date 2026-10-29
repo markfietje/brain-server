@@ -13,6 +13,54 @@ measured. Those records are kept as they were written (this file is
 append-only), and their heading says `Unreleased` because that is what they
 were when the round landed — not because the work is still unreleased.
 
+## [1.29.36] — 2026-10-29 — the app is signed, notarized, and Gatekeeper-clean: the Developer ID round lands
+
+The desktop app has shipped under an ad-hoc signature since III-1 —
+structure, not shippability (D5), with the secure timestamp recorded as
+OWED in every round since III-1 because an ad-hoc signature cannot carry
+one. This release retires that debt by name: the app is signed with the
+**Developer ID Application certificate**, notarized by Apple's Notary
+service, and stapled, so a first launch passes Gatekeeper cleanly — with
+the network down, too, because the staple carries the verdict offline.
+The app is arm64-only from this release on (the operator's decision,
+2026-10-29): Intel Macs run the kernel headless — the darwin-x86_64
+kernel artifacts are signed with the same identity — but not the desktop
+app, and the release page's download is a stapled DMG.
+
+### Release notes
+
+**New**
+
+- **The app is signed, notarized, and stapled.** Every Mach-O in the
+  bundle carries the Developer ID signature WITH a secure timestamp —
+  verified by the walker before anything publishes — and the signing lane
+  refuses any other signer, by name. The stapled DMG (`StewardMem.dmg`)
+  is the release page's download: mount, drag to Applications, launch —
+  no bypass, no right-click Open, offline included.
+- **The first release whose app chain the current identity can carry.**
+  The app chain (the updater artifact, its signature, the manifest)
+  stopped publishing at v1.29.27 on the old repo path; this release
+  republishes it under `com.stewardmem.shell` with the fresh-start law —
+  old installs are removed and the new app installed, never updated in
+  place across the identifier change.
+- **The kernel and MCP binaries on the release are Developer-ID-signed
+  and notarized** (darwin-arm64 and darwin-x86_64): Gatekeeper-clean
+  artifacts for the shipped-binary verification, with `SHA256SUMS`
+  refreshed in the same act.
+
+**Changed**
+
+- **The desktop app is arm64-only.** The universal build is gone from the
+  app; the update manifest answers for `darwin-aarch64` alone — an Intel
+  Mac is never offered an app it cannot run. The kernel keeps both darwin
+  slices.
+- **The release lane submits with Apple's own `notarytool`.** Measured on
+  the operator's route: a Rust S3 multipart client cannot land one part
+  before its deadline; Apple's uploader can. The lane drives the
+  bundler for the signature, then submits, staples, and gates on the
+  staple as named steps — a rejection is a named failure with the Notary
+  log, fixed and re-submitted, never skipped.
+
 ## [1.29.35] — 2026-10-29 — the loop runs live: the on-device pilot, the scheduler's first flip
 
 The governed troubleshooting loop no longer runs only against scripted
