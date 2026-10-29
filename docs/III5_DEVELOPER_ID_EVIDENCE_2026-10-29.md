@@ -318,3 +318,38 @@ order:
   DMG does not touch the updater's path), register conversions.
 - **S-4, the clean-machine witness, rides at the front of the next
   round's gate** — the VM is prepared; the IPSW is downloading.
+
+## Addendum (2026-10-30) — the minimum-OS matrix, measured from the shipped bytes
+
+The question (operator, 2026-10-30): what is the app's honest minimum macOS,
+and does Tahoe 26 still get the full product? Measured from the v1.29.36
+shipped binaries — `vtool -show-build`, `otool -L`, and the sources' own
+availability guards — and verified against Apple's current FoundationModels
+documentation (Context7, 2026-10-30):
+
+| shipped binary | `minos` | `sdk` | the fact that carries the floor |
+|---|---|---|---|
+| `brain-shell` (the app) | **15.0** | 27.0 | the app loads on 15+ |
+| `brain-server` (sidecar kernel) | **11.0** | 27.0 | the kernel loads anywhere |
+| `brain-afm` (the chat bridge) | **15.0** | 15.0 | FoundationModels linked **WEAK** (`otool -L`: `…FoundationModels … weak`); `Package.swift` declares `.macOS(.v15)`; and the newer surfaces are availability-guarded — `@available(macOS 26.0, *)` (`ChatModelLayer.swift:121,236,420,506`) and `#available(macOS 27.0, *)` (`AppleFMProbe.swift:63,80`) |
+
+Apple's docs (verified 2026-10-30): the **Foundation Models framework ships
+with OS 26** (the OS-26 release-notes family); `SystemLanguageModel.availability`
+answers `.available` / `.unavailable(.deviceNotEligible | .appleIntelligenceNotEnabled |
+.modelNotReady)` — each a state the app's UI already names; **Private Cloud
+Compute is `#available(macOS 27.0, *)`** with on-device fallback on older.
+
+**The matrix (arm64-only build):**
+
+| macOS | app + kernel + recall | on-device chat | the 27-only vocabulary / PCC |
+|---|---|---|---|
+| **15 Sequoia** | ✅ | ❌ framework absent (weak link + guards → the bridge reports no model) → **the R142 fallback posture**: the deterministic `/recall` answer beside a named notice — the designed degradation | ❌ |
+| **26 Tahoe** | ✅ | ✅ **the FULL product** — gated only by Apple Intelligence's own availability states, each named in the UI | ❌ guarded off |
+| **27 Golden Gate** | ✅ | ✅ + the capabilities vocabulary | ✅ on; PCC still entitlement-dead on the direct channel (only an ASC submission could ever request it) |
+
+**The declared `LSMinimumSystemVersion: 15.0` matches the binaries exactly —
+the floor is honest as shipped, and Tahoe needs nothing.** Owed, named: the
+15/26 rows are measured-not-witnessed (the S-4 VM is 27.2); a Tahoe-26 Tart
+VM leg of the same battery is the cheap witness if the claim ships in
+marketing — a Sequoia-15 leg is optional (its degradation is the designed
+posture). The ASC submission's own floor field carries this same truth.
