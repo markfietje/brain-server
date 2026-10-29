@@ -224,16 +224,28 @@ The arm64 clean-VM test (quarantine present; Gatekeeper first launch
 WITHOUT bypass; sidecar up; the chat answering live; the audit chain
 verifying; the unstapled and ad-hoc negative controls on the same
 machine) did not run in this round. **The blocker, named:** the
-operator's VPN tunnel (all traffic, kill-switched) sustains ~230 KB/s –
-2.3 MB/s down / ~170 KB/s up — enough for the notarytool uploads, hopeless
-for a VM image (ghcr's 34 GB pull died in a connection-loss retry loop;
-Apple's CDN measured the IPSW at ~20 hours on the NL entry). **The
-preparation, done:** Tart is installed (Virtualization.framework), the
-macOS 27.2 (Golden Gate) restore IPSW is identified at Apple's CDN and
-downloading on the faster Japan entry, and the witnessed test follows the
-moment it lands. **The owner:** the operator. Gate 8's last open surface
+operator's VPN tunnel (all traffic, kill-switched) sustained ~230 KB/s –
+2.3 MB/s down / ~170 KB/s up during the round — enough for the notarytool
+uploads, hopeless for a VM image (ghcr's 34 GB pull died in a
+connection-loss retry loop; Apple's CDN measured the IPSW at ~20 hours on
+the NL entry). **The owner:** the operator. Gate 8's last open surface
 is this witness; every locally-measurable surface measured green in this
 round (S-1..S-3).
+
+**RE-MEASURED 2026-10-29 23:43 — the recorded blocker did NOT reproduce,
+and the earlier "downloading" claim was STALE (nothing in flight, no
+partial file, no VM in `tart list`):** the tunnel measured **5.3 MB/s
+down** (the 13 MB DMG fetched in 2.5 s), Apple's CDN answers through it
+(`swcdn.apple.com` reachable; the gdmf catalog service responds), and
+`softwareupdate --list-full-installers` lists **macOS 27.2 Golden Gate,
+17,389,792 KiB (~17.4 GB), build 26B123**. At the measured rate the
+fetch is **~55 minutes** (`tart create <name> --from-ipsw latest` —
+Tart resolves and fetches itself; 557 GB free on the host). The tunnel
+throughput is evidently TIME-VARIABLE: the runbook is to start the fetch
+when the pipe is fast (measured now), with a resumable downloader or a
+5G hotspot as the fallbacks if it dips mid-flight, and a borrowed
+Apple-Silicon Mac as the no-download alternative. The witness battery
+runs the moment the VM exists.
 
 ## S-5 — Intel: superseded by the arm64-only decision, recorded
 
