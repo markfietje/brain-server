@@ -571,11 +571,11 @@ pub async fn chat_turn(
                 bridge.cancel(&bridge_id);
                 return;
             }
-            if let Some(support_event) = trailing_support.take() {
-                if !send(support_event).await {
-                    bridge.cancel(&bridge_id);
-                    return;
-                }
+            if let Some(support_event) = trailing_support.take()
+                && !send(support_event).await
+            {
+                bridge.cancel(&bridge_id);
+                return;
             }
             if terminal {
                 return;

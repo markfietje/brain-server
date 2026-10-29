@@ -1568,20 +1568,25 @@ mod pilot_live {
                 }
             }
         };
-        let mut ambiguous: Vec<String> = Vec::new();
+        let ambiguous: Vec<String> = match &dir {
+            Some(dir) => {
+                let register_raw =
+                    std::fs::read_to_string(dir.join("gdl_ambiguity_register_v1.jsonl")).unwrap();
+                register_raw
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .map(|l| {
+                        serde_json::from_str::<serde_json::Value>(l).expect("register line")
+                            ["case_id"]
+                            .as_str()
+                            .expect("case_id")
+                            .to_string()
+                    })
+                    .collect()
+            }
+            None => Vec::new(),
+        };
         if let Some(dir) = dir {
-            let register_raw =
-                std::fs::read_to_string(dir.join("gdl_ambiguity_register_v1.jsonl")).unwrap();
-            ambiguous = register_raw
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .map(|l| {
-                    serde_json::from_str::<serde_json::Value>(l).expect("register line")["case_id"]
-                        .as_str()
-                        .expect("case_id")
-                        .to_string()
-                })
-                .collect();
             let pack_raw = std::fs::read_to_string(dir.join("gdl_gold_pack_v1.jsonl")).unwrap();
             for line in pack_raw.lines().filter(|l| !l.trim().is_empty()) {
                 let case: serde_json::Value = serde_json::from_str(line).expect("pack line");

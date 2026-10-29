@@ -367,7 +367,7 @@ mod tests {
 
         // non-base64 body
         let bad_sig = "untrusted comment: x\nNOT BASE64 !!\nuntrusted comment: c\nAAAA\n";
-        assert!(verify_signature(CONTENT, &bad_sig, &keyfile).is_err());
+        assert!(verify_signature(CONTENT, bad_sig, &keyfile).is_err());
     }
 
     #[test]

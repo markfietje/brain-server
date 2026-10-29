@@ -488,14 +488,12 @@ pub async fn list_proposals(
     // spends). Every other shape falls through to the machine below
     // UNCHANGED: the arm only ever widens a roster reviewer to their own
     // domain's queue — it never refuses anything the global leg admitted.
-    if domain_filter.is_none() {
-        if let Some(d) = roster_domain(&principal.0) {
-            if let Ok(their_pool) = super::resolve_domain_pool(&state.registry, Some(&d)) {
-                if super::authorize_role(&principal.0, &their_pool, "approve").is_ok() {
-                    domain_filter = Some(d);
-                }
-            }
-        }
+    if domain_filter.is_none()
+        && let Some(d) = roster_domain(&principal.0)
+        && let Ok(their_pool) = super::resolve_domain_pool(&state.registry, Some(&d))
+        && super::authorize_role(&principal.0, &their_pool, "approve").is_ok()
+    {
+        domain_filter = Some(d);
     }
     let authz_domain = domain_filter.as_deref().unwrap_or("global");
     super::authorize(&principal.0, crate::auth::Action::Read, "", authz_domain)?;

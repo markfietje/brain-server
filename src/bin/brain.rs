@@ -6379,8 +6379,8 @@ fn cmd_principal_list(args: &[String]) -> Result<(), String> {
         return emit_json_ok("principal list", serde_json::json!({ "principals": data }));
     }
     println!(
-        "{:<24} {:<12} {:<16} {:<28} {:<20} {}",
-        "name", "role", "domain", "tools", "manages", "status"
+        "{:<24} {:<12} {:<16} {:<28} {:<20} status",
+        "name", "role", "domain", "tools", "manages"
     );
     for r in &rows {
         let expires = match r.expires_at {
@@ -6480,8 +6480,8 @@ fn cmd_rules_list(args: &[String]) -> Result<(), String> {
         return emit_json_ok("rules list", serde_json::json!({ "rules": data }));
     }
     println!(
-        "{:<6} {:<8} {:<20} {:<22} {:<9} {}",
-        "id", "jurisd.", "subject", "rule_key", "revision", "source_ref"
+        "{:<6} {:<8} {:<20} {:<22} {:<9} source_ref",
+        "id", "jurisd.", "subject", "rule_key", "revision"
     );
     for r in &rows {
         println!(
@@ -6655,8 +6655,8 @@ fn cmd_plugin_list(args: &[String]) -> Result<(), String> {
         return emit_json_ok("plugin list", serde_json::json!({ "packs": data }));
     }
     println!(
-        "{:<20} {:<8} {:<8} {:<28} {:<18} {}",
-        "id", "version", "state", "kinds", "archive_hash", "imported_at"
+        "{:<20} {:<8} {:<8} {:<28} {:<18} imported_at",
+        "id", "version", "state", "kinds", "archive_hash"
     );
     for r in &rows {
         println!(
@@ -6708,10 +6708,7 @@ fn cmd_plugin_uninstall(args: &[String]) -> Result<(), String> {
              HISTORY, not a live registration; installing again is a fresh decision"
         ));
     }
-    let live = match brain_server::packs::uninstall::installed_pack_is_live(&conn, &pack_id) {
-        Ok(state) => state,
-        Err(e) => return Err(e),
-    };
+    let live = brain_server::packs::uninstall::installed_pack_is_live(&conn, &pack_id)?;
     if live.is_live() {
         return Err(live.refusal(&pack_id));
     }

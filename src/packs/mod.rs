@@ -101,10 +101,10 @@ const REFUSED_EXTENSIONS: [&str; 17] = [
 /// the bytes' magic both count, plus the shebang — the interpreter
 /// invocation a script wears as its first two bytes.
 fn executable_reason(path: &str, bytes: &[u8]) -> Option<&'static str> {
-    if let Some((_, ext)) = path.rsplit_once('.') {
-        if REFUSED_EXTENSIONS.contains(&ext) {
-            return Some("executable extension");
-        }
+    if let Some((_, ext)) = path.rsplit_once('.')
+        && REFUSED_EXTENSIONS.contains(&ext)
+    {
+        return Some("executable extension");
     }
     // wasm: `\0asm`
     if bytes.starts_with(&[0x00, 0x61, 0x73, 0x6D]) {
@@ -444,8 +444,8 @@ pub fn validate_pack(entries: &[(&str, Vec<u8>)]) -> Result<ValidatedPack, PackE
     })
 }
 
-fn json_object<'a>(
-    bytes: &'a [u8],
+fn json_object(
+    bytes: &[u8],
     kind: PackErrorKind,
     file: &str,
 ) -> Result<serde_json::Map<String, serde_json::Value>, PackError> {
@@ -867,9 +867,10 @@ fn parse_rules(bytes: &[u8]) -> Result<Vec<RuleRow>, PackError> {
     Ok(rows)
 }
 
-fn parse_i18n(
-    entries: &[(&str, Vec<u8>)],
-) -> Result<Option<BTreeMap<String, BTreeMap<String, String>>>, PackError> {
+/// One i18n locale's key/value table, keyed by locale.
+type I18nTable = BTreeMap<String, BTreeMap<String, String>>;
+
+fn parse_i18n(entries: &[(&str, Vec<u8>)]) -> Result<Option<I18nTable>, PackError> {
     let present: Vec<_> = entries
         .iter()
         .filter(|(p, _)| p.starts_with(I18N_DIR))

@@ -128,6 +128,7 @@ pub fn validate_grant(
 /// (the roster is identity, the audit chain is history) — but a REVOKED
 /// name stays dead: the kill-switch table wins at request time, so the
 /// remedy for a revoked principal is a new name, never an un-revoke.
+#[allow(clippy::too_many_arguments)] // the signature IS the roster's column list
 pub fn grant(
     conn: &Connection,
     name: &str,
@@ -393,7 +394,7 @@ mod tests {
         assert_eq!(row.role, "plugin");
         assert_eq!(row.domain, "education");
         assert_eq!(row.tools, vec!["ump.recall", "ump.get"]);
-        assert_eq!(row.revoked, false);
+        assert!(!row.revoked);
 
         // the roster stores the HASH, never the bearer
         let stored: String = conn

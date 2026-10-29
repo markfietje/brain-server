@@ -335,12 +335,12 @@ pub fn persist_turn_pair(
             "a chat session is always attributable; the owner stamp was empty".to_owned(),
         ));
     }
-    if let Some(raw) = support_decision {
-        if crate::service::chat_support::SupportDecision::parse(raw).is_none() {
-            return Err(ChatSessionError::Storage(format!(
-                "unknown support decision {raw:?} — the vocabulary is the verdict enum's"
-            )));
-        }
+    if let Some(raw) = support_decision
+        && crate::service::chat_support::SupportDecision::parse(raw).is_none()
+    {
+        return Err(ChatSessionError::Storage(format!(
+            "unknown support decision {raw:?} — the vocabulary is the verdict enum's"
+        )));
     }
     let user_stored = screened(user_message);
     let assistant_stored = screened(assistant_text);

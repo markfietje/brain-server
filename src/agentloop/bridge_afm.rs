@@ -73,20 +73,11 @@ pub enum BridgeEvent {
 /// mirrors it, drift surfaces in the pins. `#[serde(default)]` on both
 /// fields so a drift-shaped claim degrades to "uncited" — the honest label
 /// for a claim that proves nothing — never a dropped turn.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BridgeClaim {
     pub text: String,
     pub cites: Vec<i64>,
-}
-
-impl Default for BridgeClaim {
-    fn default() -> Self {
-        BridgeClaim {
-            text: String::new(),
-            cites: Vec::new(),
-        }
-    }
 }
 
 /// The measured machine facts, cached by the bridge for its lifetime.
