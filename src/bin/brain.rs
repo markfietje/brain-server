@@ -359,6 +359,12 @@ const SUBCOMMANDS: &[Subcommand] = &[
         usage: "brain token rotate",
     },
     Subcommand {
+        name: "run",
+        json: false,
+        run: cmd_run,
+        usage: "brain run crank [--tier limited,minimal] [--all | --case <id>] [--yes] [--db PATH]\n                 (the CRANK scheduler, flip one: the DepEd tier table + the red-flag\n                  tripwire plan the batch; --dry-run is the default; --yes cranks\n                  the selected through THE SAME harness surface the human uses;\n                  every stop hands the run back to a human; the scheduler cannot\n                  dispose — no approve/promote/reject path exists in this verb)",
+    },
+    Subcommand {
         name: "workflow",
         json: true,
         run: cmd_workflow,
@@ -708,6 +714,7 @@ fn parse_flags(args: &[String]) -> Result<(Vec<String>, FlagMap), String> {
 const BOOL_FLAGS: &[&str] = &[
     "dry-run",
     "yes",
+    "all",
     "json",
     "force",
     "explain",
@@ -733,6 +740,8 @@ const BOOL_FLAGS: &[&str] = &[
 /// The value flag vocabulary — the next non-dash token (or `=v`) is the value.
 const VALUE_FLAGS: &[&str] = &[
     "action",
+    "case",
+    "tier",
     "locales",
     "alg",
     "app-id",
@@ -7723,6 +7732,187 @@ fn setup_render_knobs_shows_every_set_knob() {
     );
 }
 
+/// The ONE harness-crank surface: resolve the steward-harness binary
+/// (beside this executable, then BRAIN_STEWARD_BIN, then PATH) and hand it
+/// one `cmd: crank` line. The human's `brain workflow crank` arm and the
+/// scheduler's `brain run crank` arm BOTH ride this helper — crank
+/// authority is identical by construction, and the audit trail cannot
+/// distinguish a human crank from a scheduler crank except by the recorded
+/// actor. Returns the harness's crank report.
+fn harness_crank(run_id: i64, steps: Option<u32>) -> Result<serde_json::Value, String> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+    let candidate = |dir: &Path| dir.join("steward-harness");
+    let bin: PathBuf = std::env::var("BRAIN_STEWARD_BIN")
+        .map(PathBuf::from)
+        .ok()
+        .or_else(|| {
+            exe_dir.and_then(|d| {
+                let p = candidate(&d);
+                p.exists().then_some(p)
+            })
+        })
+        .or_else(|| which_path("steward-harness"))
+        .ok_or_else(|| {
+            "steward-harness binary not found — build tools/steward-harness and install beside `brain` (or set BRAIN_STEWARD_BIN)".to_string()
+        })?;
+    let mut cmd_line = serde_json::json!({
+        "cmd": "crank",
+        "run_id": run_id,
+    });
+    if let Some(steps) = steps {
+        cmd_line["max_steps"] = serde_json::json!(steps);
+    }
+    let mut child = std::process::Command::new(&bin)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("spawn {}: {e}", bin.display()))?;
+    {
+        use std::io::Write as _;
+        let stdin = child.stdin.as_mut().expect("piped stdin captured above");
+        writeln!(stdin, "{cmd_line}").map_err(|e| format!("write stdin: {e}"))?;
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("wait harness: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).unwrap_or(serde_json::Value::Null);
+    Ok(v)
+}
+
+fn cmd_run(args: &[String]) -> Result<(), String> {
+    let usage = "usage: brain run crank [--tier limited,minimal] [--all | --case <id>] [--yes] [--db PATH]\n  \
+(the CRANK scheduler, flip one: enumerates the governed loop's open runs,\n  \
+plans each through the DepEd tier table + the red-flag tripwire, and\n  \
+cranks the selected through THE SAME harness surface the human crank uses.\n  \
+--dry-run is the DEFAULT: without --yes nothing is written. --tier selects\n  \
+the DepEd rows (default limited,minimal; high is NEVER auto-cranked); the\n  \
+tier comes from the domain's bound profile — unbound/unknown fails closed\n  \
+to human-cranked. Every stop hands the run back to a human: no retry, no\n  \
+widening, no looping past a stop. The scheduler cannot dispose: no\n  \
+approve/promote/reject path exists in this verb.)";
+    let (positionals, flags) = parse_flags(args)?;
+    match positionals.first().map(String::as_str) {
+        Some("crank") => {}
+        _ => return Err(usage.to_string()),
+    }
+    use brain_server::workflow::scheduler::{CrankAction, CrankTier, plan_case, profile_tier};
+
+    // The selected rows: --tier is a comma list, exact-parse, fail-closed.
+    let selected: Vec<CrankTier> = match flags.get("tier") {
+        Some(Some(spec)) => spec
+            .split(',')
+            .map(|t| {
+                CrankTier::parse(t.trim())
+                    .ok_or_else(|| format!("unknown tier {t:?} — expected high|limited|minimal"))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => vec![CrankTier::Limited, CrankTier::Minimal],
+    };
+    let yes = flags.contains_key("yes");
+    let all = flags.contains_key("all");
+    let one_case = flags
+        .get("case")
+        .and_then(|o| o.clone())
+        .map(|id| id.parse::<i64>())
+        .transpose()
+        .map_err(|_| "--case must be an integer run id")?;
+
+    let db = flags
+        .get("db")
+        .and_then(|o| o.clone())
+        .map(PathBuf::from)
+        .unwrap_or_else(default_db_path);
+    if !db.exists() {
+        return Err(format!(
+            "no DB at {db:?} — pass --db PATH or set BRAIN_DB_PATH"
+        ));
+    }
+    if !all && one_case.is_none() {
+        return Err(
+            "select what the batch may touch: --all, or --case <id> (the scheduler never sweeps implicitly)"
+                .to_string(),
+        );
+    }
+    let conn = rusqlite::Connection::open(&db).map_err(|e| format!("open {db:?}: {e}"))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, domain, status, state_json FROM workflow_runs \
+             WHERE kind = 'troubleshoot' AND status IN ('active','resolved') ORDER BY id",
+        )
+        .map_err(|e| format!("enumerate: {e}"))?;
+    let rows: Vec<(i64, String, String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .map_err(|e| format!("enumerate: {e}"))?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(|e| format!("enumerate: {e}"))?;
+    drop(stmt);
+
+    let mut planned = 0usize;
+    let mut skipped = 0usize;
+    let mut cranked = 0usize;
+    let mut stopped = 0usize;
+    for (run_id, domain, status, state_json) in &rows {
+        if let Some(one) = one_case
+            && *run_id != one
+        {
+            continue;
+        }
+        // The tier comes from the domain's bound profile (the C3 door); an
+        // unbound/unknown profile is the fail-closed row.
+        let tier = brain_server::profile::profile_for_domain(&conn, domain)
+            .ok()
+            .flatten()
+            .and_then(|p| profile_tier(&p.name));
+        let plan = plan_case(*run_id, domain, status, state_json, &selected, tier);
+        match &plan.action {
+            CrankAction::Crank => {
+                planned += 1;
+                println!(
+                    "crank  run {} domain {} tier {}",
+                    plan.run_id,
+                    plan.domain,
+                    plan.tier.map(|t| t.as_str()).unwrap_or("?")
+                );
+                if yes {
+                    let report = harness_crank(*run_id, None)?;
+                    let stopped_at = report["stopped_at"].as_str().unwrap_or("?");
+                    println!(
+                        "  crank report: stopped_at={stopped_at} steps_executed={}",
+                        report["steps_executed"]
+                    );
+                    cranked += 1;
+                    // Stop respect: ANY stop — including Done — ends this
+                    // run's turn. The scheduler never re-cranks within the
+                    // batch, never retries, never widens a budget.
+                    if stopped_at != "done" {
+                        stopped += 1;
+                    }
+                }
+            }
+            CrankAction::Skip { reason } => {
+                skipped += 1;
+                println!(
+                    "skip   run {} domain {} — {reason}",
+                    plan.run_id, plan.domain
+                );
+            }
+        }
+    }
+    if yes {
+        println!(
+            "scheduler crank batch done: planned {planned}, cranked {cranked} (stops recorded: {stopped}), skipped {skipped}"
+        );
+    } else {
+        println!(
+            "dry-run: planned {planned}, skipped {skipped} — nothing written (pass --yes to crank)"
+        );
+    }
+    Ok(())
+}
+
 fn cmd_workflow(args: &[String]) -> Result<(), String> {
     let usage = "usage: brain workflow open [DOMAIN]\n  \
 brain workflow status <run>\n  \
@@ -7830,51 +8020,17 @@ brain workflow note <run> <text> [--reask]";
             let Some(run) = rest.first() else {
                 return Err(usage.into());
             };
-            // Resolve the harness binary beside this executable first, then
-            // the BRAIN_STEWARD_BIN override, then PATH.
-            let exe_dir = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(Path::to_path_buf));
-            let candidate = |dir: &Path| dir.join("steward-harness");
-            let bin: PathBuf = std::env::var("BRAIN_STEWARD_BIN")
-                .map(PathBuf::from)
-                .ok()
-                .or_else(|| {
-                    exe_dir.and_then(|d| {
-                        let p = candidate(&d);
-                        p.exists().then_some(p)
-                    })
+            let run_id = run
+                .parse::<i64>()
+                .map_err(|_| "run id must be an integer")?;
+            let steps = rest
+                .get(1)
+                .map(|s| {
+                    s.parse::<u32>()
+                        .map_err(|_| "steps must be a positive integer")
                 })
-                .or_else(|| which_path("steward-harness"))
-                .ok_or_else(|| {
-                    "steward-harness binary not found — build tools/steward-harness and install beside `brain` (or set BRAIN_STEWARD_BIN)".to_string()
-                })?;
-            let mut cmd_line = serde_json::json!({
-                "cmd": "crank",
-                "run_id": run.parse::<i64>().map_err(|_| "run id must be an integer")?,
-            });
-            if let Some(steps) = rest.get(1) {
-                cmd_line["max_steps"] = serde_json::json!(
-                    steps
-                        .parse::<u32>()
-                        .map_err(|_| "steps must be a positive integer")?
-                );
-            }
-            let mut child = std::process::Command::new(&bin)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .map_err(|e| format!("spawn {}: {e}", bin.display()))?;
-            {
-                use std::io::Write as _;
-                let stdin = child.stdin.as_mut().expect("piped stdin captured above");
-                writeln!(stdin, "{cmd_line}").map_err(|e| format!("write stdin: {e}"))?;
-            }
-            let out = child
-                .wait_with_output()
-                .map_err(|e| format!("wait harness: {e}"))?;
-            let v: serde_json::Value =
-                serde_json::from_slice(&out.stdout).unwrap_or(serde_json::Value::Null);
+                .transpose()?;
+            let v = harness_crank(run_id, steps)?;
             if json_out {
                 return emit_json_ok("workflow", v);
             }

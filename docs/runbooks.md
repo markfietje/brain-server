@@ -385,6 +385,37 @@ was declined because case data must not leave the machine.
    loop off never stops chat. Nothing about the pilot outlives its
    configuration except its measured evidence.
 
+## The autonomy dial, flip one: the CRANK scheduler
+
+`brain run crank [--tier limited,minimal] [--all | --case <id>] [--yes]
+[--db PATH]` is the governed loop's scheduler. THE LAW: the scheduler adds
+calls, not decisions; the risk class picks the row; the red flag is the
+tripwire.
+
+- **The tier table** (the DepEd rows — the operator's reference): the
+  domain's bound profile IS the risk-class declaration. `education` →
+  Limited (assistive, no determinations — auto-crank within budgets);
+  `finance-mifid`/`finance-sox`/`health-hipaa`/`gov-fedramp` → High
+  (consequences for people — human-cranked, always); the drafting/IT
+  profiles (`call-center`, `engineering`, …) → Minimal. An unbound domain
+  or an unknown profile fails CLOSED to human-cranked. Binding a profile is
+  the classification act.
+- **The red flag is the tripwire**: a case state carrying an open,
+  un-ruled-out red flag is never touched — not skipped-and-retried, not
+  re-planned. The monotonic escalate-first law owns it.
+- **Stop respect**: every stop (`ask_human`, `budget`, `budget_warn`,
+  `stale`, `gates_vacuous`, and the case machine's own
+  routed/escalated/provider-failed) hands the run back to a human. The
+  scheduler records the stop and moves on — one crank per run per batch,
+  no retry, no widening. The batch never runs implicitly: `--all` or
+  `--case <id>` is required.
+- **Dry-run is the default**: without `--yes` the verb prints exactly which
+  runs would crank and why, and writes nothing. `--yes` is the only writer,
+  and it rides the SAME harness surface the human `brain workflow crank`
+  uses — crank authority identical by construction.
+- **The scheduler cannot dispose**: no approve, promote, reject, or
+  legal-hold path exists in the verb (source-scanned).
+
 ## Next steps
 
 - **[One Brain for the Whole Team](./team-workflow.md)** — where procedures fit in the shared-store workflow.

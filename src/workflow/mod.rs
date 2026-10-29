@@ -46,6 +46,7 @@ pub(crate) mod driver;
 pub(crate) mod entitlement;
 pub mod measurement;
 pub mod routing;
+pub mod scheduler;
 pub mod separation;
 
 // ── fuzz seams (doc-hidden; not API — the fuzz targets' only entry) ────────

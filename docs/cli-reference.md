@@ -105,6 +105,7 @@ on the HTTP API or the client console.
 | `brain workflow crank <run> [steps]` | Advance the engine loop up to `[steps]` transitions. |
 | `brain workflow handoff <run>` | Emit the I-PASS handoff packet for a run (read-seam sanitized). Supports `--json`. |
 | `brain workflow note <run> <text> [--reask]` | Post a screened case note on the run (`@skill:`/`@principal` mentions resolve into swarm invites); `--reask` additionally marks the operator re-ask (the `case/reask` effort-proxy source). |
+| `brain run crank [--tier limited,minimal] [--all \| --case <id>] [--yes] [--db PATH]` | The CRANK scheduler (flip one): plan the governed loop's open runs through the DepEd tier table (the domain's bound profile is the risk-class declaration; unbound/unknown fails closed) and the red-flag tripwire; dry-run is the default and `--yes` is the only writer, riding the same harness surface the human crank uses. Every stop hands the run back to a human; the scheduler cannot dispose. |
 | `brain wfm-import <file.csv\|file.json>` `[--domain D]` `[--dry-run]` | Import WFM shifts (POST `/ops/shifts`) and skills (they land as HITL `crew_skills_update` proposals — never direct writes) |
 
 ## UMP (Universal Memory Protocol)
