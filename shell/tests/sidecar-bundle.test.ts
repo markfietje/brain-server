@@ -206,7 +206,7 @@ function writeRecord(fixture: Fixture, record: ProvenanceRecord): void {
 
 function makeFixture(): Fixture {
 	const root = tempDir();
-	const bundle = join(root, 'Brain Shell.app');
+	const bundle = join(root, 'StewardMem.app');
 	const macos = join(bundle, 'Contents', 'MacOS');
 	const binaries = join(bundle, 'Contents', 'Resources', 'binaries');
 	const staged = join(root, 'staged');

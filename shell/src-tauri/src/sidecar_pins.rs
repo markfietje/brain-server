@@ -419,11 +419,11 @@ fn the_sidecar_command_is_loopback_and_carries_the_paths() {
 #[test]
 fn the_sidecar_path_is_the_bundle_macos_path() {
     let path = sidecar::resolve_sidecar_path(Path::new(
-        "/Applications/Brain Shell.app/Contents/MacOS/brain-shell",
+        "/Applications/StewardMem.app/Contents/MacOS/brain-shell",
     ));
     assert_eq!(
         path,
-        PathBuf::from("/Applications/Brain Shell.app/Contents/MacOS/brain-server")
+        PathBuf::from("/Applications/StewardMem.app/Contents/MacOS/brain-server")
     );
     assert!(path.ends_with("Contents/MacOS/brain-server"));
 }

@@ -38,7 +38,7 @@ import { setBearer } from '../src/lib/api/token';
 import KernelGateHost from './KernelGateHost.svelte';
 
 const DATA_ROOT = '/Users/test/Library/Application Support/com.stewardmem.shell/kernel';
-const SIDECAR = '/Applications/Brain Shell.app/Contents/MacOS/brain-server';
+const SIDECAR = '/Applications/StewardMem.app/Contents/MacOS/brain-server';
 
 function setTauri(): void {
 	(window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};

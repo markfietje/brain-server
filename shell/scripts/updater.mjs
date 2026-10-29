@@ -316,8 +316,8 @@ export function manifestFailures({
 	// The artefact's NAME is part of the URL, and a release asset does not
 	// keep every character a file may carry. **MEASURED (2026-10-22):**
 	// GitHub replaces a SPACE in an asset's name with a DOT, so an artefact
-	// called `Brain Shell.app.tar.gz` is published as
-	// `Brain.Shell.app.tar.gz` — and the manifest's URL, which names the
+	// called `Brain Shell.app.tar.gz` (the 1.29.27 app name) was published
+	// as `Brain.Shell.app.tar.gz` — and the manifest's URL, which names the
 	// space (`Brain%20Shell.app.tar.gz`), then 404s. The updater would
 	// download NOTHING, and the manifest would be a promise the release
 	// cannot keep. A name the asset cannot keep is a name the URL cannot

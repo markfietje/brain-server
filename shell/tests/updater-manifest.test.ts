@@ -242,10 +242,10 @@ function fixture(options: FixtureOptions = {}): Fixture {
 	// beside it — exactly where the bundler writes it, and made by the same
 	// CLI that makes the real one.
 	const work = tempDir('brain-updater-build-');
-	const bundle = join(work, 'Brain Shell.app');
+	const bundle = join(work, 'StewardMem.app');
 	mkdirSync(join(bundle, 'Contents'), { recursive: true });
 	writeFileSync(join(bundle, 'Contents', 'Info.plist'), infoPlist(artifactVersion));
-	const artifact = join(work, 'Brain-Shell.app.tar.gz');
+	const artifact = join(work, 'StewardMem.app.tar.gz');
 	writeFileSync(artifact, 'the updater artifact bytes\n');
 	signFixtureArtifact(artifact, options.signedVersion ?? artifactVersion);
 	const signature = `${artifact}.sig`;
@@ -813,9 +813,9 @@ test(
 		const passphraseFile = join(pinnedDir, 'fixture.passphrase');
 		writeFileSync(passphraseFile, FIXTURE_KEY_PASSWORD);
 		chmodSync(passphraseFile, 0o600);
-		const artifact = join(pinnedDir, 'Brain-Shell.app.tar.gz');
+		const artifact = join(pinnedDir, 'StewardMem.app.tar.gz');
 		writeFileSync(artifact, 'the updater artifact bytes\n');
-		const bundle = join(pinnedDir, 'Brain Shell.app');
+		const bundle = join(pinnedDir, 'StewardMem.app');
 		mkdirSync(join(bundle, 'Contents'), { recursive: true });
 		writeFileSync(join(bundle, 'Contents', 'Info.plist'), infoPlist('0.1.1'));
 		const accepted = runSign([
@@ -998,7 +998,8 @@ test('the_signing_lane_refuses_to_sign_in_the_public_actions', () => {
  *
  * **MEASURED (2026-10-22), and it is the same class of defect this round
  * exists to close.** GitHub replaces a SPACE in an asset's name with a DOT:
- * `Brain Shell.app.tar.gz` is published as `Brain.Shell.app.tar.gz`. The
+ * (measured on the 1.29.27 cut, when the app was still `Brain Shell`) a
+ * `Brain Shell.app.tar.gz` was published as `Brain.Shell.app.tar.gz`. The
  * manifest's URL names the space (`Brain%20Shell.app.tar.gz`), so the URL
  * **404s** — the updater downloads NOTHING, and the manifest is a promise the
  * release cannot keep. The tag defect (D1) was the same shape: a URL naming

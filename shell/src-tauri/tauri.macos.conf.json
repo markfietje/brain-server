@@ -2,7 +2,7 @@
 	"app": {
 		"windows": [
 			{
-				"title": "Brain Shell",
+				"title": "StewardMem",
 				"label": "main",
 				"width": 1024,
 				"height": 768,
