@@ -57,6 +57,13 @@ to its new home: the bundle identifier is `com.stewardmem.shell`.
   there are no external installs to migrate — fresh identity, fresh start —
   so stored tokens are simply re-granted and the updater signing passphrase
   is re-stored once with `scripts/updater-key-passphrase.sh`.
+- **The project is now Apache-2.0.** brain-server relicensed from MIT on
+  2026-10-27: Apache-2.0 adds the explicit contributor patent grant and its
+  retaliation clause, and §6 grants no trademark rights. Releases tagged
+  before that date remain MIT for whoever holds them. `NOTICE` and
+  `LICENSES.md` (the per-surface distribution table) ship beside `LICENSE`,
+  and the Signal gateway — which ships in neither the release nor the signed
+  app — is declared under the AGPL because its pinned stack is.
 
 **Bug fixes**
 
