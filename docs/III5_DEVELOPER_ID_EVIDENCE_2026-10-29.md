@@ -139,4 +139,91 @@ correction of an assumed one:**
 The first-launch witness (the Gatekeeper dialog, quarantine present, no
 bypass) belongs to the clean machine — S-4 below.
 
-## (S-4..§7 evidence lands below as the round executes)
+## S-4 — the clean machine: DEFERRED with the blocker named; the path is prepared
+
+The arm64 clean-VM test (quarantine present; Gatekeeper first launch
+WITHOUT bypass; sidecar up; the chat answering live; the audit chain
+verifying; the unstapled and ad-hoc negative controls on the same
+machine) did not run in this round. **The blocker, named:** the
+operator's VPN tunnel (all traffic, kill-switched) sustains ~230 KB/s –
+2.3 MB/s down / ~170 KB/s up — enough for the notarytool uploads, hopeless
+for a VM image (ghcr's 34 GB pull died in a connection-loss retry loop;
+Apple's CDN measured the IPSW at ~20 hours on the NL entry). **The
+preparation, done:** Tart is installed (Virtualization.framework), the
+macOS 27.2 (Golden Gate) restore IPSW is identified at Apple's CDN and
+downloading on the faster Japan entry, and the witnessed test follows the
+moment it lands. **The owner:** the operator. Gate 8's last open surface
+is this witness; every locally-measurable surface measured green in this
+round (S-1..S-3).
+
+## S-5 — Intel: superseded by the arm64-only decision, recorded
+
+Plan 05 §2 declared universal (x86_64 + aarch64) mandatory, and the
+execution prompt's S-5 carried the Intel verification as an external
+dependency. **The operator's decision (2026-10-29, mid-round): the
+desktop app is arm64-only.** The consequences, all landed: the lane
+builds `--target aarch64-apple-darwin`; the CI proof build mirrors it;
+the update manifest answers for `darwin-aarch64` alone (the writer's
+`--targets` law refuses offering Intel Macs an app they cannot run —
+measured defect in dry run #4); the x86_64 app slice no longer exists, so
+the external Intel-RUN verification retires with it; the KERNEL keeps
+both darwin slices (the CI-built darwin-x86_64 artifacts are signed and
+notarized in the lane), so Intel Macs run the kernel headless. Rosetta
+was never counted (the prompt's own law) and is now moot for the app.
+
+## S-6 — the e2e lane ran; the residues swept; the out-of-tree identities
+
+**The e2e lane** (owed since M3-g): `pnpm test:e2e` — **7 passed, exit 0**
+(chromium live-wire smoke + the webkit no-bypass CSP leg).
+
+**The rebrand residue (docs/scripts class), the census:** 5 live lines
+swept — install-service.sh's pre-rebrand bundle-name candidates (the
+fresh-start law now stated where the candidates used to be) and its
+universal bundle path (now the aarch64 dir); the shell package name
+(`brain-shell` → `stewardmem-shell`, README title with it). Dated history
+KEPT by the tree's own law: the 1.29.27 incident comments (updater.mjs,
+install-service.sh), the release-lane rename measurement
+(release-app-sign.sh), the register's drill transcripts, the published
+CHANGELOG sections. Code-level names that are NOT residue: the Cargo
+package `brain-shell` (the bundle's real executable name — the walker's
+census reads it), the kernel binaries (`brain-server`, `brain`, `mcp` —
+wire-level).
+
+**The out-of-tree identities — the runbook.** Landed during this round:
+
+- [x] **GitHub repo About** (`stewardmem/stewardmem`): already
+  StewardMem-branded — "StewardMem — governed, local-first memory and
+  decision infrastructure for AI agents; deterministic retrieval,
+  human-gated memory, provenance, and tamper-evident audit", homepage
+  `https://stewardmem.github.io/stewardmem/`. Nothing to change.
+
+Operator acts, named and owed to the operator's own hands (no credential
+of this machine reaches them):
+
+- [ ] **LinkedIn title**: "StewardMem — governed, local-first memory and
+  decision infrastructure for AI agents" (drop any Brain Server title).
+- [ ] **arXiv keyword**: the paper's keyword list carries `stewardmem`
+  (and `agent memory governance`) — the next posting/revision.
+- [ ] **README/portfolio pins**: the portfolio site's project card names
+  StewardMem with the repo URL `github.com/stewardmem/stewardmem`.
+- [ ] **stewardmem.com landing line**: "StewardMem — governed memory for
+  AI agents" (the domain's landing copy carries the current name).
+
+## §7 — the ledger
+
+The register row (`docs/gate-law-register.md`, appended this round)
+carries the law and the gate's state. The ledger, in the prompt's own
+order:
+
+- **P5 (OpenClaw against the shipped binary) is next** — the shipped
+  darwin artifacts are now Gatekeeper-clean and signed for exactly this
+  round; **watch the MCP catalog fingerprint pins**.
+- Then **the decommission run book** — the remaining distance to
+  decommission is one integration round (P5) and a customer.
+- The labeling round (human hours); C4 (field-gated); COPPA (priority);
+  rule_rates (the decision seam); reject (operator).
+- The standing debts: recovery, Apple-quote, **the hand-made archive**
+  (III-4's measured install stall — upstream's to answer; this round's
+  DMG does not touch the updater's path), register conversions.
+- **S-4, the clean-machine witness, rides at the front of the next
+  round's gate** — the VM is prepared; the IPSW is downloading.
