@@ -805,7 +805,10 @@ pub(crate) mod tests {
         );
     }
 
-    /// Absent provider config refuses BEFORE any provider contact.
+    /// Absent provider config refuses BEFORE any provider contact. The kind is
+    /// removed with the profile: "absent" means NO posture at all, and a
+    /// process env that carries one (ambient, or a neighbour's leak) is a
+    /// different posture, not this law.
     #[test]
     fn route_absent_provider_config_is_400() {
         let f = fixture();
@@ -813,7 +816,7 @@ pub(crate) mod tests {
         let (status, v) = {
             let _env = crate::test_support::lock_env();
             let _restore = ProfileEnvRestore::capture();
-            for key in PROFILE_ENV_KEYS {
+            for key in PROFILE_ENV_KEYS.iter().chain(POSTURE_ENV_KEYS.iter()) {
                 unsafe { std::env::remove_var(key) };
             }
             test_runtime().block_on(async {
@@ -835,8 +838,7 @@ pub(crate) mod tests {
         let (status, v) = {
             let _env = crate::test_support::lock_env();
             let _restore = ProfileEnvRestore::capture();
-            unsafe { std::env::remove_var("BRAIN_GDL_PROVIDER_KIND") };
-            for key in PROFILE_ENV_KEYS {
+            for key in PROFILE_ENV_KEYS.iter().chain(POSTURE_ENV_KEYS.iter()) {
                 unsafe { std::env::remove_var(key) };
             }
             test_runtime().block_on(async {
@@ -1051,6 +1053,15 @@ pub(crate) mod tests {
         "BRAIN_GDL_PROVIDER_SECRET_ROOT",
     ];
 
+    /// The two posture keys the afm-stdio pins move beside the HTTP profile:
+    /// the transport-kind selector and the bridge binary path. They ride the
+    /// same restore guard as the profile, because an env key a test sets and
+    /// never restores leaks into every later test in this process — the kind
+    /// left on `afm-stdio` turns the absent-profile pins into
+    /// `gdl_bridge_unavailable` 503s, in whatever order the harness happens to
+    /// schedule them (a real CI flake, not a hypothesis).
+    const POSTURE_ENV_KEYS: [&str; 2] = ["BRAIN_GDL_PROVIDER_KIND", "BRAIN_AFM_BRIDGE"];
+
     struct ProfileEnvRestore(Vec<(&'static str, Option<String>)>);
 
     impl ProfileEnvRestore {
@@ -1058,6 +1069,7 @@ pub(crate) mod tests {
             Self(
                 PROFILE_ENV_KEYS
                     .iter()
+                    .chain(POSTURE_ENV_KEYS.iter())
                     .map(|key| (*key, std::env::var(key).ok()))
                     .collect(),
             )
@@ -1099,6 +1111,10 @@ pub(crate) mod tests {
             "BRAIN_GDL_PROVIDER_SECRET_ROOT",
             root.map(|p| p.to_string_lossy().into_owned()),
         );
+        // An HTTP profile IS the default transport kind: a process env that
+        // carries `afm-stdio` is a different (mixed, refused) posture, so the
+        // helper that installs a profile also asserts the kind it belongs to.
+        set("BRAIN_GDL_PROVIDER_KIND", None);
         restore
     }
 
@@ -1198,6 +1214,7 @@ pub(crate) mod tests {
                 std::env::set_var("BRAIN_GDL_PROVIDER_MODEL", "server-model");
                 std::env::set_var("BRAIN_GDL_PROVIDER_SECRET_FILE", path);
                 std::env::set_var("BRAIN_GDL_PROVIDER_SECRET_ROOT", root.path());
+                std::env::remove_var("BRAIN_GDL_PROVIDER_KIND");
             };
             set(&empty);
             let (empty_status, empty_body) = test_runtime().block_on(async {
@@ -1276,7 +1293,7 @@ pub(crate) mod tests {
         let (status, body) = {
             let _env = crate::test_support::lock_env();
             let _restore = ProfileEnvRestore::capture();
-            for key in PROFILE_ENV_KEYS {
+            for key in PROFILE_ENV_KEYS.iter().chain(POSTURE_ENV_KEYS.iter()) {
                 unsafe { std::env::remove_var(key) };
             }
             test_runtime().block_on(async {
