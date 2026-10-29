@@ -35,37 +35,37 @@ const ANCHORS: &[(&str, &str, usize, &str)] = &[
     (
         "F15 — the main phase exchange",
         "src/workflow/gdl.rs",
-        3366,
+        3371,
         "run_turns_owned",
     ),
     (
         "F15 — the adversarial re-check delegation",
         "src/workflow/gdl.rs",
-        3121,
+        3126,
         "delegate_owned_budgeted",
     ),
     (
         "F15 — the second-verification confirmation",
         "src/workflow/gdl.rs",
-        3666,
+        3671,
         "run_turns_owned",
     ),
     (
         "F8 — accept requires a SERVER hit",
         "src/workflow/gdl.rs",
-        1250,
+        1255,
         "no server knowledge hits",
     ),
     (
         "F8 — a cited id must be one the server returned",
         "src/workflow/gdl.rs",
-        1267,
+        1272,
         "unknown knowledge id",
     ),
     (
         "F9 — locator resolution",
         "src/workflow/gdl.rs",
-        1592,
+        1597,
         "fn locator_resolves",
     ),
     (
