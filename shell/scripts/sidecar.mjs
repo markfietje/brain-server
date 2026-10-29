@@ -21,8 +21,15 @@
  *           line count `file` emits — a fat binary prints one line per
  *           slice plus a summary), verify the bundle seal, then each file
  *           in isolation with `--verify --strict --ignore-resources`, and
- *           require the hardened-runtime flag. Exit 2 = cannot verify;
- *           exit 1 = verified and failed, every failure named.
+ *           require the hardened-runtime flag. With `--expect-identity
+ *           "<identity>"` (the SIGNING LANE's posture, III-5) every Mach-O
+ *           AND the bundle itself must additionally carry that identity as
+ *           their first `Authority=` line — a self-signed identity is
+ *           refused BY NAME, an ad-hoc signature is refused for having no
+ *           Authority line at all — plus a `Timestamp=` line, the secure
+ *           timestamp every round since III-1 recorded as owed. Exit 2 =
+ *           cannot verify; exit 1 = verified and failed, every failure
+ *           named.
  *
  * Why the shapes below are what they are (all measured 2026-10-19):
  *
@@ -43,7 +50,16 @@
  *    identified by signature + the embedded `brain-server/<version>` stamp +
  *    arch parity. A sha equality pin there would be false.
  *  - An ad-hoc signature has no timestamp and `spctl` rejects it. Hardened
- *    runtime is pinned; the secure timestamp is OWED to III-5, not faked.
+ *    runtime is pinned; the secure timestamp was OWED to III-5 and lands
+ *    there: with the Developer ID identity, `--expect-identity` reads the
+ *    `Timestamp=` line (measured 2026-10-29: this toolchain timestamps a
+ *    Developer ID signature BY DEFAULT, and `--timestamp=none` is the only
+ *    way to produce its absence — which is exactly the posture refused).
+ *  - MEASURED display shapes (2026-10-29, real codesign): the FIRST
+ *    `Authority=` line names the signing certificate; a self-signed
+ *    identity carries that name and NO timestamp line; ad-hoc carries
+ *    `Signature=adhoc` and no Authority line at all. The expectation reads
+ *    those lines, never the exit status (`-dv` exits 0 on everything).
  */
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -395,7 +411,42 @@ function cannotVerify(reason) {
 	process.exit(2);
 }
 
-function verifyBundle(bundleArgument, stagedArgument) {
+/**
+ * III-5 — the identity expectation, applied to ONE codesign display. The
+ * FIRST `Authority=` line is the signing certificate (the intermediates
+ * follow it); anything else — the old self-signed name, or no Authority
+ * line at all, which is what ad-hoc produces — is refused, with the found
+ * value NAMED so the refusal says what signed the code. The `Timestamp=`
+ * line is the secure timestamp: mandatory under the expectation, absent on
+ * self-signed and ad-hoc signatures, present-by-default on this toolchain's
+ * Developer ID signatures (its forced absence is `--timestamp=none`, and
+ * that posture is the debt retired here).
+ */
+function identityFailures(details, label, expectedIdentity) {
+	const failures = [];
+	const authority = /^Authority=(.*)$/m.exec(details)?.[1]?.trim() ?? '';
+	if (authority === '') {
+		const adhoc = /Signature=adhoc/.test(details)
+			? ' (ad-hoc: Signature=adhoc, no Authority line)'
+			: '';
+		failures.push(
+			`identity ${label}: no Authority line${adhoc} — expected "${expectedIdentity}"`
+		);
+	} else if (authority !== expectedIdentity) {
+		failures.push(
+			`identity ${label}: "${authority}" is not the pinned signing identity "${expectedIdentity}" — the lane refuses any other signer, by name`
+		);
+	}
+	const timestamp = /^Timestamp=(.*)$/m.exec(details)?.[1]?.trim() ?? '';
+	if (timestamp === '' || timestamp === 'n/a') {
+		failures.push(
+			`timestamp ${label}: no secure timestamp — owed since III-1, mandatory under the Developer ID identity, absent here`
+		);
+	}
+	return failures;
+}
+
+function verifyBundle(bundleArgument, stagedArgument, expectedIdentity = null) {
 	const bundle = resolve(bundleArgument);
 	if (!existsSync(bundle) || !statSync(bundle).isDirectory()) {
 		cannotVerify(`bundle absent: ${bundle}`);
@@ -426,6 +477,11 @@ function verifyBundle(bundleArgument, stagedArgument) {
 	if (seal.status !== 0) {
 		failures.push(`signature bundle: ${output(seal) || `codesign exited ${String(seal.status)}`}`);
 	}
+	if (expectedIdentity !== null) {
+		const bundleDisplay = run('codesign', ['-dv', '--verbose=2', bundle]);
+		const bundleDetails = `${bundleDisplay.stdout}\n${bundleDisplay.stderr}`;
+		failures.push(...identityFailures(bundleDetails, 'bundle', expectedIdentity));
+	}
 
 	for (const entry of entries) {
 		const file = join(bundle, entry.path);
@@ -445,6 +501,9 @@ function verifyBundle(bundleArgument, stagedArgument) {
 			failures.push(
 				`runtime ${entry.path}: flags=${flags} — a linker-signed or unsigned Mach-O is not a signed sidecar`
 			);
+		}
+		if (expectedIdentity !== null) {
+			failures.push(...identityFailures(details, entry.path, expectedIdentity));
 		}
 	}
 
@@ -493,8 +552,10 @@ function verifyBundle(bundleArgument, stagedArgument) {
 	}
 	const version = record?.kernel_version ?? 'unknown';
 	const commit = typeof record?.kernel_commit === 'string' ? record.kernel_commit.slice(0, 12) : 'unknown';
+	const identityNote =
+		expectedIdentity === null ? '' : `, identity+timestamp [${expectedIdentity}]`;
 	console.log(
-		`ok — bundle seal, ${entries.length} Mach-O files, hardened runtime, arch parity [${main?.archs.join(' ') ?? 'unknown'}], provenance ${version} @ ${commit}`
+		`ok — bundle seal${identityNote}, ${entries.length} Mach-O files, hardened runtime, arch parity [${main?.archs.join(' ') ?? 'unknown'}], provenance ${version} @ ${commit}`
 	);
 }
 
@@ -705,6 +766,10 @@ function usage() {
 	console.error('usage:');
 	console.error('  node shell/scripts/sidecar.mjs stage');
 	console.error('  node shell/scripts/sidecar.mjs verify <bundle> [--staged <dir>]');
+	console.error(
+		'  node shell/scripts/sidecar.mjs verify <bundle> [--staged <dir>] \\'
+	);
+	console.error('        --expect-identity "Developer ID Application: Name (TEAMID)"');
 	process.exit(2);
 }
 
@@ -718,16 +783,21 @@ function main() {
 		const bundle = rest[0];
 		if (bundle === undefined) usage();
 		let staged = null;
+		let expectedIdentity = null;
 		for (let index = 1; index < rest.length; index += 1) {
 			if (rest[index] === '--staged') {
 				staged = rest[index + 1] ?? null;
 				if (staged === null) usage();
 				index += 1;
+			} else if (rest[index] === '--expect-identity') {
+				expectedIdentity = rest[index + 1] ?? null;
+				if (expectedIdentity === null || expectedIdentity.startsWith('--')) usage();
+				index += 1;
 			} else {
 				usage();
 			}
 		}
-		verifyBundle(bundle, staged);
+		verifyBundle(bundle, staged, expectedIdentity);
 		return;
 	}
 	usage();

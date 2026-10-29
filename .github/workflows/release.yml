@@ -241,29 +241,29 @@ jobs:
     #   * the PUBLIC Actions prove the build. They hold NO key, run NO
     #     signing step, and name no private key — a key in a public CI job
     #     is a key anyone with a push-trigger can run.
-    #   * the SIGNING LANE signs what this job proved. It runs on a machine
-    #     that holds the private key: `scripts/release-app-sign.sh`, on the
-    #     operator's own machine today, or on a PRIVATE runner's secret if
-    #     the operator ever wants an unattended lane. The two routes run the
-    #     same commands.
-    #
-    # WHY THE ARTEFACT IS NOT BUILT HERE: the updater artefact (`Brain
-    # Shell.app.tar.gz`) is produced by the bundler when the updater
-    # artifacts are switched on, and the Tauri CLI REFUSES that build
-    # without the private key ("A public key has been found, but no private
-    # key"). So the SIGNED artefact can only be built where the key is — in
-    # the signing lane — and the archive is always the bundler's own
-    # (a hand-made tarball stalls the install; measured in III-4).
-    #
-    # WHERE THE APPLE IDENTITY WOULD GO — a decision, not an omission (D4/D5):
-    # the Developer ID signature, notarization, stapling and the `spctl`
-    # verdict belong to the bundle's OWN signing step, which is a SEPARATE
-    # step from the updater's own signature. They are two different keys
-    # with two different owners: the Apple Developer ID is Apple's, and it is
-    # deferred to the first paying customer (III-5, revenue-gated). The
-    # updater's signing key is OURS, is free, and is what the app's updater
-    # verifies. Everything this job builds is ad-hoc-signed, which is
-    # STRUCTURE, not shippability (D5).
+#   * the SIGNING LANE signs what this job proved. It runs on a machine
+#     that holds the private key: `scripts/release-app-sign.sh`, on the
+#     operator's own machine today, or on a PRIVATE runner's secret if
+#     the operator ever wants an unattended lane. The two routes run the
+#     same commands.
+#
+# WHY THE ARTEFACT IS NOT BUILT HERE: the updater artefact (`StewardMem
+# .app.tar.gz`) is produced by the bundler when the updater artifacts are
+# switched on, and the Tauri CLI REFUSES that build without the private key
+# ("A public key has been found, but no private key"). So the SIGNED
+# artefact can only be built where the key is — in the signing lane — and
+# the archive is always the bundler's own (a hand-made tarball stalls the
+# install; measured in III-4).
+#
+# THE APPLE IDENTITY — LANDED in III-5 (2026-10-29), and the split held: the
+# overlay (`tauri.macos.conf.json`) now pins the Developer ID identity, and
+# THIS job overrides it back to ad-hoc (`APPLE_SIGNING_IDENTITY: "-"`)
+# because the public Actions hold no certificate and must never sign (D6).
+# The lane verifies the real identity on every Mach-O before the updater
+# chain is produced; the Developer ID signature, notarization, stapling and
+# the `spctl` verdict are the bundle's OWN signing step — a separate key
+# with a separate owner from the updater's own signing key — and they live
+# in the signing lane, where the certificate is.
     name: Build the macOS app bundle (proof; never signed here)
     # This job STAGES the sidecar, and staging builds brain-afm, whose
     # FoundationModels surface (variant/capabilities vocabulary and the PCC
@@ -318,8 +318,15 @@ jobs:
       # updater artifacts on, and the CLI refuses to build them without the
       # private key. This job builds the APP; the signing lane builds the
       # SIGNED artefact, where the key is.
+      #
+      # APPLE_SIGNING_IDENTITY overrides the overlay's Developer ID pin back
+      # to ad-hoc: the public Actions hold no certificate and must never sign
+      # (D6). The real identity is exercised — and its every Mach-O verified —
+      # in the signing lane, where the certificate is.
       - name: Build the universal app bundle (ad-hoc, hardened runtime)
         working-directory: shell
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
         run: pnpm tauri build --bundles app --target universal-apple-darwin
 
       - name: Verify every Mach-O in the real bundle

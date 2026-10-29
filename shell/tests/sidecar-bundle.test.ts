@@ -162,7 +162,28 @@ if [ "$mode" = "display" ]; then
 				;;
 		esac
 	fi
-	echo "CodeDirectory v=20500 flags=0x10002(adhoc,runtime)" >&2
+	# The display the identity expectation reads, in the shape MEASURED on the
+	# real toolchain (2026-10-29): the first Authority line is the signing
+	# certificate; a Developer ID signature carries a Timestamp= line (secure
+	# timestamping is the codesign default on this toolchain, and absent only
+	# under --timestamp=none); a self-signed identity has NO timestamp line;
+	# ad-hoc has no Authority line at all.
+	# NOTE the parameter expansions WITHOUT the colon: a bash expansion of the
+	# form VAR-default falls back only when the variable is UNSET, so an env
+	# var set to the empty string means "emit no line" — the ad-hoc and
+	# missing-timestamp postures are produced exactly that way (the colon form
+	# would silently restore the default and the refusal arms would quietly
+	# pass against a green posture).
+	flags="\${STUB_FLAGS-0x10002(adhoc,runtime)}"
+	echo "CodeDirectory v=20500 size=241 flags=$flags" >&2
+	authority="\${STUB_AUTHORITY-Developer ID Application: Mark Fietje (JHB4UNPL3G)}"
+	if [ -n "$authority" ]; then
+		echo "Authority=$authority" >&2
+	fi
+	timestamp="\${STUB_TIMESTAMP-29 Oct 2026 at 19:55:41}"
+	if [ -n "$timestamp" ]; then
+		echo "Timestamp=$timestamp" >&2
+	fi
 	exit 0
 fi
 if [ -n "\${STUB_BUNDLE_INVALID:-}" ]; then
@@ -264,9 +285,10 @@ function makeFixture(): Fixture {
 function verify(
 	bundle: string,
 	staged: string | null,
-	env: NodeJS.ProcessEnv = {}
+	env: NodeJS.ProcessEnv = {},
+	extraArgs: string[] = []
 ): SpawnSyncReturns<string> {
-	const args = [scriptPath, 'verify', bundle];
+	const args = [scriptPath, 'verify', bundle, ...extraArgs];
 	if (staged !== null) args.push('--staged', staged);
 	const options: SpawnSyncOptionsWithStringEncoding = {
 		cwd: kernelRoot,
@@ -275,6 +297,17 @@ function verify(
 	};
 	return spawnSync(process.execPath, args, options);
 }
+
+/** The lane's posture: the walker runs WITH the identity expectation (III-5). */
+function verifyWithIdentity(
+	bundle: string,
+	staged: string | null,
+	env: NodeJS.ProcessEnv = {}
+): SpawnSyncReturns<string> {
+	return verify(bundle, staged, env, ['--expect-identity', DEVELOPER_ID]);
+}
+
+const DEVELOPER_ID = 'Developer ID Application: Mark Fietje (JHB4UNPL3G)';
 
 function output(result: SpawnSyncReturns<string>): string {
 	return `${result.stdout ?? ''}${result.stderr ?? ''}`;
@@ -337,6 +370,61 @@ test('the_walker_names_the_unsigned_mach_o_and_reds', () => {
 	expect(linkerText).toContain('FAIL runtime Contents/MacOS/brain-shell');
 	expect(linkerText).toContain('flags=0x20002(adhoc,linker-signed)');
 	expect(linkerText).not.toContain('FAIL signature Contents/MacOS/brain-shell');
+});
+
+/**
+ * III-5 — the lane's posture: the walker runs WITH the identity expectation,
+ * and every Mach-O must carry the Developer ID signature WITH its secure
+ * timestamp. The measured discriminators (2026-10-29, real toolchain): the
+ * FIRST `Authority=` line names the signing certificate — a self-signed
+ * identity is refused BY NAME — and the `Timestamp=` line exists on every
+ * Developer ID signature (secure timestamping is this codesign's default;
+ * its absence is the `--timestamp=none` posture, refused). Ad-hoc has no
+ * Authority line at all. The expectation is opt-in so the public CI's
+ * ad-hoc PROOF build keeps its own weaker pin: CI never signs (D6), and the
+ * identity gate lives where the identity lives — the signing lane.
+ */
+test('the_walker_demands_the_developer_id_identity_and_timestamp_when_expected', () => {
+	const fixture = makeFixture();
+	const posture = { STUB_FLAGS: '0x10000(runtime)' };
+
+	// GREEN — the posture the lane ships: Developer ID + secure timestamp.
+	const green = verifyWithIdentity(fixture.bundle, fixture.staged, posture);
+	expect(green.status).toBe(0);
+	expect(output(green)).toContain(DEVELOPER_ID);
+	expect(output(green)).toContain('identity+timestamp');
+
+	// RED ① — the OLD self-signed identity, refused BY NAME. The lane must
+	// never again sign a release with it (READ FIRST ②).
+	const selfSigned = verifyWithIdentity(fixture.bundle, fixture.staged, {
+		...posture,
+		STUB_AUTHORITY: 'brain-server self-signed',
+		STUB_TIMESTAMP: ''
+	});
+	expect(selfSigned.status).toBe(1);
+	expect(output(selfSigned)).toContain('FAIL identity Contents/MacOS/brain-server');
+	expect(output(selfSigned)).toContain('brain-server self-signed');
+
+	// RED ② — ad-hoc: no Authority line at all (`Signature=adhoc`), the D5
+	// posture the lane once shipped as STRUCTURE and now refuses.
+	const adhoc = verifyWithIdentity(fixture.bundle, fixture.staged, {
+		...posture,
+		STUB_AUTHORITY: '',
+		STUB_TIMESTAMP: ''
+	});
+	expect(adhoc.status).toBe(1);
+	expect(output(adhoc)).toContain('FAIL identity');
+	expect(output(adhoc)).toContain('no Authority line');
+
+	// RED ③ — Developer ID WITHOUT the secure timestamp: the debt every
+	// round since III-1 recorded as owed. The absence is refused, never
+	// accepted because the identity is right.
+	const unstamped = verifyWithIdentity(fixture.bundle, fixture.staged, {
+		...posture,
+		STUB_TIMESTAMP: ''
+	});
+	expect(unstamped.status).toBe(1);
+	expect(output(unstamped)).toContain('FAIL timestamp Contents/MacOS/brain-server');
 });
 
 test('the_walker_refuses_an_empty_walk_and_a_missing_sidecar', () => {
@@ -477,7 +565,7 @@ test('the_sidecar_is_wired_macos_only_and_its_artifacts_are_ignored', () => {
 	expect(overlay.bundle.macOS).toEqual({
 		minimumSystemVersion: '15.0',
 		hardenedRuntime: true,
-		signingIdentity: '-'
+		signingIdentity: 'Developer ID Application: Mark Fietje (JHB4UNPL3G)'
 	});
 	expect(overlay.app.windows[0]?.windowEffects?.effects).toContain('sidebar');
 

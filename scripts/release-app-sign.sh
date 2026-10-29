@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # III-7 — the SIGNING LANE: the one place the private key exists.
+#         III-5 (2026-10-29) — the APPLE identity lands here too: the lane
+#         signs with the Developer ID certificate, demands the secure
+#         timestamp on every signature (the debt owed since III-1), and
+#         refuses every other signer BY NAME.
 #
 # Usage:
 #   scripts/release-app-sign.sh --tag v1.29.27 [--repo stewardmem/stewardmem] [--dry-run]
-#   scripts/release-app-sign.sh --tag v1.29.27 --artifact "dist/Brain Shell.app.tar.gz" \
-#                               --bundle "dist/Brain Shell.app" [--dry-run]
+#   scripts/release-app-sign.sh --tag v1.29.27 --artifact "dist/StewardMem.app.tar.gz" \
+#                               --bundle "dist/StewardMem.app" [--dry-run]
+#   scripts/release-app-sign.sh --red-proof
 #
 # ── WHAT THIS IS, AND WHAT IT IS NOT ───────────────────────────────────────
 #
@@ -15,10 +20,18 @@
 # the operator ever wants an unattended lane. The two routes run the SAME
 # commands; only where the passphrase comes from differs.
 #
-# The APPLE identity is NOT here and is not coming from here (D4): the
-# Developer ID certificate is Apple's, is deferred to the first paying
-# customer, and gates the notarization tail (III-5). Everything this script
-# produces under an ad-hoc signature is STRUCTURE, not shippability (D5).
+# THE APPLE IDENTITY IS HERE since III-5. The Developer ID Application
+# certificate ("Developer ID Application: Mark Fietje (JHB4UNPL3G)") is the
+# pinned signing identity: the overlay (`tauri.macos.conf.json`) names it,
+# the bundler signs with it, and the lane VERIFIES it — every Mach-O in the
+# bundle carries the identity AND a secure timestamp before the updater
+# chain is produced, and the darwin kernel artifacts are signed with the
+# same identity beside the bundle. The OLD self-signed identity
+# ("brain-server self-signed") stays in the keychain for legacy
+# verification and is REFUSED here — `--red-proof` witnesses the refusal.
+# The notarytool credential lives in the login keychain
+# (`xcrun notarytool store-credentials stewardmem`, operator-side), never a
+# repo file, never a workflow secret (D6).
 #
 # ── THE CHAIN, AND THE ORDER THE STEPS RUN IN ─────────────────────────────
 #
@@ -78,6 +91,14 @@ DEFAULT_PUBLIC_KEY="$HOME/.config/brain-server/updater.key.pub"
 # this is where that law is enforced rather than merely intended.
 PUBLIC_REPO="stewardmem/stewardmem"
 
+# ── THE APPLE IDENTITY (III-5) ─────────────────────────────────────────────
+#
+# Pinned BY NAME + Team ID. The old self-signed identity stays in the
+# keychain for legacy verification and is refused BY the checks below —
+# `--red-proof` witnesses that refusal with the real toolchain.
+SIGNING_IDENTITY="Developer ID Application: Mark Fietje (JHB4UNPL3G)"
+TEAM_ID="JHB4UNPL3G"
+
 TAG=""
 REPO_SLUG="stewardmem/stewardmem"
 SECRET_KEY="$DEFAULT_SECRET_KEY"
@@ -93,6 +114,7 @@ PASSPHRASE_ENV="BRAIN_UPDATER_PASSPHRASE"
 KEYCHAIN_SERVICE="com.stewardmem.shell/updater-signing"
 KEYCHAIN_ACCOUNT="default"
 DRY_RUN=0
+RED_PROOF=0
 NOTES=""
 CHECK_CHAIN=""
 
@@ -123,6 +145,10 @@ options:
   --notes <text>          the manifest's release notes.
   --repo <slug>           the GitHub repository the release lives in.
   --dry-run               stage everything and publish NOTHING.
+  --red-proof             no release: witness the lane refusing every
+                          identity that is not the pinned Developer ID
+                          (the self-signed one, BY NAME; ad-hoc; a missing
+                          secure timestamp), then confirm the revert.
 USAGE
 	exit 2
 }
@@ -141,12 +167,13 @@ while [[ $# -gt 0 ]]; do
 		--notes) NOTES="${2:-}"; shift 2;;
 		--repo) REPO_SLUG="${2:-}"; shift 2;;
 		--dry-run) DRY_RUN=1; shift;;
+		--red-proof) RED_PROOF=1; shift;;
 		-h|--help) usage;;
 		*) usage;;
 	esac
 done
 
-[[ -n "$TAG" || -n "$CHECK_CHAIN" ]] || usage
+[[ -n "$TAG" || -n "$CHECK_CHAIN" || "$RED_PROOF" == "1" ]] || usage
 [[ -z "$TAG" || "$TAG" == v* ]] || die "the release tag must look like vX.Y.Z: $TAG"
 
 # ── THE TOOLS, SCOPED TO THE STEP THAT NEEDS THEM ──────────────────────────
@@ -216,6 +243,112 @@ require_chain() {
 if [[ "$CHECK_CHAIN" != "" ]]; then
 	require_chain "$CHECK_CHAIN" "$CHECK_CHAIN.sig" "$(dirname "$CHECK_CHAIN")/latest.json"
 	echo "OK  the chain is complete: $CHECK_CHAIN, $CHECK_CHAIN.sig, $(dirname "$CHECK_CHAIN")/latest.json"
+	exit 0
+fi
+
+# ── THE APPLE IDENTITY CHECKS (III-5) ──────────────────────────────────────
+#
+# The measured discriminators (2026-10-29, real codesign): the FIRST
+# `Authority=` line names the signing certificate; a Developer ID signature
+# carries a `Timestamp=` line (secure timestamping is this toolchain's
+# DEFAULT — the timestamp was owed since III-1 and is now demanded, and its
+# forced absence is the `--timestamp=none` posture); a self-signed identity
+# carries its own name and NO timestamp line; ad-hoc carries
+# `Signature=adhoc` and no Authority line at all. `codesign -dv` exits 0 on
+# everything, so the LINES are read, never the status.
+verify_apple_signature() {
+	local path="$1"
+	local display authority timestamp
+	display="$(codesign -dv --verbose=2 "$path" 2>&1 || true)"
+	authority="$(sed -n 's/^Authority=//p' <<<"$display" | head -1)"
+	if [[ -z "$authority" ]]; then
+		local note=""
+		if grep -q "Signature=adhoc" <<<"$display"; then note=" (ad-hoc: Signature=adhoc, no Authority line)"; fi
+		die "refusing $(basename "$path"): no Authority line${note} — expected \"${SIGNING_IDENTITY}\""
+	fi
+	if [[ "$authority" != "$SIGNING_IDENTITY" ]]; then
+		die "refusing $(basename "$path"): \"$authority\" is not the pinned signing identity \"${SIGNING_IDENTITY}\" — the lane refuses any other signer, by name"
+	fi
+	timestamp="$(sed -n 's/^Timestamp=//p' <<<"$display" | head -1)"
+	if [[ -z "$timestamp" || "$timestamp" == "n/a" ]]; then
+		die "refusing $(basename "$path"): no secure timestamp — owed since III-1, mandatory under the Developer ID identity, absent here"
+	fi
+	codesign --verify --strict --ignore-resources "$path" >/dev/null 2>&1 ||
+		die "refusing $(basename "$path"): the strict verification failed against \"${authority}\""
+	echo ">> verified: ${authority}, timestamp ${timestamp} — $(basename "$path")"
+}
+
+# ── THE RED-PROOF (III-5 · READ FIRST ②) ───────────────────────────────────
+#
+# Two valid identities sit in the keychain. This mode compiles a probe
+# Mach-O and walks it through every posture the lane must refuse — the
+# self-signed identity (BY NAME), ad-hoc, Developer ID without the secure
+# timestamp — and then confirms the REVERT: the pinned identity WITH the
+# timestamp verifies. Any posture the lane accepts that it must refuse is a
+# hard failure of the proof.
+red_proof_identity_refusal() {
+	command -v cc >/dev/null 2>&1 || die "cc is not on PATH — the red-proof compiles a probe binary"
+	command -v codesign >/dev/null 2>&1 || die "codesign is not on PATH"
+	local work probe refused=0
+	work="$(mktemp -d)"
+	probe="$work/probe"
+	printf 'int main(void){return 0;}\n' > "$work/probe.c"
+	cc -o "$probe" "$work/probe.c"
+
+	echo "== RED-PROOF: the lane refuses every signer that is not ${SIGNING_IDENTITY} =="
+
+	# ① the SELF-SIGNED identity — refused BY NAME.
+	if ! codesign --force --sign "brain-server self-signed" --options runtime "$probe" >/dev/null 2>&1; then
+		die "the red-proof could not sign with the self-signed identity — is it still in the keychain? (security find-identity -v -p codesigning)"
+	fi
+	if (verify_apple_signature "$probe") 2>&1; then
+		echo "FAIL  the self-signed identity was NOT refused" >&2
+		refused=1
+	else
+		echo "ok    the self-signed identity is refused, by name"
+	fi
+
+	# ② ad-hoc — no Authority line.
+	codesign --force --sign - --options runtime "$probe" >/dev/null 2>&1
+	if (verify_apple_signature "$probe") 2>&1; then
+		echo "FAIL  the ad-hoc signature was NOT refused" >&2
+		refused=1
+	else
+		echo "ok    the ad-hoc signature is refused (no Authority line)"
+	fi
+
+	# ③ Developer ID WITHOUT the secure timestamp (--timestamp=none posture).
+	if ! codesign --force --sign "$SIGNING_IDENTITY" --options runtime --timestamp=none "$probe" >/dev/null 2>&1; then
+		die "the red-proof could not sign with the Developer ID identity (security find-identity -v -p codesigning)"
+	fi
+	if (verify_apple_signature "$probe") 2>&1; then
+		echo "FAIL  the missing secure timestamp was NOT refused" >&2
+		refused=1
+	else
+		echo "ok    the missing secure timestamp is refused"
+	fi
+
+	# ④ THE REVERT, CONFIRMED: the pinned identity WITH the timestamp.
+	codesign --force --sign "$SIGNING_IDENTITY" --options runtime --timestamp "$probe" >/dev/null 2>&1
+	if ! (verify_apple_signature "$probe") 2>&1; then
+		echo "FAIL  the Developer ID + timestamp posture does not verify" >&2
+		refused=1
+	else
+		echo "ok    the revert is confirmed: Developer ID + secure timestamp verifies"
+	fi
+
+	rm -rf "$work"
+	if [[ "$refused" != "0" ]]; then
+		die "the red-proof found a posture the lane accepted that it must refuse"
+	fi
+	echo "== RED-PROOF complete: every refusal fired, the revert verified. =="
+}
+
+if [[ "$RED_PROOF" == "1" ]]; then
+	if signing_refused_in_public_actions; then
+		die "the public Actions must never SIGN anything, not even a red-proof probe (D6)."
+	fi
+	red_proof_identity_refusal
 	exit 0
 fi
 
@@ -465,6 +598,18 @@ else
 	[[ -d "$BUNDLE" ]] || die "the bundle is absent: $BUNDLE"
 fi
 
+# ── THE APPLE IDENTITY GATE (III-5) ────────────────────────────────────────
+#
+# The bundler signed with the real identity (the overlay pins it, and the
+# public CI's ad-hoc proof build is a different posture). The walker re-walks
+# the REAL-signed bundle BEFORE a single byte of the updater chain is
+# produced: every Mach-O in it must carry the pinned Developer ID identity
+# AND a secure timestamp, the bundle seal included. A wrong or missing
+# identity — the old self-signed name among them — is refused HERE, by name,
+# where it costs the least.
+echo ">> walking the real-signed bundle for the pinned identity…"
+node "$SHELL_DIR/scripts/sidecar.mjs" verify "$BUNDLE" --expect-identity "$SIGNING_IDENTITY"
+
 # ── THE PUBLICATION NAME ──────────────────────────────────────────────────
 #
 # The artefact's NAME is part of the URL the updater fetches, and a release
@@ -596,3 +741,77 @@ command -v gh >/dev/null 2>&1 || die "gh is not on PATH — the chain cannot be 
 echo ">> publishing the chain to $REPO_SLUG $TAG…"
 gh release upload "$TAG" "$ARTIFACT" "$SIGNATURE" "$MANIFEST" --repo "$REPO_SLUG" --clobber
 echo ">> published. The updater's endpoint now resolves to this release's latest.json."
+
+# ── THE DARWIN KERNEL ARTIFACTS (III-5 · the shipped-binary story) ─────────
+#
+# P5 (OpenClaw against the SHIPPED binary) needs Gatekeeper-clean darwin
+# artifacts: the public CI built them UNSIGNED (D6 — the public Actions never
+# sign), and the signing lane signs them HERE with the same identity as the
+# bundle, `--timestamp` explicit on every signature. The PIN names the pair
+# the shipped-binary story exercises — the kernel and the MCP surface
+# (brain-server-darwin-*, mcp-darwin-*); bench and the connectors stay
+# CI-built (they are developer tools, not the shipped surface).
+#
+# Re-signing changes the bytes, so the release's SHA256SUMS lines for the
+# signed names are REFRESHED in the same act — a release whose checksum
+# file lies about its own binaries is the failure the checksum exists to
+# prevent. The lane refuses a release that does not carry the four assets
+# and the checksum file, naming what is missing (the three-asset rule's
+# shape: the pieces travel together).
+sign_darwin_release_artifacts() {
+	command -v gh >/dev/null 2>&1 || die "gh is not on PATH"
+	command -v codesign >/dev/null 2>&1 || die "codesign is not on PATH"
+	command -v shasum >/dev/null 2>&1 || die "shasum is not on PATH"
+
+	local dir="$TMPDIR_SIGN/darwin"
+	mkdir -p "$dir"
+	local assets=(brain-server-darwin-arm64 brain-server-darwin-x86_64 mcp-darwin-arm64 mcp-darwin-x86_64)
+
+	echo ">> downloading the darwin kernel artifacts from $REPO_SLUG $TAG…"
+	local name missing=()
+	for name in "${assets[@]}"; do
+		gh release download "$TAG" --repo "$REPO_SLUG" --pattern "$name" --dir "$dir" --clobber >/dev/null 2>&1 || true
+		[[ -f "$dir/$name" ]] || missing+=("$name")
+	done
+	gh release download "$TAG" --repo "$REPO_SLUG" --pattern "SHA256SUMS" --dir "$dir" --clobber >/dev/null 2>&1 || true
+	if [[ ${#missing[@]} -gt 0 ]]; then
+		for name in "${missing[@]}"; do echo "::error::required asset missing: $name" >&2; done
+		die "refusing: the release does not carry the darwin kernel artifacts — the shipped-binary story P5 verifies has nothing signed to verify"
+	fi
+	[[ -f "$dir/SHA256SUMS" ]] || die "refusing: the release carries no SHA256SUMS — the re-signed digests have nothing to refresh"
+
+	for name in "${assets[@]}"; do
+		echo ">> signing $name…"
+		codesign --force --sign "$SIGNING_IDENTITY" --options runtime --timestamp "$dir/$name" 2>&1 |
+			grep -v "replacing existing signature" || true
+		verify_apple_signature "$dir/$name"
+	done
+
+	local sums="$dir/SHA256SUMS"
+	local fresh="$dir/SHA256SUMS.fresh"
+	: > "$fresh"
+	local line file replaced
+	while IFS= read -r line; do
+		file="$(sed 's/^[0-9a-fA-F]* *//' <<<"$line")"
+		file="${file#\*}"
+		replaced=0
+		for name in "${assets[@]}"; do
+			if [[ "$file" == "$name" ]]; then
+				echo "$(shasum -a 256 "$dir/$name" | awk '{print $1}')  $name" >> "$fresh"
+				replaced=1
+				break
+			fi
+		done
+		if [[ "$replaced" != "1" ]]; then
+			echo "$line" >> "$fresh"
+		fi
+	done < "$sums"
+	mv "$fresh" "$sums"
+
+	echo ">> uploading the signed artifacts with the refreshed SHA256SUMS…"
+	gh release upload "$TAG" "$dir/brain-server-darwin-arm64" "$dir/brain-server-darwin-x86_64" \
+		"$dir/mcp-darwin-arm64" "$dir/mcp-darwin-x86_64" "$sums" --repo "$REPO_SLUG" --clobber
+	echo ">> the darwin kernel artifacts are Developer-ID-signed and timestamped; SHA256SUMS tells the truth."
+}
+
+sign_darwin_release_artifacts

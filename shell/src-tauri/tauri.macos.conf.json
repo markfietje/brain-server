@@ -29,7 +29,7 @@
 		"macOS": {
 			"minimumSystemVersion": "15.0",
 			"hardenedRuntime": true,
-			"signingIdentity": "-"
+			"signingIdentity": "Developer ID Application: Mark Fietje (JHB4UNPL3G)"
 		}
 	}
 }
