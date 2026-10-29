@@ -99,6 +99,37 @@ PUBLIC_REPO="stewardmem/stewardmem"
 SIGNING_IDENTITY="Developer ID Application: Mark Fietje (JHB4UNPL3G)"
 TEAM_ID="JHB4UNPL3G"
 
+# ── THE NOTARY CREDENTIAL (III-5 · S-2) ────────────────────────────────────
+#
+# The notarytool profile (`stewardmem`) lives in the DATA-PROTECTION
+# keychain — MEASURED 2026-10-29: `security find-generic-password` cannot
+# see it; only notarytool itself can. The BUNDLER's own notarization, how-
+# ever, reads APPLE_ID/APPLE_PASSWORD from the environment — and it is the
+# only component that can notarize+staple BEFORE it writes the updater
+# archive (a hand-made tarball stalls the install; measured in III-4). So
+# the lane reads the credential from a SECOND, lane-readable login-keychain
+# item — the same custody pattern as the updater passphrase: the operator
+# typed the secret into the keychain, the repo carries only the item's
+# NAME (the account attribute holds the Apple ID, so nothing personal is
+# in this file), and CI holds nothing (D6).
+#
+#   security add-generic-password -s "com.stewardmem.shell/notary" \
+#       -a "<your Apple ID>" -w
+NOTARY_KEYCHAIN_SERVICE="com.stewardmem.shell/notary"
+NOTARY_APPLE_ID=""
+NOTARY_PASSWORD=""
+
+read_notary_credentials() {
+	local item
+	item="$(security find-generic-password -s "$NOTARY_KEYCHAIN_SERVICE" 2>/dev/null || true)"
+	NOTARY_PASSWORD="$(security find-generic-password -s "$NOTARY_KEYCHAIN_SERVICE" -w 2>/dev/null || true)"
+	[[ -n "$NOTARY_PASSWORD" ]] || die "the login keychain has no '$NOTARY_KEYCHAIN_SERVICE' item — the bundler's notarization needs it, and notarytool's own profile lives in the data-protection keychain where only notarytool can read it (measured). Store it operator-side, never a repo file, never CI (D6):
+  security add-generic-password -s \"com.stewardmem.shell/notary\" -a \"<your Apple ID>\" -w"
+	NOTARY_APPLE_ID="$(sed -n 's/.*"acct"<blob>="\([^"]*\)".*/\1/p' <<<"$item" | head -1)"
+	[[ -n "$NOTARY_APPLE_ID" ]] || die "the '$NOTARY_KEYCHAIN_SERVICE' item carries no Apple ID in its account attribute — re-store it with -a \"<your Apple ID>\""
+	echo ">> the notary credential is in the login keychain ($NOTARY_KEYCHAIN_SERVICE), Apple ID on file in the item's account attribute"
+}
+
 TAG=""
 REPO_SLUG="stewardmem/stewardmem"
 SECRET_KEY="$DEFAULT_SECRET_KEY"
@@ -578,16 +609,28 @@ process.stdout.write(String(config?.version ?? ""));
 # install), and signed by the Tauri CLI. `--bundles app` plus the release
 # configuration turns the updater artifacts on, which is what makes the CLI
 # sign the artifact it just built.
-if [[ -z "$ARTIFACT" ]]; then
-	command -v pnpm >/dev/null 2>&1 || die "pnpm is unavailable — the release artifact must be built by the bundler"
-	echo ">> building the release artifact (bundler archive + Tauri CLI signature)…"
-	(
-		cd "$SHELL_DIR"
-		TAURI_SIGNING_PRIVATE_KEY="$SIGN_KEY" \
-		TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$PASSPHRASE" \
-			pnpm tauri build --bundles app --target universal-apple-darwin \
-				--config "$RELEASE_CONFIG"
-	)
+	if [[ -z "$ARTIFACT" ]]; then
+		command -v pnpm >/dev/null 2>&1 || die "pnpm is unavailable — the release artifact must be built by the bundler"
+		# THE NOTARY CREDENTIAL, before the build: the bundler notarizes AND
+		# staples in THIS invocation — the only ordering in which the staple
+		# rides the bundler's own updater archive (a hand-made tarball stalls
+		# the install; measured in III-4). The credential comes from the
+		# login keychain (read_notary_credentials), is handed to the one
+		# command's environment, and is never echoed, never logged, never
+		# written to a file this script creates.
+		read_notary_credentials
+		echo ">> building the release artifact (bundler archive + Developer ID signature + notarization + staple)…"
+		(
+			cd "$SHELL_DIR"
+			APPLE_SIGNING_IDENTITY="$SIGNING_IDENTITY" \
+			APPLE_ID="$NOTARY_APPLE_ID" \
+			APPLE_PASSWORD="$NOTARY_PASSWORD" \
+			APPLE_TEAM_ID="$TEAM_ID" \
+			TAURI_SIGNING_PRIVATE_KEY="$SIGN_KEY" \
+			TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$PASSPHRASE" \
+				pnpm tauri build --bundles app --target universal-apple-darwin \
+					--config "$RELEASE_CONFIG"
+		)
 	BUNDLE_DIR="$SHELL_DIR/src-tauri/target/universal-apple-darwin/release/bundle/macos"
 	ARTIFACT="$(ls "$BUNDLE_DIR"/*.app.tar.gz 2>/dev/null | head -1 || true)"
 	[[ -n "$ARTIFACT" ]] || die "the bundler produced no updater artifact under $BUNDLE_DIR"
@@ -609,6 +652,29 @@ fi
 # where it costs the least.
 echo ">> walking the real-signed bundle for the pinned identity…"
 node "$SHELL_DIR/scripts/sidecar.mjs" verify "$BUNDLE" --expect-identity "$SIGNING_IDENTITY"
+
+# ── THE STAPLE GATES (III-5 · S-2) ─────────────────────────────────────────
+#
+# The bundler notarized (the env above drives it) and stapled. The question
+# only the ARTIFACT answers: did the staple ride the updater tarball? The
+# archive is extracted and the ticket validated FROM the shipped bytes —
+# not from the bundle directory, which the bundler touched before archiving.
+# Every gate is a lane step, never an inspection.
+command -v stapler >/dev/null 2>&1 || die "stapler is not on PATH (xcode-select) — the staple cannot be validated"
+command -v spctl >/dev/null 2>&1 || die "spctl is not on PATH — Gatekeeper's verdict cannot be a lane step"
+echo ">> extracting the updater artifact to verify the staple rode it…"
+STAPLE_DIR="$TMPDIR_SIGN/staple"
+mkdir -p "$STAPLE_DIR"
+tar -xzf "$ARTIFACT" -C "$STAPLE_DIR"
+EXTRACTED_APP="$STAPLE_DIR/$(basename "$BUNDLE")"
+[[ -d "$EXTRACTED_APP" ]] || die "the updater artifact does not carry the bundle at its top level: $(basename "$BUNDLE")"
+echo ">> stapler validate (the artifact's bundle)…"
+xcrun stapler validate "$EXTRACTED_APP" ||
+	die "the artifact's bundle carries no valid staple — the bundler's notarization did not reach the archive; fix and rebuild, never skip"
+echo ">> spctl --assess --type execute (the artifact's bundle)…"
+spctl --assess --type execute "$EXTRACTED_APP" ||
+	die "Gatekeeper refuses the artifact's bundle (spctl) — the staple or the signature is not acceptable; fix and rebuild, never skip"
+echo ">> the staple rode the artifact: stapler validate + spctl are green on the extracted bundle."
 
 # ── THE PUBLICATION NAME ──────────────────────────────────────────────────
 #
@@ -786,6 +852,31 @@ sign_darwin_release_artifacts() {
 			grep -v "replacing existing signature" || true
 		verify_apple_signature "$dir/$name"
 	done
+
+	# THE NOTARIZATION of the darwin pair — the prompt's literal posture:
+	# zip, submit with the operator's notarytool profile (--keychain-profile,
+	# which reads the data-protection keychain), --wait. A REJECTION is a
+	# named failure with the Notary log fetched by its submission id; it is
+	# fixed and re-submitted, never skipped. A bare Mach-O cannot be stapled
+	# (stapler takes .app/.dmg/.pkg): the ticket lives server-side against
+	# the signature's CDHash, which is what Gatekeeper's online check reads.
+	echo ">> zipping the signed darwin artifacts for notarization…"
+	( cd "$dir" && zip -q darwin-notary.zip "${assets[@]}" )
+	local submit_log submit_id
+	submit_log="$(mktemp)"
+	echo ">> submitting to the Notary service (--wait)…"
+	if ! xcrun notarytool submit "$dir/darwin-notary.zip" --keychain-profile stewardmem --wait > "$submit_log" 2>&1; then
+		cat "$submit_log" >&2
+		submit_id="$(sed -n 's/^[[:space:]]*id:[[:space:]]*//p' "$submit_log" | tail -1)"
+		if [[ -n "$submit_id" ]]; then
+			echo ">> the Notary log for submission $submit_id:" >&2
+			xcrun notarytool log "$submit_id" --keychain-profile stewardmem 2>&1 |
+				grep -iE '"webLogUrl"|"status"|"message"|issues' | head -20 >&2 || true
+		fi
+		die "the Notary service REJECTED the darwin artifacts — a named failure with its log above; fix and re-submit, never skip"
+	fi
+	cat "$submit_log"
+	rm -f "$dir/darwin-notary.zip"
 
 	local sums="$dir/SHA256SUMS"
 	local fresh="$dir/SHA256SUMS.fresh"
