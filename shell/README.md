@@ -497,7 +497,7 @@ worker on port 8799; the WebKit project remains the static no-bypass CSP leg.
 - **The token (D7/III-2):** never in the bundle — the token module reads NOTHING
   from `import.meta.env` (VITE_* is compile-time-exposed and forbidden for
   this). In Tauri it is supplied at runtime from the login keychain first (the
-  generic-password item `app.brain.shell/token`, account `default` (the keychain service is a stable constant; it did not move with the bundle id)), then the
+  generic-password item `com.stewardmem.shell/token`, account `default` ), then the
   shell's own `BRAIN_SHELL_TOKEN`. The kernel's operator credentials
   (`BRAIN_TOKEN_FILE`, `AUTH_TOKEN`, …) are NEVER read by the shell: that is
   the privilege boundary, not a naming preference. The Settings dialog writes

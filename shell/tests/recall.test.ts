@@ -29,7 +29,7 @@ test('recall_renders_results_with_trace_links', async () => {
 							hits: [
 								{
 									id: 9,
-									title: 'StewardOS wiring note',
+									title: 'StewardMem wiring note',
 									snippet: 'the recall bench seeds a support-ticket doc',
 									score: 0.8234,
 									source: 'vector',
@@ -58,7 +58,7 @@ test('recall_renders_results_with_trace_links', async () => {
 	await user.type(input, 'wiring');
 	await user.click(screen.getByRole('button', { name: 'Recall' }));
 	const card = await screen.findByTestId('recall-hit');
-	expect(card.textContent).toContain('StewardOS wiring note');
+	expect(card.textContent).toContain('StewardMem wiring note');
 	expect(card.textContent).toContain('the recall bench seeds a support-ticket doc');
 	expect(card.textContent).toContain('0.823');
 	const link = await screen.findByTestId('trace-link');

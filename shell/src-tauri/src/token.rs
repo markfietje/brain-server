@@ -1,6 +1,6 @@
 //! III-2 — the bearer's persistent home.
 //!
-//! READ ORDER, in one place: login keychain (service `app.brain.shell/token`,
+//! READ ORDER, in one place: login keychain (service `com.stewardmem.shell/token`,
 //! account `default`) → the shell's OWN `BRAIN_SHELL_TOKEN` → absent. The
 //! kernel's `AUTH_TOKEN`/`BRAIN_TOKEN`/`BRAIN_TOKEN_FILE` are NEVER read here:
 //! those name the operator's kernel credential, and copying one into the
@@ -11,7 +11,7 @@
 
 use keyring_core::{CredentialStore, Error as KeyringError};
 
-pub(crate) const SERVICE: &str = "app.brain.shell/token";
+pub(crate) const SERVICE: &str = "com.stewardmem.shell/token";
 pub(crate) const ACCOUNT: &str = "default";
 pub(crate) const MAX_TOKEN_CHARS: usize = 4096;
 

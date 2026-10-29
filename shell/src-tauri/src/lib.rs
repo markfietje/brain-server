@@ -62,7 +62,7 @@ pub use verify::{
 use tauri::Manager;
 
 /// D7 / III-2 — the bearer token's runtime injection point. Read order: the
-/// login keychain (service `app.brain.shell/token`, account `default`), then
+/// login keychain (service `com.stewardmem.shell/token`, account `default`), then
 /// the shell's own `BRAIN_SHELL_TOKEN`, absent last. Once handed over it is
 /// held in JS memory only (see src/lib/api/token.ts); the webview never logs,
 /// renders or persists it. The kernel's operator credentials (`AUTH_TOKEN`,

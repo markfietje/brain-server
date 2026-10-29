@@ -300,7 +300,7 @@
   "nav.memory": "Memory",
   "nav.audit": "Audit",
   "nav.governance": "Governance",
-  "shell.brand": "Steward",
+  "shell.brand": "StewardMem",
   "shell.sidebar": "Sidebar",
   "shell.nav": "Surfaces",
   "shell.kernel": "kernel {version} · local",

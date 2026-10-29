@@ -2104,10 +2104,10 @@ brain status
   feature-gated `src/classify` engine (when built), proposals/suggest/audit.
   The taxonomy is *data the engine consumes*, owned by the private repo.
 
-**Steward engine IP lives in a private repo (2026-08-21)**
+**StewardMem engine IP lives in a private repo (2026-08-21)**
 - The advanced architecture docs (Steward architecture, harness audit, state
   mapping, port specs, rubric pin, diagnostics loop, compliance mapping) are
-  **MemorySteward LLC IP** and live in the **private** repo `brain-steward-ip`
+  **StewardMem IP** and live in the **private** repo `brain-steward-ip`
   (local checkout `~/Sites/brain-steward-ip`). Never commit them here —
   `.gitignore` defends the names defensively (same pattern as the
   customer-domain repo).

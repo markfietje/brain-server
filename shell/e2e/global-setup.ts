@@ -104,7 +104,7 @@ async function cleanup(): Promise<void> {
 
 async function seedRecallFixture(): Promise<void> {
 	const add = await postJson('/add', {
-		text: 'StewardOS R32 decision explorer seed: r32 decision explorer seed supports a governed decision trace.',
+		text: 'StewardMem R32 decision explorer seed: r32 decision explorer seed supports a governed decision trace.',
 		title: 'R32 e2e seed'
 	});
 	if (add['success'] !== true) throw new Error('the e2e /add seed did not report success');

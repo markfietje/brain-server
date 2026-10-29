@@ -1,8 +1,8 @@
-# Brain Server
+# StewardMem
 
 **Governed, local-first memory and decision infrastructure for AI agents.**
 
-Brain Server is a **self-hosted AI agent memory server** for systems where incorrect, poisoned, or unauthorized memory has real consequences.
+StewardMem is a **self-hosted AI agent memory server** for systems where incorrect, poisoned, or unauthorized memory has real consequences.
 
 It provides **deterministic hybrid retrieval, human-gated memory promotion, provenance, tamper-evident audit, quarantine, verifiable deletion, and least-privilege access** in a single Rust/Axum server.
 
@@ -87,13 +87,13 @@ release, like the version badge.*
 
 </p>
 
-![Brain Server — governed local-first AI agent memory](docs/assets/hero-light.png)
+![StewardMem — governed local-first AI agent memory](docs/assets/hero-light.png)
 
 ---
 
 ## Table of contents
 
-- [Why Brain Server?](#why-brain-server)
+- [Why StewardMem?](#why-brain-server)
 - [What it provides](#what-it-provides)
 - [Architecture](#architecture)
 - [Governance model](#governance-model)
@@ -104,7 +104,7 @@ release, like the version badge.*
 - [MCP](#mcp)
 - [OpenClaw](#openclaw)
 - [Who is it for?](#who-is-it-for)
-- [Try Brain Server](#try-brain-server)
+- [Try StewardMem](#try-brain-server)
 - [Build from source](#build-from-source)
 - [CLI](#cli)
 - [Verification and evidence](#verification-and-evidence)
@@ -112,12 +112,12 @@ release, like the version badge.*
 - [Compliance and regulated environments](#compliance-and-regulated-environments)
 - [Documentation](#documentation)
 - [Project principles](#project-principles)
-- [What Brain Server is not](#what-brain-server-is-not)
+- [What StewardMem is not](#what-brain-server-is-not)
 - [License](#license)
 
 ---
 
-## Why Brain Server?
+## Why StewardMem?
 
 AI agents increasingly depend on persistent memory: customer context, operational knowledge, decisions, preferences, case history, instructions, and facts collected over time.
 
@@ -127,7 +127,7 @@ That creates a security and governance problem.
 - A poisoned memory can influence future behavior.
 - An agent should not be able to silently turn untrusted content into permanent knowledge.
 
-Brain Server is built around a simple principle:
+StewardMem is built around a simple principle:
 
 > **Memory is governed state, not just retrieved text.**
 
@@ -139,7 +139,7 @@ The server is the authority for memory, retrieval, provenance, governance, workf
 
 ### Deterministic AI agent memory
 
-Brain Server combines multiple retrieval signals without requiring an LLM in the hot recall path:
+StewardMem combines multiple retrieval signals without requiring an LLM in the hot recall path:
 
 - **FTS5 full-text search**
 - **Vector similarity**
@@ -175,7 +175,7 @@ Recalled content is explicitly represented as **untrusted data**, preventing sto
 
 Recall results can include the evidence and provenance behind each result.
 
-Brain Server also provides a direct verification path so a claim can be checked against stored evidence rather than delegated to an LLM.
+StewardMem also provides a direct verification path so a claim can be checked against stored evidence rather than delegated to an LLM.
 
 ```text
 POST /verify
@@ -187,7 +187,7 @@ The goal is simple:
 
 ### Tamper-evident audit
 
-Brain Server maintains an append-only keyed hash chain with a verifiable head.
+StewardMem maintains an append-only keyed hash chain with a verifiable head.
 
 The audit chain can be checked directly:
 
@@ -228,7 +228,7 @@ Revoked principals are refused immediately and cannot regain access simply by re
 
 ## Architecture
 
-Brain Server is the **authoritative data and governance plane**.
+StewardMem is the **authoritative data and governance plane**.
 
 ```mermaid
 flowchart TD
@@ -290,7 +290,7 @@ The client is deliberately **not a second backend**.
 
 ## Governance model
 
-Brain Server treats durable agent knowledge as a governed lifecycle:
+StewardMem treats durable agent knowledge as a governed lifecycle:
 
 ```mermaid
 flowchart TD
@@ -332,7 +332,7 @@ See `docs/architecture.md` §"Who may decide what" for the capability vocabulary
 
 ## Local-first by default
 
-Brain Server is designed to run under the customer's control.
+StewardMem is designed to run under the customer's control.
 
 The default local path does **not** require:
 
@@ -343,7 +343,7 @@ The default local path does **not** require:
 
 Data remains in customer-controlled storage unless an explicitly configured integration sends it elsewhere.
 
-This makes Brain Server suitable for:
+This makes StewardMem suitable for:
 
 - Self-hosted environments
 - Private networks
@@ -356,7 +356,7 @@ This makes Brain Server suitable for:
 
 ## Security model
 
-Brain Server is designed around explicit trust boundaries.
+StewardMem is designed around explicit trust boundaries.
 
 Stored content is treated as **data, not trusted instructions**.
 
@@ -380,7 +380,7 @@ See:
 
 ## Designed for reproducible agent systems
 
-Brain Server is **not** a general-purpose agent runtime.
+StewardMem is **not** a general-purpose agent runtime.
 
 It is infrastructure that agent systems can depend on for:
 
@@ -440,9 +440,9 @@ qualifiers on the words in the diagram:
 
 ## MCP
 
-Brain Server exposes a governed MCP surface so agent systems can use the same memory backend without creating a second data or governance layer.
+StewardMem exposes a governed MCP surface so agent systems can use the same memory backend without creating a second data or governance layer.
 
-MCP is an **integration surface into Brain Server**, not an independent authority.
+MCP is an **integration surface into StewardMem**, not an independent authority.
 
 See the documentation for the current MCP protocol and capability surface.
 
@@ -450,15 +450,15 @@ See the documentation for the current MCP protocol and capability surface.
 
 ## OpenClaw
 
-Brain Server can be used as a governed memory backend for agentic coding environments and OpenClaw deployments.
+StewardMem can be used as a governed memory backend for agentic coding environments and OpenClaw deployments.
 
-The integration is intentionally thin: the agent uses Brain Server for memory and governance rather than bypassing the underlying controls.
+The integration is intentionally thin: the agent uses StewardMem for memory and governance rather than bypassing the underlying controls.
 
 ---
 
 ## Who is it for?
 
-Brain Server is designed for teams operating **long-lived AI agents** where memory quality, data control, provenance, and auditability matter.
+StewardMem is designed for teams operating **long-lived AI agents** where memory quality, data control, provenance, and auditability matter.
 
 | Sector | Teams |
 |---|---|
@@ -474,7 +474,7 @@ The core use case is simple:
 
 ---
 
-## Try Brain Server
+## Try StewardMem
 
 The fastest way to understand the system is the [Quickstart](https://markfietje.github.io/brain-server/quickstart.html).
 
@@ -497,7 +497,7 @@ For production deployment, see the [Deployment guide](https://markfietje.github.
 ## Build from source
 
 ```bash
-git clone https://github.com/markfietje/brain-server.git
+git clone https://github.com/stewardmem/stewardmem.git
 cd brain-server
 
 cargo build --release --features bench
@@ -532,7 +532,7 @@ The `brain` CLI provides a terminal interface to the same backend:
 
 ## Verification and evidence
 
-Brain Server is built around the principle that important claims should be reproducible.
+StewardMem is built around the principle that important claims should be reproducible.
 
 The repository contains:
 
@@ -556,7 +556,7 @@ See:
 
 ## Universal Memory Protocol
 
-Brain Server includes a bounded implementation of **Universal Memory Protocol 1.0 (UMP)**, including its local integrity layer and portable memory bindings. The **UMP 1.0 L3** badge is derived from the conformance gate in `.github/workflows/ci.yml`.
+StewardMem includes a bounded implementation of **Universal Memory Protocol 1.0 (UMP)**, including its local integrity layer and portable memory bindings. The **UMP 1.0 L3** badge is derived from the conformance gate in `.github/workflows/ci.yml`.
 
 UMP support provides a standards-oriented path for moving governed memory records between compatible systems while retaining content integrity, capabilities, provenance, and audit semantics.
 
@@ -566,7 +566,7 @@ See the API contract and UMP documentation for the exact implemented surface.
 
 ## Compliance and regulated environments
 
-Brain Server is designed for environments where organizations need stronger controls around persistent agent state.
+StewardMem is designed for environments where organizations need stronger controls around persistent agent state.
 
 The repository documents mappings and evidence for the frameworks buyers actually ask about:
 
@@ -632,7 +632,7 @@ See the full row-by-row control maps in [`COMPLIANCE.md`](COMPLIANCE.md) and the
 
 ## Project principles
 
-Brain Server is built around a small set of non-negotiable principles:
+StewardMem is built around a small set of non-negotiable principles:
 
 1. **The server is the authority.**
 2. **Agent-proposed durable knowledge requires human approval.**
@@ -646,9 +646,9 @@ Brain Server is built around a small set of non-negotiable principles:
 
 ---
 
-## What Brain Server is not
+## What StewardMem is not
 
-Brain Server is **not**:
+StewardMem is **not**:
 
 - A chatbot
 - A general-purpose agent framework
@@ -663,7 +663,7 @@ It is **infrastructure for governed, reproducible AI-agent memory and decision s
 
 ## License
 
-Brain Server is released under the [Apache License, Version 2.0](LICENSE)
+StewardMem is released under the [Apache License, Version 2.0](LICENSE)
 (relicensed from MIT on 2026-10-27; prior tagged releases remain MIT).
 The distribution licence table — what ships under which licence, including
 the AGPL-3.0-only Signal stack when `signal-gateway` is added — is

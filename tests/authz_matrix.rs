@@ -2560,7 +2560,7 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     "/workflow/valet/brief",
     "/workflow/valet/consent",
     "/workflow/runs/{id}/handover/offer",
-    // The StewardOS account surfaces: writes and per-account reads demand
+    // The StewardMem account surfaces: writes and per-account reads demand
     // the `workflow` role; the listing carries the DPO dual gate (the
     // agent HAS roles, so the dual gate binds).
     "/accounts",

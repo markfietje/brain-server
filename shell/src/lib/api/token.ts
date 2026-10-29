@@ -7,7 +7,7 @@
  * the Rust core) or, in the PWA build, by the operator's serving origin calling
  * `setBearer` from its own bootstrap script. Once resolved it is held in
  * module memory only: never logged, never rendered, never stored by the
- * webview. Its persistent home is the login keychain (`app.brain.shell/token`,
+ * webview. Its persistent home is the login keychain (`com.stewardmem.shell/token`,
  * written by the Rust core). The redaction test pins all of this.
  */
 

@@ -17490,7 +17490,7 @@ Final paragraph after the rule.";
             assert_eq!(err.inner.code, "report_invalid");
         }
     }
-    // ── R21: the StewardOS account surfaces ─────────────────────────────
+    // ── R21: the StewardMem account surfaces ─────────────────────────────
     //
     // Handler-shape laws over the real composed state. They live in the
     // integration tree because the no-SQL-in-handlers law counts every

@@ -1053,7 +1053,7 @@ test('the_passphrase_comes_from_the_keychain_and_no_secret_is_in_the_source', ()
 
 	// The read is there, and it is the DEFAULT source (before the prompt).
 	expect(lane).toContain('security find-generic-password');
-	expect(lane).toContain('app.brain.shell/updater-signing');
+	expect(lane).toContain('com.stewardmem.shell/updater-signing');
 	expect(lane).toContain('default');
 
 	// The keychain item's NAME is in the script; its VALUE is not. The
@@ -1076,7 +1076,7 @@ test('the_passphrase_comes_from_the_keychain_and_no_secret_is_in_the_source', ()
 	try {
 		keychainValue = execFileSync(
 			'security',
-			['find-generic-password', '-s', 'app.brain.shell/updater-signing', '-a', 'default', '-w'],
+			['find-generic-password', '-s', 'com.stewardmem.shell/updater-signing', '-a', 'default', '-w'],
 			{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, killSignal: 'SIGKILL' }
 		).trim();
 	} catch {

@@ -90,7 +90,7 @@ PASSPHRASE_ENV="BRAIN_UPDATER_PASSPHRASE"
 # The KEYCHAIN ITEM that holds the passphrase. Its NAME is a constant, not a
 # secret: it says where the passphrase lives. The same name is written by
 # `scripts/updater-key-passphrase.sh`.
-KEYCHAIN_SERVICE="app.brain.shell/updater-signing"
+KEYCHAIN_SERVICE="com.stewardmem.shell/updater-signing"
 KEYCHAIN_ACCOUNT="default"
 DRY_RUN=0
 NOTES=""
@@ -356,7 +356,7 @@ fi
 #   1. `--passphrase-file` — a 0600 file OUTSIDE this repository.
 #   2. `--passphrase-env` — an environment variable.
 #   3. **THE LOGIN KEYCHAIN** — the default, and the custody this round
-#      settled on. The item is `app.brain.shell/updater-signing` / `default`
+#      settled on. The item is `com.stewardmem.shell/updater-signing` / `default`
 #      and it holds the passphrase for the updater's signing key. **Only the
 #      ITEM'S NAME is in this script — never a passphrase, never a key.** The
 #      read is `security find-generic-password -w`, which returns the value

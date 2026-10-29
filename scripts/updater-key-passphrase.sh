@@ -14,7 +14,7 @@
 #      **no trailing newline** — BSD `base64` adds one, and the CLI's
 #      decoder rejects it (`Invalid symbol 10, offset 348`).
 #   3. The new passphrase is stored in the LOGIN KEYCHAIN, under the item
-#      `app.brain.shell/updater-signing` / `default`, which is where
+#      `com.stewardmem.shell/updater-signing` / `default`, which is where
 #      `scripts/release-app-sign.sh` reads it from.
 #
 # **THE PUBLIC KEY DOES NOT CHANGE, and that is the point.** A passphrase
@@ -39,7 +39,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KEY_DIR="${HOME}/.config/brain-server"
 RAW_KEY="${KEY_DIR}/updater.key.minisign"
 B64_KEY="${KEY_DIR}/updater.key"
-SERVICE="app.brain.shell/updater-signing"
+SERVICE="com.stewardmem.shell/updater-signing"
 ACCOUNT="default"
 
 die() {
@@ -54,7 +54,7 @@ usage: scripts/updater-key-passphrase.sh [--key <file>] [--service <name>] [--ac
   --key <file>      the RAW secret key to re-encrypt
                     (default: ~/.config/brain-server/updater.key.minisign)
   --service <name>  the keychain item's service
-                    (default: app.brain.shell/updater-signing)
+                    (default: com.stewardmem.shell/updater-signing)
   --account <name>  the keychain item's account (default: default)
 USAGE
 	exit 2

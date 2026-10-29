@@ -362,7 +362,7 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/parcels",
     "/parcels/export",
     "/parcels/import",
-    // The StewardOS account surfaces (deliberately-not-a-CRM).
+    // The StewardMem account surfaces (deliberately-not-a-CRM).
     "/accounts",
     "/accounts/{id}",
     "/accounts/{id}/pipeline",
@@ -734,7 +734,7 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/workflow/scoreboard", "Admin"),
     ("/workflow/calibration/sign", "Admin"),
     ("/workflow/plugins/mount", "Write"),
-    // The StewardOS account surfaces: writes and per-account reads are
+    // The StewardMem account surfaces: writes and per-account reads are
     // workflow-role Writes on the account's domain; GET and POST share
     // /accounts and the scan maps the path to the LAST registered handler
     // (the DPO dual gate — the stricter check, the /retention convention);

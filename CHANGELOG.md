@@ -52,7 +52,11 @@ to its new home: the bundle identifier is `com.stewardmem.shell`.
   directory moves with it: copy
   `~/Library/Application Support/app.brain.shell/` to
   `~/Library/Application Support/com.stewardmem.shell/` to keep your
-  existing memory and consent state.
+  existing memory and consent state. The keychain service names moved too
+  (`com.stewardmem.shell/token`, `com.stewardmem.shell/updater-signing`):
+  there are no external installs to migrate — fresh identity, fresh start —
+  so stored tokens are simply re-granted and the updater signing passphrase
+  is re-stored once with `scripts/updater-key-passphrase.sh`.
 
 **Fixed**
 
@@ -68,7 +72,7 @@ to its new home: the bundle identifier is `com.stewardmem.shell`.
 brain-server relicensed from MIT to Apache-2.0 — a commercial-hygiene
 decision (2026-10-27): Apache-2.0 carries the explicit contributor patent
 grant and its retaliation clause, which MIT lacks, and §6 of the licence
-expressly grants no trademark rights, which keeps the MemorySteward brand
+expressly grants no trademark rights, which keeps the StewardMem brand
 the company's. It is deliberately NOT filed as a compliance or protection
 move: the DepEd Order 003 s. 2026 mapping turns on governance machinery,
 not the licence, and the loop architecture's protection remains the

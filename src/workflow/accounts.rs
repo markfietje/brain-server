@@ -1,4 +1,4 @@
-//! The account record — the StewardOS account lane's storage core.
+//! The account record — the StewardMem account lane's storage core.
 //!
 //! Accounts are `workflow_runs` rows with kind [`ACCOUNT_KIND`]: the loop's
 //! own tenant-scoped store, so domain scoping, audit tenant lookup, and the

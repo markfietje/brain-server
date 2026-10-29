@@ -341,7 +341,7 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             "/workflow/reflection/corpus",
             get(handlers::reflection::get_reflection_corpus),
         )
-        // The StewardOS account surfaces (deliberately-not-a-CRM): the
+        // The StewardMem account surfaces (deliberately-not-a-CRM): the
         // record, the decision_ref-gated pipeline, and the per-account
         // request history. POST /accounts registers FIRST; the DPO-gated
         // GET /accounts registers LAST so the authz source-scan maps the

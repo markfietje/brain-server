@@ -69,7 +69,7 @@ async function directTurn(message: string): Promise<{ ok: boolean; code: string 
 	return { ok: sawFinal && !sawError, code: sawError ? 'stream_error' : 'ok' };
 }
 
-const QUESTION = 'What does the StewardOS seed memory say?';
+const QUESTION = 'What does the StewardMem seed memory say?';
 
 test('the_composer_streams_the_machine_real_posture', async ({ page }) => {
 	await page.goto('/');

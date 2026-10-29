@@ -184,7 +184,7 @@ const RECIPES: Partial<Record<CensusRoute, RouteRecipe>> = {
 					hits: [
 						{
 							id: 9,
-							title: 'StewardOS wiring note',
+							title: 'StewardMem wiring note',
 							snippet: 'the recall bench seeds a support-ticket doc',
 							score: 0.8234,
 							source: 'vector',

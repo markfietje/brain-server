@@ -1,4 +1,4 @@
-//! The StewardOS account surfaces: the account record, the per-account
+//! The StewardMem account surfaces: the account record, the per-account
 //! request history, and the decision_ref-gated pipeline — the
 //! deliberately-not-a-CRM (identifiers and typed records only, never a
 //! contacts/quotes/forecast system).

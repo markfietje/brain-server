@@ -657,7 +657,7 @@ const BANNED_CLAIMS: &[(&str, &str)] = &[
         "Every change is signed and recorded permanently",
     ),
     (
-        "docs/MemorySteward-Overview.tex",
+        "docs/StewardMem-Overview.tex",
         "Every change is signed and recorded permanently",
     ),
     (
@@ -684,10 +684,10 @@ fn r45_0_no_external_artifact_claims_ed25519_over_the_chain() {
     let named = [
         "plans/PLAIN_LANGUAGE_PRODUCT_OVERVIEW.md",
         "plans/memorysteward-overview.tex",
-        "docs/MemorySteward-Overview.tex",
+        "docs/StewardMem-Overview.tex",
         "plans/memorysteward-engineers-ref.tex",
-        "docs/MemorySteward-Engineers-Reference.tex",
-        "docs/POSITIONING_MEMORYSTEWARD.md",
+        "docs/StewardMem-Engineers-Reference.tex",
+        "docs/POSITIONING_STEWARDMEM.md",
         "plans/PLAN_CREATE_LOOP_SENTINEL_MODEL_AND_EVIDENCE.md",
         "plans/PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md",
         "docs/blueprint/02-SYSTEM_ARCHITECTURE.md",
@@ -872,7 +872,7 @@ fn r45_0_corrected_sentence_present_in_every_listed_artifact() {
     // the claim, and so is not required to name the primitive.
     let mut describing: Vec<String> = vec![
         "plans/memorysteward-engineers-ref.tex".to_string(),
-        "docs/MemorySteward-Engineers-Reference.tex".to_string(),
+        "docs/StewardMem-Engineers-Reference.tex".to_string(),
     ];
     for d in discover_spine_artifacts(&["sign_manifest_bytes"], &["md", "tex"]) {
         if describing.iter().any(|x| x == &d) {
@@ -926,7 +926,7 @@ fn r45_0_corrected_sentence_present_in_every_listed_artifact() {
     for rel in [
         "plans/PLAIN_LANGUAGE_PRODUCT_OVERVIEW.md",
         "plans/memorysteward-overview.tex",
-        "docs/MemorySteward-Overview.tex",
+        "docs/StewardMem-Overview.tex",
     ] {
         let text = read_spine(rel);
         assert!(
@@ -949,7 +949,7 @@ fn r45_0_engineers_ref_known_limits_ceiling_row_is_retained() {
     }
     for rel in [
         "plans/memorysteward-engineers-ref.tex",
-        "docs/MemorySteward-Engineers-Reference.tex",
+        "docs/StewardMem-Engineers-Reference.tex",
     ] {
         let text = read_spine(rel);
 
@@ -971,10 +971,10 @@ fn r45_0_engineers_ref_known_limits_ceiling_row_is_retained() {
     }
 
     // E2's plain form appears in the artifacts that now make the claim.
-    let positioning = read_spine("docs/POSITIONING_MEMORYSTEWARD.md");
+    let positioning = read_spine("docs/POSITIONING_STEWARDMEM.md");
     assert!(
         positioning.contains("keyed hash-chained audit"),
-        "docs/POSITIONING_MEMORYSTEWARD.md must say \"keyed hash-chained audit\" on the \
+        "docs/POSITIONING_STEWARDMEM.md must say \"keyed hash-chained audit\" on the \
          compliance line — the unqualified \"hash-chained audit\" is the overstatement"
     );
 }
