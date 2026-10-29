@@ -416,6 +416,50 @@ tripwire.
 - **The scheduler cannot dispose**: no approve, promote, reject, or
   legal-hold path exists in the verb (source-scanned).
 
+## The local live-provider checklist (the pilot's provider posture)
+
+The comparison doc's live-provider checklist, closed for the LOCAL posture —
+what an operator checks before trusting the pilot's provider, and what a
+HOSTED provider would one day owe. The hosted items are WRITTEN, not wired.
+
+### The model card (the AFM assessment, measured)
+
+- The provider is the on-device Apple FoundationModels tier through the
+  `brain-afm` bridge: context window 4,096 tokens (the child's measured
+  capabilities answer), a measured generation budget reported beside it,
+  and `escalationPermitted: false` — Private Cloud Compute is REFUSED
+  without an app-level entitlement (measured 2026-10-25, macOS 27.0.1;
+  re-verified per-machine at spawn), so generation stays on-device and
+  `.deep` routing is nominal. Capabilities are PROBED, not assumed: the
+  child measures once per process and the kernel reads them before the
+  first turn.
+- The measured tier shape (the pilot, 2026-10-29): intake artifacts
+  first-attempt 19/19; triage's KT bounds contract is the wall
+  (19/19 escalated by named gate error); Verify unmeasured. The tier is
+  usable for intake TODAY; the tier table's L1=AFM bet is intake-only.
+
+### The no-training warranty — STRUCTURAL, not promised
+
+Nothing about a case leaves the machine, and that is a PINNED property,
+not a vendor promise: the afm-stdio path opens no socket and spawns no
+process of its own (the source-scan pin
+`the_afm_stdio_path_has_no_egress_beyond_the_shared_bridge`), the bridge
+child's only network is Apple's own framework (PCC, refused), and no
+hosted provider is configured (a mixed afm-stdio + HTTP profile posture is
+invalid configuration, refused at boot). The warranty is the architecture.
+
+### The 72-hour incident runbook step (WRITTEN for the hosted FUTURE)
+
+If a HOSTED provider is ever configured (declined for the pilot): any
+provider-side incident must reach the operator within 72 hours through a
+channel the operator has verified — the provider's status feed subscribed,
+the incident class mapped onto the kernel's closed failure classes
+(`provider_unavailable` / `provider_refused` / `provider_response_invalid`
+/ `provider_timeout` / `provider_cancelled`), and the case data the
+provider saw inventoried (tickets, artifacts, usage) so the incident
+disclosure names the data class. Until a hosted provider exists, the
+paragraph is a debt recorded, not a wire.
+
 ## Next steps
 
 - **[One Brain for the Whole Team](./team-workflow.md)** — where procedures fit in the shared-store workflow.
