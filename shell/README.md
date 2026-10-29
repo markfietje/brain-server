@@ -126,8 +126,8 @@ sits ABOVE the chrome: a refusal renders no nav and no app content.
   operator credentials. The auth token is the shell's own (keychain →
   `BRAIN_SHELL_TOKEN`); it is never logged and never enters a DTO.
 - **Paths and modes (macOS).** Data root `~/Library/Application
-  Support/app.brain.shell/kernel` (0700); consent marker `~/Library/
-  Application Support/app.brain.shell/consent-v1.json` (0600, OUTSIDE the
+  Support/com.stewardmem.shell/kernel` (0700); consent marker `~/Library/
+  Application Support/com.stewardmem.shell/consent-v1.json` (0600, OUTSIDE the
   data root); `auth-token` and `brain-server.log` 0600; the kernel's
   `brain.db` is 0600. Consent Cancel returns before the data root is created.
 - **Exit.** `RunEvent::Exit` kills only the child this process spawned; an
@@ -497,7 +497,7 @@ worker on port 8799; the WebKit project remains the static no-bypass CSP leg.
 - **The token (D7/III-2):** never in the bundle — the token module reads NOTHING
   from `import.meta.env` (VITE_* is compile-time-exposed and forbidden for
   this). In Tauri it is supplied at runtime from the login keychain first (the
-  generic-password item `app.brain.shell/token`, account `default`), then the
+  generic-password item `app.brain.shell/token`, account `default` (the keychain service is a stable constant; it did not move with the bundle id)), then the
   shell's own `BRAIN_SHELL_TOKEN`. The kernel's operator credentials
   (`BRAIN_TOKEN_FILE`, `AUTH_TOKEN`, …) are NEVER read by the shell: that is
   the privilege boundary, not a naming preference. The Settings dialog writes

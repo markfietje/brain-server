@@ -37,7 +37,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 import { setBearer } from '../src/lib/api/token';
 import KernelGateHost from './KernelGateHost.svelte';
 
-const DATA_ROOT = '/Users/test/Library/Application Support/app.brain.shell/kernel';
+const DATA_ROOT = '/Users/test/Library/Application Support/com.stewardmem.shell/kernel';
 const SIDECAR = '/Applications/Brain Shell.app/Contents/MacOS/brain-server';
 
 function setTauri(): void {

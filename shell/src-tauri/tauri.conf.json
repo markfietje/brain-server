@@ -1,8 +1,8 @@
 {
 	"$schema": "https://schema.tauri.app/config/2",
-	"productName": "Brain Shell",
+	"productName": "StewardMem",
 	"version": "0.1.1",
-	"identifier": "app.brain.shell",
+	"identifier": "com.stewardmem.shell",
 	"build": {
 		"frontendDist": "../build",
 		"devUrl": "http://localhost:5173",
@@ -13,7 +13,7 @@
 		"withGlobalTauri": false,
 		"windows": [
 			{
-				"title": "Brain Shell",
+				"title": "StewardMem",
 				"label": "main",
 				"width": 1024,
 				"height": 768,

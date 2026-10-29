@@ -220,7 +220,7 @@
   "gate.checking": "Comprobando el kernel local…",
   "gate.starting": "Iniciando el kernel local…",
   "gate.consent.heading": "¿Iniciar el kernel local?",
-  "gate.consent.body": "Brain Shell guarda los datos de su kernel en este Mac, en la carpeta de abajo. No se envía nada a un servidor remoto.",
+  "gate.consent.body": "StewardMem guarda los datos de su kernel en este Mac, en la carpeta de abajo. No se envía nada a un servidor remoto.",
   "gate.consent.localOnly": "Solo local: el kernel escucha en 127.0.0.1 y solo es accesible desde este Mac.",
   "gate.consent.modes": "La carpeta de datos es solo para usted (0700). La base de datos, el token bearer y el registro son archivos solo para el propietario (0600).",
   "gate.consent.pathLabel": "Carpeta de datos",

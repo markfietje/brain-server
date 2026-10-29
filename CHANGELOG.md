@@ -13,6 +13,56 @@ measured. Those records are kept as they were written (this file is
 append-only), and their heading says `Unreleased` because that is what they
 were when the round landed — not because the work is still unreleased.
 
+## [1.29.35] — 2026-10-29 — the loop runs live: the on-device pilot, the scheduler's first flip
+
+The governed troubleshooting loop no longer runs only against scripted
+fixtures: this round switches it on against the on-device model through the
+kernel's bridge — the same one egress the chat uses — and measures what a
+real model actually does. The measured truth is recorded, not smoothed:
+intake artifacts pass first-attempt in 19 of 19 cases, triage's
+comparison-bounds contract is the wall (the model declines to state bounds,
+the gate refuses by name, the case escalates to a human — the honest
+route), and the shipped token budget is now the measured live number
+instead of the scripted fixture's. The release also moves the desktop app
+to its new home: the bundle identifier is `com.stewardmem.shell`.
+
+### Release notes
+
+**New**
+
+- **The governed loop runs on your device.** `BRAIN_GDL_PROVIDER_KIND=afm-stdio`
+  points the case machine at the on-device model through the brain-afm
+  bridge — no hosted provider, no keys, nothing leaves the machine. The
+  default (`http`) is byte-for-byte yesterday's behavior.
+- **The CRANK scheduler.** `brain run crank` plans the governed loop's open
+  runs through a risk-tier table (the domain's bound profile picks the row;
+  unknown fails closed to human-cranked) and a red-flag tripwire, and cranks
+  the selected through the same surface a human uses. Dry-run is the
+  default: without `--yes` it writes nothing. The scheduler cannot approve,
+  promote, or reject — it adds calls, not decisions.
+
+**Changed**
+
+- **The case token budget is the measured number.** The default moved from
+  336 to 11,961 tokens per case: the pilot's live per-case p99 (3,987) times
+  the bounded retry ladder, replacing the scripted fixture's accounting.
+  Operators running other providers should still measure their own ceiling.
+- **The desktop app is StewardMem.** The bundle identifier moved to
+  `com.stewardmem.shell` and the app is now `StewardMem.app`; its data
+  directory moves with it: copy
+  `~/Library/Application Support/app.brain.shell/` to
+  `~/Library/Application Support/com.stewardmem.shell/` to keep your
+  existing memory and consent state.
+
+**Fixed**
+
+- **A poisoned replay no longer kills a case.** Model text that merely
+  *looks* like JSON (a bracket-leading refusal, for example) was refused by
+  the strict document law on every later replay of the conversation — one
+  refusal answer poisoned the rest of the case. Assistant history now
+  replays under the prose law; the credential-escape refusal is untouched.
+
+
 ## [Unreleased] — the relicence: Apache-2.0 across the tree (2026-10-27)
 
 brain-server relicensed from MIT to Apache-2.0 — a commercial-hygiene

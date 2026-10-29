@@ -220,7 +220,7 @@
   "gate.checking": "Checking the local kernel…",
   "gate.starting": "Starting the local kernel…",
   "gate.consent.heading": "Start the local kernel?",
-  "gate.consent.body": "Brain Shell keeps its kernel's data on this Mac, in the folder below. Nothing is sent to a remote server.",
+  "gate.consent.body": "StewardMem keeps its kernel's data on this Mac, in the folder below. Nothing is sent to a remote server.",
   "gate.consent.localOnly": "Local only: the kernel listens on 127.0.0.1 and is reachable from this Mac alone.",
   "gate.consent.modes": "The data folder is owner-only (0700). The database, the bearer token and the log are owner-only files (0600).",
   "gate.consent.pathLabel": "Data folder",

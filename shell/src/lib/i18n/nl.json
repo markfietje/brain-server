@@ -220,7 +220,7 @@
   "gate.checking": "Het lokale kernel wordt gecontroleerd…",
   "gate.starting": "Het lokale kernel wordt gestart…",
   "gate.consent.heading": "Lokaal kernel starten?",
-  "gate.consent.body": "Brain Shell bewaart de gegevens van zijn kernel op deze Mac, in de onderstaande map. Er wordt niets naar een externe server verzonden.",
+  "gate.consent.body": "StewardMem bewaart de gegevens van zijn kernel op deze Mac, in de onderstaande map. Er wordt niets naar een externe server verzonden.",
   "gate.consent.localOnly": "Alleen lokaal: de kernel luistert op 127.0.0.1 en is alleen vanaf deze Mac bereikbaar.",
   "gate.consent.modes": "De gegevensmap is alleen voor u (0700). De database, het bearer-token en het logboek zijn bestanden die alleen de eigenaar mag lezen (0600).",
   "gate.consent.pathLabel": "Gegevensmap",

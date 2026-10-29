@@ -146,7 +146,7 @@ function infoPlist(version: string): string {
 		'<plist version="1.0">',
 		'<dict>',
 		'\t<key>CFBundleIdentifier</key>',
-		'\t<string>app.brain.shell</string>',
+		'\t<string>com.stewardmem.shell</string>',
 		'\t<key>CFBundleShortVersionString</key>',
 		`\t<string>${version}</string>`,
 		'</dict>',

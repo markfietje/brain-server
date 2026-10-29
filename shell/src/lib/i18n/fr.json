@@ -220,7 +220,7 @@
   "gate.checking": "Vérification du noyau local…",
   "gate.starting": "Démarrage du noyau local…",
   "gate.consent.heading": "Démarrer le noyau local ?",
-  "gate.consent.body": "Brain Shell conserve les données de son noyau sur ce Mac, dans le dossier ci-dessous. Rien n'est envoyé à un serveur distant.",
+  "gate.consent.body": "StewardMem conserve les données de son noyau sur ce Mac, dans le dossier ci-dessous. Rien n'est envoyé à un serveur distant.",
   "gate.consent.localOnly": "Local uniquement : le noyau écoute sur 127.0.0.1 et n'est joignable que depuis ce Mac.",
   "gate.consent.modes": "Le dossier de données n'est accessible qu'à vous (0700). La base, le jeton bearer et le journal sont des fichiers réservés au propriétaire (0600).",
   "gate.consent.pathLabel": "Dossier de données",
