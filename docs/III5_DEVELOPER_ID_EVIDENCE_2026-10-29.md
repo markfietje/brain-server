@@ -66,4 +66,77 @@ identity + timestamp. The red-first sequence was measured: the pins were
 written first and ran RED against the pre-III-5 walker (no expectation
 mode), then the walker landed and the same pins ran green.
 
-## (S-2..§7 evidence lands below as the round executes)
+## S-2 — notarization + stapling: the lane's own steps, measured green (dry run #3, #4)
+
+The first design tried the bundler's native notarization (the only
+ordering in which the stapled app rides its own archive). **It is
+impossible on this route, measured twice:** the operator's tunnel sustains
+~170 KB/s upload, and the bundler's Rust S3 multipart client deadlines
+before the FIRST part lands (`abortedUpload … completedParts: [],
+HTTPClientError.deadlineExceeded`, runs 1 and 2). The lane therefore
+submits with Apple's own uploader — `xcrun notarytool submit
+--keychain-profile stewardmem --wait` — which tolerates the link, exactly
+the posture the execution prompt names.
+
+**Dry run #3 (universal build) — the whole chain green, LANE-EXIT=0:**
+
+```
+Submission ID received
+  id: 6c95d6e3-601a-421e-8403-47bba06c5f7f
+Successfully uploaded file
+Waiting for processing to complete.
+Current status: Accepted......Processing complete
+  status: Accepted
+>> stapling the app…
+The staple and validate action worked!
+>> stapler validate (the stapled app — the offline pin)…
+The validate action worked!
+>> spctl --assess --type execute (the stapled app)…
+>> the stapled app validates: stapler validate + spctl are green.
+```
+
+**Dry run #4 (arm64-only + stapled DMG) — LANE-EXIT=0:** the walker ran
+twice (the bundle directory AND the extracted updater archive — the
+shipped bytes): 3 Mach-O files, `[arm64]`, `identity+timestamp
+[Developer ID Application: Mark Fietje (JHB4UNPL3G)]`, arch parity,
+provenance `1.29.35 @ f6cbe369`. The DMG was built with `hdiutil` around
+the ALREADY-STAPLED app, notarized, stapled, and `stapler validate` green
+on it. The chain staged: artifact + `.sig` + `latest.json`, round trip
+verified against the pinned key.
+
+The lane-readable keychain item (`com.stewardmem.shell/notary`) was
+stored by the operator for the bundler-env design and is no longer
+referenced — notarytool reads its own profile from the data-protection
+keychain. Custody note, not a dependency.
+
+## S-3 — Gatekeeper, witnessed with the real verdicts
+
+The spctl/stapler matrix, measured on the dry-run-built stapled app
+(all exits unmasked; `/tmp/iii5-spctl/` fixtures):
+
+| posture | `stapler validate` | `spctl --assess --type execute` |
+|---|---|---|
+| **the stapled app** (the lane's product) | **green** — "The validate action worked!" | **accepted, exit 0** |
+| unstapled verbatim copy (re-signed, same bytes) | green — the ticket is ON APPLE'S SERVERS against the CDHash | accepted, exit 0 — the online check finds it |
+| unstapled, MODIFIED bytes (one tampered provenance line, re-signed — CDHash unknown to the Notary) | **RED, exit 65** | **REJECTED, exit 3** |
+| ad-hoc (`--sign -`), quarantined | — | **REJECTED, exit 3** |
+
+**The measured law this matrix teaches — three findings, each a
+correction of an assumed one:**
+
+1. `spctl --assess` DOES consult notarization: unstapled, it asks Apple's
+   service ONLINE. So "staple removed → spctl reds" holds for any bytes
+   Apple has not notarized (any tamper, any rebuild); a verbatim unstapled
+   copy passes WITH NETWORK and fails without it.
+2. The staple is exactly what makes the verdict OFFLINE-capable — which
+   is why the first-install artifact is the stapled DMG, not the updater
+   tarball (an update is never quarantined; Gatekeeper never sees it).
+3. Notarization attaches to the CDHash, not the artifact: re-signing
+   identical bytes reproduces the CDHash and inherits the ticket. The
+   gate that catches modification is the seal/CDHash mismatch — the
+   walker's per-file strict verify — and the modified-bytes row above.
+
+The first-launch witness (the Gatekeeper dialog, quarantine present, no
+bypass) belongs to the clean machine — S-4 below.
+
+## (S-4..§7 evidence lands below as the round executes)
