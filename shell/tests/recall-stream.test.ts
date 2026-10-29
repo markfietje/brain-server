@@ -160,9 +160,15 @@ describe('time-to-first-event, not whole-turn', () => {
 
 	test('the buffering control fails that same measurement', async () => {
 		const LAST_EVENT_MS = 120;
+		// The stall rides a 5ms margin: setTimeout(120) can be MEASURED at
+		// 119ms (timer coalescing over Date.now()'s granularity), and a
+		// boundary with no margin flakes on the runner, not in the product.
+		// The pin's intent — the turn takes at least the deliberate stall —
+		// is unchanged.
+		const STALL_MS = LAST_EVENT_MS + 5;
 		async function* slowTail(): AsyncGenerator<RecallEvent> {
 			yield events[0] as RecallEvent;
-			await new Promise((resolve) => setTimeout(resolve, LAST_EVENT_MS));
+			await new Promise((resolve) => setTimeout(resolve, STALL_MS));
 			for (const event of events.slice(1)) yield event;
 		}
 
