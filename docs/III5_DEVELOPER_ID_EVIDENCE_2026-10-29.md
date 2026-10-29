@@ -109,6 +109,85 @@ stored by the operator for the bundler-env design and is no longer
 referenced — notarytool reads its own profile from the data-protection
 keychain. Custody note, not a dependency.
 
+## S-2 REAL — the publication to v1.29.36, and the DMG-signature fix it forced
+
+**Run 1 (2026-10-29 ~23:00, LANE-EXIT=0):** the lane ran FOR REAL against
+the staged-at-tag sidecar (`1.29.36 @ 86cd1175`, `v1.29.36` describe,
+clean) and published the whole chain: `StewardMem.app.tar.gz` + `.sig` +
+`latest.json` (version 0.1.1, kernel 1.29.36, platform `darwin-aarch64`
+alone) + `StewardMem.dmg`, then Developer-ID-signed and re-notarized the
+four darwin kernel artifacts with a refreshed `SHA256SUMS`. Measured from
+the public internet: the updater endpoint
+(`releases/latest/download/latest.json`) → **HTTP 200** serving THIS
+release's manifest; the DMG URL → **HTTP 200, 13,203,546 bytes**.
+
+**The investigation the first download forced (macOS 27.2 Golden Gate,
+2026-10-30 — docs via Context7, then measured).** The published DMG's
+staple validated and the app inside passed everything, but
+`spctl --assess --type open` on the DMG said `rejected, source=Insufficient
+Context`. Four measurements settled what that verdict means:
+
+1. **The DMG carried NO code signature at all** (`codesign -dv`: "code
+   object is not signed at all") — the lane built it with `hdiutil` and
+   notarized it UNSIGNED. The Notary ACCEPTS an unsigned image (the ticket
+   binds to the image hash; the staple validated) — practice tolerates
+   what the docs forbid.
+2. **The VLC control** (3.0.21 arm64, downloaded the same hour): its DMG
+   is ALSO "not signed at all", and it returns the IDENTICAL
+   `Insufficient Context` under `spctl --assess --type open` — so that
+   verdict is NON-DIAGNOSTIC for DMGs on 27.2, not a Gatekeeper judgment.
+   Both DMGs mount clean WITH the quarantine attribute set.
+3. **`syspolicy_check distribution`** (`/usr/bin/syspolicy_check`, new on
+   this OS — "the same checks macOS does": Gatekeeper + XProtect +
+   certificate profile) is the real probe, on the APP: ours passed EVERY
+   check ("App passed all pre-distribution checks and is ready for
+   distribution"; top-level AND deep policy match `notarized`), while the
+   VLC control FAILED offline — "Notary Ticket Missing, Severity: Fatal"
+   (VLC staples nothing; it relies on the online lookup). **Our chain is
+   stricter than a decade-old widely-distributed one.**
+4. **Apple's documented posture** ("Packaging Mac software for
+   distribution", fetched via Context7 2026-10-30) names the disk image as
+   a thing you SIGN — `codesign -s <Developer ID Application> --timestamp
+   -i <Identifier> <DiskImageFile>` — under the nested-container rule:
+   sign the app, the installer, AND the disk image; notarize only the
+   outermost container.
+
+**The fix (commit `89744f83`):** the lane now `codesign`s the DMG with the
+pinned identity + `--timestamp` + `-i com.stewardmem.shell` AFTER
+`hdiutil create` and BEFORE `notary_submit` — so the notarization covers
+the SIGNED bytes — and `verify_apple_signature "$DMG"` gates it like
+every other Mach-O. The pin
+(`shell/tests/updater-manifest.test.ts` → `the signing lane
+Developer-ID-signs the first-install DMG before notarizing it`) is
+STRUCTURAL (the R127 S2/S3 class: the gate runs operator-side with the
+real keychain and the Notary; CI cannot drive it) and was RED-PROVED
+against the pre-edit lane — `AssertionError: the lane must sign the DMG
+with the pinned Developer ID identity and a secure timestamp (Apple:
+"Packaging Mac software for distribution" — sign the app, the installer,
+AND the disk image): expected false to be true` — green after, 17/17 in
+the file. (macOS 27.2 also deprecates `hdiutil create/attach` in favour of
+`diskutil image create/attach`; recorded in the lane comment, not churned.)
+
+**Run 2 (2026-10-30 ~07:10, LANE-EXIT=0):** re-staged at the fix commit
+(`1.29.36 @ 89744f83`, describe `v1.29.36-1-g89744f83` — the writer
+refuses a staged record that names another commit, measured law), the
+full lane re-ran, and the new gate fired in the log:
+
+```
+>> signing the DMG with the Developer ID identity…
+>> verified: Developer ID Application: Mark Fietje (JHB4UNPL3G), timestamp 30 Oct 2026 at 07:10:25 — StewardMem.dmg
+```
+
+**The published bytes, measured after re-publication:**
+
+| check | verdict |
+|---|---|
+| `codesign -dv` on the DMG | `Identifier=com.stewardmem.shell`, `Authority=Developer ID Application: Mark Fietje (JHB4UNPL3G)` → Certification Authority → Apple Root CA, **`Timestamp=30 Oct 2026 at 07:10:25`** |
+| `stapler validate` (DMG) | green — "The validate action worked!" |
+| quarantine set → mount | clean (MOUNT-OK) |
+| `syspolicy_check distribution` (app inside) | "App passed all pre-distribution checks and is ready for distribution." |
+| updater endpoint | HTTP 200 |
+
 ## S-3 — Gatekeeper, witnessed with the real verdicts
 
 The spctl/stapler matrix, measured on the dry-run-built stapled app
