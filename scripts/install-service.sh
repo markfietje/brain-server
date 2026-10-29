@@ -150,16 +150,17 @@ done
 #     to hand-copy the bundle out of the target tree). Best-effort like the
 #     optional bins: no bundle → skip with a log line, never fatal, so
 #     CLI-only/headless installs are unaffected. The bundler's raw bundle is
-#     "StewardMem.app" (tauri.conf productName — "Brain Shell.app" before the
-#     rebrand, kept as a fallback for older build trees); the
-#     "Brain-Shell.app.tar.gz" beside an OLD bundle was the signing lane's
-#     renamed PUBLICATION artefact (the hyphen survives GitHub's space→dot
-#     asset-name rewrite) and is not an installable .app — only a real .app
-#     directory is.
-APP_BUNDLE_DIR="$REPO/shell/src-tauri/target/universal-apple-darwin/release/bundle/macos"
+#     "StewardMem.app" (tauri.conf productName). The pre-rebrand names
+#     ("Brain Shell.app", "Brain-Shell.app") are HISTORY and are no longer
+#     candidates: since III-5 the identifier is com.stewardmem.shell and the
+#     fresh-start law holds — an old install is REMOVED and the new app
+#     REINSTALLED, never adopted in place (the updater's in-place path is
+#     not exercised across the identifier change). The app is ARM64-ONLY
+#     since III-5, and the bundle now lives under the aarch64 target dir.
+APP_BUNDLE_DIR="$REPO/shell/src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
 APP_INSTALL_DIR="${APP_INSTALL_DIR:-/Applications}"
 SRC_APP=""
-for cand in "StewardMem.app" "Brain-Shell.app" "Brain Shell.app"; do
+for cand in "StewardMem.app"; do
     [[ -d "$APP_BUNDLE_DIR/$cand" ]] && SRC_APP="$APP_BUNDLE_DIR/$cand" && break
 done
 if [[ -z "$SRC_APP" ]]; then

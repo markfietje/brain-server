@@ -312,22 +312,27 @@ function manifestOf(fixtureValue: Fixture): Record<string, unknown> {
 	return JSON.parse(readFileSync(fixtureValue.manifest, 'utf8')) as Record<string, unknown>;
 }
 
-// ── P4 · the manifest answers for BOTH Apple arches ───────────────────────
+// ── P4 · the manifest answers for ITS targets ─────────────────────────────
 
 /**
- * P4 — the manifest must answer for both Apple arches.
+ * P4 — the manifest must answer for its targets, and only a real target.
  *
- * The bundle is a UNIVERSAL build: two compilations lipo'd together, each
- * slice carrying its own compile-time `target_arch`. The plugin looks the
- * manifest up by `{os}-{arch}` (the compile-time arch of the slice that is
- * running), so a manifest carrying one arch key serves exactly half the
- * machines — and fails SILENTLY on the other half ("no update found").
+ * The original bundle was a UNIVERSAL build: two compilations lipo'd
+ * together, each slice carrying its own compile-time `target_arch`. The
+ * plugin looks the manifest up by `{os}-{arch}` (the compile-time arch of
+ * the slice that is running), so a manifest missing an arch key it serves
+ * fails SILENTLY on those machines ("no update found") — that refusal arm
+ * is the writer's own.
  *
- * The refusal arm is the writer's own: it must refuse to write a manifest
- * that does not answer for every Apple target, rather than publish one that
- * half the machines can never use.
+ * III-5's arm64-only decision (the operator's, 2026-10-29) adds the mirror
+ * law, measured the hard way: the dry run's manifest offered
+ * `darwin-x86_64` an aarch64-only artifact — a promise an Intel updater
+ * DOWNLOADS and CANNOT RUN. So the writer carries `--targets`: the default
+ * still answers for both Apple targets (the universal posture), one target
+ * is the arm64-only posture and carries one platform, an EMPTY list is
+ * refused, and a target outside the Apple vocabulary is refused BY NAME.
  */
-test('the_manifest_writer_refuses_a_manifest_missing_either_apple_arch', () => {
+test('the_manifest_answers_for_its_targets_and_refuses_empty_or_foreign_ones', () => {
 	const fixtureValue = fixture();
 	const result = write(fixtureValue);
 	expect(result.status, result.stderr).toBe(0);
@@ -340,12 +345,34 @@ test('the_manifest_writer_refuses_a_manifest_missing_either_apple_arch', () => {
 		expect(typeof (entry as { signature?: unknown }).signature, target).toBe('string');
 	}
 
-	// The refusal arm: a manifest that answers for one arch only is refused,
-	// and the refusal NAMES the arch that is missing.
-	const oneArch = write(fixtureValue, ['--targets', 'darwin-aarch64', '--out', `${fixtureValue.manifest}.one`]);
-	expect(oneArch.status).toBe(2);
-	expect(oneArch.stderr).toContain('darwin-x86_64');
-	expect(oneArch.stderr).toContain('darwin-aarch64');
+	// The arm64-only posture: one target, one platform, same binding laws.
+	const oneArch = write(fixtureValue, [
+		'--targets',
+		'darwin-aarch64',
+		'--out',
+		`${fixtureValue.manifest}.one`
+	]);
+	expect(oneArch.status, oneArch.stderr).toBe(0);
+	const oneManifest = JSON.parse(
+		readFileSync(`${fixtureValue.manifest}.one`, 'utf8')
+	) as Record<string, unknown>;
+	expect(Object.keys(oneManifest.platforms as Record<string, unknown>)).toEqual(['darwin-aarch64']);
+
+	// The refusal arms: an EMPTY target list answers for nothing, and a
+	// target outside the Apple vocabulary is a typo wearing a platform key.
+	const empty = write(fixtureValue, ['--targets', '', '--out', `${fixtureValue.manifest}.empty`]);
+	expect(empty.status).toBe(2);
+	expect(empty.stderr).toContain('answers for no Apple target');
+
+	const foreign = write(fixtureValue, [
+		'--targets',
+		'darwin-aarch64,darwin-amd64',
+		'--out',
+		`${fixtureValue.manifest}.foreign`
+	]);
+	expect(foreign.status).toBe(2);
+	expect(foreign.stderr).toContain('darwin-amd64');
+	expect(foreign.stderr).toContain('not an Apple target');
 });
 
 // ── P5 · the sealed kernel version, and a record from another commit ──────

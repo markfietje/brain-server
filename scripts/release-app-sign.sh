@@ -824,6 +824,10 @@ MANIFEST="$OUT_DIR/latest.json"
 STAGED="$SHELL_DIR/src-tauri/binaries"
 
 echo ">> writing the update manifest for $TAG…"
+# --targets darwin-aarch64: the arm64-only app answers for ONE platform. A
+# manifest that offered darwin-x86_64 this artifact would hand an Intel
+# updater an app it downloads and CANNOT RUN (measured in dry run #4
+# before this law landed).
 node "$SHELL_DIR/scripts/updater.mjs" write \
 	--root "$REPO_ROOT" \
 	--staged "$STAGED" \
@@ -831,6 +835,7 @@ node "$SHELL_DIR/scripts/updater.mjs" write \
 	--bundle "$BUNDLE" \
 	--release-tag "$TAG" \
 	--notes "$NOTES" \
+	--targets darwin-aarch64 \
 	--out "$MANIFEST" > "$TMPDIR_SIGN/manifest.log" 2>&1 || {
 	cat "$TMPDIR_SIGN/manifest.log" >&2
 	die "refusing to publish: the manifest writer refused"

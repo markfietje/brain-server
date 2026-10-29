@@ -73,9 +73,6 @@ import { fileURLToPath } from 'node:url';
 
 export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-/** The Apple targets every manifest must answer for. */
-export const APPLE_TARGETS = ['darwin-aarch64', 'darwin-x86_64'];
-
 /** Where the sealed sidecar record lives, relative to the repository root. */
 const STAGED_REL = join('shell', 'src-tauri', 'binaries');
 const PROVENANCE_NAME = 'SIDECAR_PROVENANCE.json';
@@ -211,19 +208,39 @@ export function signatureBinding(signaturePath) {
 	return { file: fields.file ?? null, version: fields.version ?? null };
 }
 
-/** The targets a manifest does NOT answer for. An empty array is the only pass. */
+/** The target vocabulary: the Apple platforms a manifest can answer for. */
+export const APPLE_TARGETS = ['darwin-aarch64', 'darwin-x86_64'];
+
+/**
+ * The failures of a `--targets` list. An EMPTY list answers for no machine;
+ * a target outside the Apple vocabulary is a typo wearing a platform key —
+ * both refused BY NAME. A single target is legitimate: the arm64-only app
+ * (III-5, the operator's 2026-10-29 decision) answers for darwin-aarch64
+ * alone, and a manifest that offered darwin-x86_64 that artifact would hand
+ * an Intel updater an app it downloads and CANNOT RUN (measured in the
+ * dry run before this law landed).
+ */
 export function targetFailures(targets) {
-	return APPLE_TARGETS.filter((target) => !targets.includes(target)).map(
-		(target) => `the manifest must answer for ${target} as well as ${APPLE_TARGETS.join(' and ')}`
-	);
+	const failures = [];
+	if (targets.length === 0) {
+		failures.push('the manifest answers for no Apple target — name at least one of the platforms this artifact serves');
+	}
+	const foreign = targets.filter((target) => !APPLE_TARGETS.includes(target));
+	for (const target of foreign) {
+		failures.push(`"${target}" is not an Apple target — the vocabulary is ${APPLE_TARGETS.join(', ')}`);
+	}
+	return failures;
 }
 
 /**
  * The manifest the writer would publish.
  *
- * `platforms` carries EVERY Apple target, each pointing at the same
- * universal artifact: one build serves both arches, so one artifact and one
- * signature answer for both.
+ * `platforms` carries the targets this artifact SERVES, each pointing at
+ * the same artifact: one build, one signature, one platform entry per
+ * target — both under the universal posture, `darwin-aarch64` alone under
+ * the arm64-only posture (III-5). A target the artifact does not serve
+ * must never appear: the updater on that machine would download and run
+ * nothing.
  */
 export function manifestFor({
 	version,
@@ -233,10 +250,11 @@ export function manifestFor({
 	kernelVersion,
 	kernelVersions,
 	signature,
-	url
+	url,
+	targets = APPLE_TARGETS
 }) {
 	const platforms = {};
-	for (const target of APPLE_TARGETS) {
+	for (const target of targets) {
 		platforms[target] = { url, signature };
 	}
 	return {
@@ -423,7 +441,8 @@ export function planManifest(options) {
 		kernelVersion: record?.kernel_version ?? '',
 		kernelVersions,
 		signature,
-		url
+		url,
+		targets
 	});
 	return { manifest, failures };
 }
@@ -451,7 +470,14 @@ function write(options) {
 	if (options.artifact === undefined || options.bundle === undefined) {
 		throw new Error('write needs --artifact and --bundle');
 	}
-	const targets = options.targets === undefined ? APPLE_TARGETS : options.targets.split(',');
+	// Empty segments are dropped at the parse (a trailing comma must not
+	// fabricate a target): an empty `--targets ''` reaches the vocabulary
+	// check as a genuinely empty list and is refused as "answers for no
+	// Apple target", not as a phantom unnamed platform.
+	const targets =
+		options.targets === undefined
+			? APPLE_TARGETS
+			: options.targets.split(',').filter((value) => value.length > 0);
 
 	const { manifest, failures } = planManifest({
 		root,

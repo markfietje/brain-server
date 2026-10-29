@@ -1,4 +1,4 @@
-# brain-shell — the SvelteTauri shell (Phase A)
+# stewardmem-shell — the SvelteTauri shell of StewardMem
 
 The typed-wire skeleton + the wizard renderer: a **pure protocol client**
 for the brain-server kernel. Zero business logic lives here — every rule is
