@@ -64,7 +64,8 @@
 #      chain: a manifest that names an artifact the release does not carry
 #      is a broken promise the updater discovers at the user's machine.
 #
-#   6. THE PUBLICATION. One `gh release upload` with all three files.
+#   6. THE PUBLICATION. One `gh release upload` with the chain's three files
+#      plus the stapled first-install zip (`StewardMem.app.zip`).
 #
 # ── THE PASSPHRASE ─────────────────────────────────────────────────────────
 #
@@ -103,31 +104,58 @@ TEAM_ID="JHB4UNPL3G"
 #
 # The notarytool profile (`stewardmem`) lives in the DATA-PROTECTION
 # keychain — MEASURED 2026-10-29: `security find-generic-password` cannot
-# see it; only notarytool itself can. The BUNDLER's own notarization, how-
-# ever, reads APPLE_ID/APPLE_PASSWORD from the environment — and it is the
-# only component that can notarize+staple BEFORE it writes the updater
-# archive (a hand-made tarball stalls the install; measured in III-4). So
-# the lane reads the credential from a SECOND, lane-readable login-keychain
-# item — the same custody pattern as the updater passphrase: the operator
-# typed the secret into the keychain, the repo carries only the item's
-# NAME (the account attribute holds the Apple ID, so nothing personal is
-# in this file), and CI holds nothing (D6).
+# see it; only notarytool itself can read it. That is fine, because THE
+# LANE SUBMITS WITH NOTARYTOOL ITSELF (`--keychain-profile stewardmem`),
+# and here is why the bundler does not:
 #
-#   security add-generic-password -s "com.stewardmem.shell/notary" \
-#       -a "<your Apple ID>" -w
-NOTARY_KEYCHAIN_SERVICE="com.stewardmem.shell/notary"
-NOTARY_APPLE_ID=""
-NOTARY_PASSWORD=""
+# MEASURED (2026-10-29, two runs): the operator's route rides a VPN tunnel
+# whose SUSTAINED upload is 169 KB/s (10 MiB in 33.7s). The bundler's
+# native notarization is a Rust S3 multipart client with a per-request
+# deadline — two uploads died as `abortedUpload … completedParts: [],
+# HTTPClientError.deadlineExceeded`, the FIRST part never landing. Apple's
+# own uploader has no such deadline and is the submission path the prompt
+# names. So: the bundler runs WITHOUT the notary environment — it
+# Developer-ID-signs (the overlay pins the identity) and writes its own
+# updater archive — and the lane notarizes the zip, staples the app, and
+# gates on the staple. The updater archive carries the signed-but-unstapled
+# app, which is correct on purpose: an UPDATE is not quarantined, Gatekeeper
+# never sees it, and the updater's own verification needs the signature,
+# not the ticket. FIRST INSTALL travels as the stapled zip (published
+# beside the chain): a download is quarantined, and the staple inside makes
+# the first launch clean even offline. A hand-made updater tarball stays
+# forbidden either way (III-4's measured install stall).
 
-read_notary_credentials() {
-	local item
-	item="$(security find-generic-password -s "$NOTARY_KEYCHAIN_SERVICE" 2>/dev/null || true)"
-	NOTARY_PASSWORD="$(security find-generic-password -s "$NOTARY_KEYCHAIN_SERVICE" -w 2>/dev/null || true)"
-	[[ -n "$NOTARY_PASSWORD" ]] || die "the login keychain has no '$NOTARY_KEYCHAIN_SERVICE' item — the bundler's notarization needs it, and notarytool's own profile lives in the data-protection keychain where only notarytool can read it (measured). Store it operator-side, never a repo file, never CI (D6):
-  security add-generic-password -s \"com.stewardmem.shell/notary\" -a \"<your Apple ID>\" -w"
-	NOTARY_APPLE_ID="$(sed -n 's/.*"acct"<blob>="\([^"]*\)".*/\1/p' <<<"$item" | head -1)"
-	[[ -n "$NOTARY_APPLE_ID" ]] || die "the '$NOTARY_KEYCHAIN_SERVICE' item carries no Apple ID in its account attribute — re-store it with -a \"<your Apple ID>\""
-	echo ">> the notary credential is in the login keychain ($NOTARY_KEYCHAIN_SERVICE), Apple ID on file in the item's account attribute"
+notary_submit() {
+	# notary_submit <zip> — submit with the operator's profile, wait, and on
+	# a rejection NAME the failure with the Notary log fetched by its
+	# submission id. Fixed and re-submitted, never skipped.
+	local zip_path="$1" submit_log submit_id
+	submit_log="$(mktemp)"
+	echo ">> submitting to the Notary service (--keychain-profile stewardmem, --wait)…"
+	if ! xcrun notarytool submit "$zip_path" --keychain-profile stewardmem --wait > "$submit_log" 2>&1; then
+		cat "$submit_log" >&2
+		submit_id="$(sed -n 's/^[[:space:]]*id:[[:space:]]*//p' "$submit_log" | tail -1)"
+		if [[ -n "$submit_id" ]]; then
+			echo ">> the Notary log for submission $submit_id:" >&2
+			xcrun notarytool log "$submit_id" --keychain-profile stewardmem 2>&1 |
+				grep -iE '"webLogUrl"|"status"|"message"|issues' | head -20 >&2 || true
+		fi
+		die "the Notary service REJECTED the submission — a named failure with its log above; fix and re-submit, never skip"
+	fi
+	cat "$submit_log"
+}
+
+notary_submit_darwin_artifacts() {
+	# The darwin kernel pair, notarized in one zip (the prompt's S-2
+	# posture for the kernel artifacts). A bare Mach-O cannot be stapled
+	# (stapler takes .app/.dmg/.pkg): the ticket lives server-side against
+	# the signature's CDHash, which is what Gatekeeper's online check reads.
+	local dir="$1"
+	shift
+	local zip_path="$dir/darwin-notary.zip"
+	( cd "$dir" && zip -q darwin-notary.zip "$@" )
+	notary_submit "$zip_path"
+	rm -f "$zip_path"
 }
 
 TAG=""
@@ -611,21 +639,13 @@ process.stdout.write(String(config?.version ?? ""));
 # sign the artifact it just built.
 	if [[ -z "$ARTIFACT" ]]; then
 		command -v pnpm >/dev/null 2>&1 || die "pnpm is unavailable — the release artifact must be built by the bundler"
-		# THE NOTARY CREDENTIAL, before the build: the bundler notarizes AND
-		# staples in THIS invocation — the only ordering in which the staple
-		# rides the bundler's own updater archive (a hand-made tarball stalls
-		# the install; measured in III-4). The credential comes from the
-		# login keychain (read_notary_credentials), is handed to the one
-		# command's environment, and is never echoed, never logged, never
-		# written to a file this script creates.
-		read_notary_credentials
-		echo ">> building the release artifact (bundler archive + Developer ID signature + notarization + staple)…"
+		# NO notary environment here (see THE NOTARY CREDENTIAL above): the
+		# bundler Developer-ID-signs — the overlay pins the identity — and
+		# writes its own updater archive. Notarization is the LANE's act,
+		# below, through notarytool.
+		echo ">> building the release artifact (bundler archive + Developer ID signature)…"
 		(
 			cd "$SHELL_DIR"
-			APPLE_SIGNING_IDENTITY="$SIGNING_IDENTITY" \
-			APPLE_ID="$NOTARY_APPLE_ID" \
-			APPLE_PASSWORD="$NOTARY_PASSWORD" \
-			APPLE_TEAM_ID="$TEAM_ID" \
 			TAURI_SIGNING_PRIVATE_KEY="$SIGN_KEY" \
 			TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$PASSPHRASE" \
 				pnpm tauri build --bundles app --target universal-apple-darwin \
@@ -653,28 +673,57 @@ fi
 echo ">> walking the real-signed bundle for the pinned identity…"
 node "$SHELL_DIR/scripts/sidecar.mjs" verify "$BUNDLE" --expect-identity "$SIGNING_IDENTITY"
 
-# ── THE STAPLE GATES (III-5 · S-2) ─────────────────────────────────────────
+# ── THE NOTARIZATION + STAPLE GATES (III-5 · S-2, the lane's own steps) ────
 #
-# The bundler notarized (the env above drives it) and stapled. The question
-# only the ARTIFACT answers: did the staple ride the updater tarball? The
-# archive is extracted and the ticket validated FROM the shipped bytes —
-# not from the bundle directory, which the bundler touched before archiving.
-# Every gate is a lane step, never an inspection.
+# Every step is a lane step, never an inspection:
+#   1. THE ARCHIVE'S CONTENTS — the updater tarball is extracted and the
+#      walker re-runs INSIDE it: the shipped bytes carry the pinned
+#      Developer ID identity on every Mach-O. (The archive carries NO
+#      staple, on purpose — see THE NOTARY CREDENTIAL above; an update is
+#      never quarantined, so Gatekeeper never reads it.)
+#   2. THE SUBMISSION — the app is zipped (ditto, quarantine-safe) and
+#      submitted with `notarytool submit --keychain-profile stewardmem
+#      --wait`; a rejection is a named failure with the Notary log.
+#   3. THE STAPLE — `stapler staple` onto the app itself.
+#   4. THE OFFLINE PIN — `stapler validate` + `spctl --assess --type
+#      execute` on the STAPLED app: the ticket that makes a first launch
+#      clean even with the network down.
 command -v stapler >/dev/null 2>&1 || die "stapler is not on PATH (xcode-select) — the staple cannot be validated"
 command -v spctl >/dev/null 2>&1 || die "spctl is not on PATH — Gatekeeper's verdict cannot be a lane step"
-echo ">> extracting the updater artifact to verify the staple rode it…"
+command -v ditto >/dev/null 2>&1 || die "ditto is not on PATH — the app cannot be zipped for submission"
+
+echo ">> extracting the updater artifact to walk the shipped bytes…"
 STAPLE_DIR="$TMPDIR_SIGN/staple"
 mkdir -p "$STAPLE_DIR"
 tar -xzf "$ARTIFACT" -C "$STAPLE_DIR"
 EXTRACTED_APP="$STAPLE_DIR/$(basename "$BUNDLE")"
 [[ -d "$EXTRACTED_APP" ]] || die "the updater artifact does not carry the bundle at its top level: $(basename "$BUNDLE")"
-echo ">> stapler validate (the artifact's bundle)…"
-xcrun stapler validate "$EXTRACTED_APP" ||
-	die "the artifact's bundle carries no valid staple — the bundler's notarization did not reach the archive; fix and rebuild, never skip"
-echo ">> spctl --assess --type execute (the artifact's bundle)…"
-spctl --assess --type execute "$EXTRACTED_APP" ||
-	die "Gatekeeper refuses the artifact's bundle (spctl) — the staple or the signature is not acceptable; fix and rebuild, never skip"
-echo ">> the staple rode the artifact: stapler validate + spctl are green on the extracted bundle."
+echo ">> walking the archive's bundle for the pinned identity…"
+node "$SHELL_DIR/scripts/sidecar.mjs" verify "$EXTRACTED_APP" --expect-identity "$SIGNING_IDENTITY"
+
+NOTARY_ZIP="$TMPDIR_SIGN/$(basename "$BUNDLE").zip"
+echo ">> zipping the app for submission…"
+ditto -c -k --keepParent "$BUNDLE" "$NOTARY_ZIP"
+notary_submit "$NOTARY_ZIP"
+
+echo ">> stapling the app…"
+xcrun stapler staple "$BUNDLE" ||
+	die "stapler could not staple the app — the Notary ticket is missing or does not match this code; fix and re-submit, never skip"
+echo ">> stapler validate (the stapled app — the offline pin)…"
+xcrun stapler validate "$BUNDLE" ||
+	die "the stapled app does not validate — the staple did not take; fix and re-run, never skip"
+echo ">> spctl --assess --type execute (the stapled app)…"
+spctl --assess --type execute "$BUNDLE" ||
+	die "Gatekeeper refuses the stapled app (spctl) — the signature or the ticket is not acceptable; fix and re-run, never skip"
+echo ">> the stapled app validates: stapler validate + spctl are green."
+
+# The FIRST-INSTALL artifact: the stapled app, zipped for the release page.
+# A download is quarantined; the staple inside makes its first launch clean
+# even offline. Published beside the updater chain (three assets + this one).
+STAPLED_ZIP="$(dirname "$ARTIFACT")/$(basename "$BUNDLE").zip"
+rm -f "$STAPLED_ZIP"
+ditto -c -k --keepParent "$BUNDLE" "$STAPLED_ZIP"
+echo ">> the first-install artifact: $STAPLED_ZIP (stapled)."
 
 # ── THE PUBLICATION NAME ──────────────────────────────────────────────────
 #
@@ -806,6 +855,12 @@ fi
 command -v gh >/dev/null 2>&1 || die "gh is not on PATH — the chain cannot be published from here"
 echo ">> publishing the chain to $REPO_SLUG $TAG…"
 gh release upload "$TAG" "$ARTIFACT" "$SIGNATURE" "$MANIFEST" --repo "$REPO_SLUG" --clobber
+# The FOURTH asset: the stapled app for first install (the updater chain
+# stays exactly three — artefact, signature, manifest; this one is the
+# release page's download, quarantine + staple = an offline-clean first
+# launch). Published in the same act, so a release never half-carries it.
+[[ -f "$STAPLED_ZIP" ]] || die "the stapled first-install artifact is absent: $STAPLED_ZIP"
+gh release upload "$TAG" "$STAPLED_ZIP" --repo "$REPO_SLUG" --clobber
 echo ">> published. The updater's endpoint now resolves to this release's latest.json."
 
 # ── THE DARWIN KERNEL ARTIFACTS (III-5 · the shipped-binary story) ─────────
@@ -853,30 +908,10 @@ sign_darwin_release_artifacts() {
 		verify_apple_signature "$dir/$name"
 	done
 
-	# THE NOTARIZATION of the darwin pair — the prompt's literal posture:
-	# zip, submit with the operator's notarytool profile (--keychain-profile,
-	# which reads the data-protection keychain), --wait. A REJECTION is a
-	# named failure with the Notary log fetched by its submission id; it is
-	# fixed and re-submitted, never skipped. A bare Mach-O cannot be stapled
-	# (stapler takes .app/.dmg/.pkg): the ticket lives server-side against
-	# the signature's CDHash, which is what Gatekeeper's online check reads.
-	echo ">> zipping the signed darwin artifacts for notarization…"
-	( cd "$dir" && zip -q darwin-notary.zip "${assets[@]}" )
-	local submit_log submit_id
-	submit_log="$(mktemp)"
-	echo ">> submitting to the Notary service (--wait)…"
-	if ! xcrun notarytool submit "$dir/darwin-notary.zip" --keychain-profile stewardmem --wait > "$submit_log" 2>&1; then
-		cat "$submit_log" >&2
-		submit_id="$(sed -n 's/^[[:space:]]*id:[[:space:]]*//p' "$submit_log" | tail -1)"
-		if [[ -n "$submit_id" ]]; then
-			echo ">> the Notary log for submission $submit_id:" >&2
-			xcrun notarytool log "$submit_id" --keychain-profile stewardmem 2>&1 |
-				grep -iE '"webLogUrl"|"status"|"message"|issues' | head -20 >&2 || true
-		fi
-		die "the Notary service REJECTED the darwin artifacts — a named failure with its log above; fix and re-submit, never skip"
-	fi
-	cat "$submit_log"
-	rm -f "$dir/darwin-notary.zip"
+	# THE NOTARIZATION of the darwin pair — the prompt's literal posture,
+	# through the lane's shared submission helper (named failure with the
+	# Notary log on rejection; re-submitted, never skipped).
+	notary_submit_darwin_artifacts "$dir" "${assets[@]}"
 
 	local sums="$dir/SHA256SUMS"
 	local fresh="$dir/SHA256SUMS.fresh"
