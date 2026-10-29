@@ -1164,9 +1164,61 @@ test('the_private_updater_key_is_in_no_tracked_file_and_the_public_lane_never_si
 		).toBe(false);
 	}
 
-	// And the private lane is NAMED — a reader must be able to find where
-	// the signing happens without reading the whole tree.
-	expect(existsSync(signScriptPath), 'the signing lane is missing').toBe(true);
-	const lane = readFileSync(signScriptPath, 'utf8');
-	expect(lane).toContain('the public Actions must never SIGN the release (D6)');
-});
+	 // And the private lane is NAMED — a reader must be able to find where
+		// the signing happens without reading the whole tree.
+		expect(existsSync(signScriptPath), 'the signing lane is missing').toBe(true);
+		const lane = readFileSync(signScriptPath, 'utf8');
+		expect(lane).toContain('the public Actions must never SIGN the release (D6)');
+	});
+
+	/**
+	 * THE DMG'S OWN SIGNATURE (III-5, measured 2026-10-30 on macOS 27.2).
+	 *
+	 * Apple's "Packaging Mac software for distribution" names the disk image as
+	 * a thing you SIGN — `codesign -s <Developer ID Application> --timestamp
+	 * -i <identifier> <DiskImageFile>` — under the nested-container rule: sign
+	 * the app, the installer, AND the disk image; notarize only the outermost
+	 * container. The first v1.29.36 publication skipped the line, and the
+	 * measurement that found it was a comparison, not a guess: the Notary
+	 * ACCEPTS an unsigned image (the ticket binds to the image hash; the
+	 * staple validated) and the quarantined image mounted clean — exactly like
+	 * VLC's control DMG, which is also unsigned — but `syspolicy_check
+	 * distribution` on the app inside is where the real verdict lives (ours
+	 * passed every check; VLC failed offline with "Notary Ticket Missing"),
+	 * and the DOCUMENTED posture signs the image. The lane signs it before
+	 * notarization — so the notarization covers the SIGNED bytes — and gates
+	 * it with `verify_apple_signature` like every other Mach-O.
+	 *
+	 * This pin is STRUCTURAL (the R127 S2/S3 class): the DMG gate runs
+	 * operator-side with the real keychain, real identity, and the Notary
+	 * service — CI cannot drive it. The scan proves the LANE carries the law;
+	 * the evidence file records the behavioural run. The behavioural
+	 * conversion is the operator's next real lane run.
+	 */
+	test('the signing lane Developer-ID-signs the first-install DMG before notarizing it', () => {
+		const lane = readFileSync(signScriptPath, 'utf8');
+
+		// The DMG is signed with the PINNED identity, timestamped, identifier
+		// set — the documented posture, not a stronger-looking ad-hoc.
+		expect(
+			lane.includes('codesign --force --sign "$SIGNING_IDENTITY" --timestamp -i "com.stewardmem.shell" "$DMG"'),
+			'the lane must sign the DMG with the pinned Developer ID identity and a secure timestamp (Apple: "Packaging Mac software for distribution" — sign the app, the installer, AND the disk image)'
+		).toBe(true);
+
+		// The signature is GATED — the same verify_apple_signature every Mach-O
+		// passes, so an unsigned or wrongly-signed image dies before submission.
+		expect(
+			lane.includes('verify_apple_signature "$DMG"'),
+			'the signed DMG must pass verify_apple_signature before it is notarized'
+		).toBe(true);
+
+		// And the ORDER is the law: signing precedes notarization, so the
+		// notarization covers the SIGNED bytes (signing after would detach the
+		// ticket from the image it staples onto).
+		const signAt = lane.indexOf('codesign --force --sign "$SIGNING_IDENTITY" --timestamp -i "com.stewardmem.shell" "$DMG"');
+		const notaryAt = lane.indexOf('notary_submit "$DMG"');
+		expect(
+			signAt !== -1 && notaryAt !== -1 && signAt < notaryAt,
+			'the DMG is signed BEFORE it is notarized — the notarization must cover the signed bytes'
+		).toBe(true);
+	});

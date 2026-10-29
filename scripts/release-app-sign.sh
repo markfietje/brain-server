@@ -733,6 +733,21 @@ echo ">> the stapled app validates: stapler validate + spctl are green."
 # signed, stapled bytes). Then the DMG is notarized and stapled itself, so
 # the whole first-install path — download, mount, drag, launch — is clean
 # even offline: the copied app carries its own staple.
+#
+# THE DMG'S OWN SIGNATURE (measured 2026-10-30, macOS 27.2): Apple's
+# "Packaging Mac software for distribution" names the disk image as a
+# thing you SIGN — `codesign -s <Developer ID Application> --timestamp
+# -i <identifier> <DiskImageFile>` — under the nested-container rule (sign
+# the app, the installer, AND the disk image; notarize only the outermost
+# container). The first publication skipped this line: the Notary ACCEPTS
+# an unsigned image (the ticket binds to the image hash, and the staple
+# validated) and the quarantined image MOUNTED clean — but VLC's control
+# DMG measured identical (unsigned, mounts clean), so practice tolerates
+# it while the DOCUMENTED posture does not. The lane now signs the image
+# before it is notarized — the notarization then covers the SIGNED bytes —
+# and `verify_apple_signature` gates it like every other Mach-O. (macOS
+# 27.2 deprecates `hdiutil create/attach` in favour of `diskutil image
+# create/attach`; recorded, not churned — the command still works.)
 command -v hdiutil >/dev/null 2>&1 || die "hdiutil is not on PATH — the DMG cannot be built"
 DMG_DIR="$TMPDIR_SIGN/dmg"
 DMG_STAGING="$DMG_DIR/$(basename "$BUNDLE")"
@@ -744,6 +759,10 @@ rm -f "$DMG"
 hdiutil create -volname "StewardMem" -srcfolder "$DMG_DIR" -ov -format UDZO "$DMG" > /dev/null ||
 	die "hdiutil could not build the DMG"
 [[ -f "$DMG" ]] || die "the DMG is absent after hdiutil: $DMG"
+echo ">> signing the DMG with the Developer ID identity…"
+codesign --force --sign "$SIGNING_IDENTITY" --timestamp -i "com.stewardmem.shell" "$DMG" ||
+	die "codesign could not sign the DMG — the image cannot ship unsigned (Apple's distribution posture names the disk image)"
+verify_apple_signature "$DMG"
 echo ">> notarizing the DMG…"
 notary_submit "$DMG"
 echo ">> stapling the DMG…"
