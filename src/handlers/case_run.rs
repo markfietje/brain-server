@@ -883,8 +883,9 @@ pub(crate) mod tests {
         // through the state core — handlers are protocol adapters, tests
         // included; the SQL inventory pins it).
         let conn = f.state.pool.get().unwrap();
-        let (_, _, status, _, revision) =
-            crate::workflow::state::launch_row(&conn, run_id).unwrap().unwrap();
+        let (_, _, status, _, revision) = crate::workflow::state::launch_row(&conn, run_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(status, "active");
         assert_eq!(revision, 0, "a refused launch leaves the run fresh");
     }

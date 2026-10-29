@@ -674,7 +674,9 @@ fn framed(source: &'static str, text: &str) -> Result<String, ContextError> {
 /// The shared fence framing (one label vocabulary; the shaping law is the
 /// caller's decision).
 fn framed_text(source: &str, shaped: String) -> Result<String, ContextError> {
-    Ok(crate::fence::wrap_fenced(&format!("Source: {source}\n{shaped}")))
+    Ok(crate::fence::wrap_fenced(&format!(
+        "Source: {source}\n{shaped}"
+    )))
 }
 
 /// Model-authored assistant text replays under the PROSE law — the same
