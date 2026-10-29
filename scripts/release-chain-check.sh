@@ -40,7 +40,7 @@ ATTEMPTS="${2:-6}"
 INTERVAL="${3:-10}"
 
 if [[ -z "$URL" ]]; then
-  URL="https://github.com/markfietje/brain-server/releases/latest/download/latest.json"
+  URL="https://github.com/stewardmem/stewardmem/releases/latest/download/latest.json"
 fi
 
 if ! command -v curl >/dev/null 2>&1; then

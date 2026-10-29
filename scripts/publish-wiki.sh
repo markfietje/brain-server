@@ -12,7 +12,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_DIR="$REPO_ROOT/wiki"
-WIKI_REMOTE="git@github.com:markfietje/brain-server.wiki.git"
+WIKI_REMOTE="git@github.com:stewardmem/stewardmem.wiki.git"
 WORK="$(mktemp -d /tmp/brain-server-wiki-publish.XXXXXX)"
 
 trap 'rm -rf "$WORK"' EXIT
@@ -41,7 +41,7 @@ if ! git -C "$WORK" diff --cached --quiet HEAD >/dev/null 2>&1; then
   git -C "$WORK" commit -m "Publish Brain Server wiki" >/dev/null
   echo ">> Pushing to $WIKI_REMOTE"
   git -C "$WORK" push -u origin master --force-with-lease
-  echo ">> Wiki published to https://github.com/markfietje/brain-server/wiki"
+  echo ">> Wiki published to https://github.com/stewardmem/stewardmem/wiki"
 else
   echo ">> No changes to publish (wiki/ already matches the remote)."
 fi

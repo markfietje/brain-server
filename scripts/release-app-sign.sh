@@ -2,7 +2,7 @@
 # III-7 — the SIGNING LANE: the one place the private key exists.
 #
 # Usage:
-#   scripts/release-app-sign.sh --tag v1.29.27 [--repo markfietje/brain-server] [--dry-run]
+#   scripts/release-app-sign.sh --tag v1.29.27 [--repo stewardmem/stewardmem] [--dry-run]
 #   scripts/release-app-sign.sh --tag v1.29.27 --artifact "dist/Brain Shell.app.tar.gz" \
 #                               --bundle "dist/Brain Shell.app" [--dry-run]
 #
@@ -76,10 +76,10 @@ DEFAULT_PUBLIC_KEY="$HOME/.config/brain-server/updater.key.pub"
 
 # The PUBLIC repository. The public Actions must never hold the key, and
 # this is where that law is enforced rather than merely intended.
-PUBLIC_REPO="markfietje/brain-server"
+PUBLIC_REPO="stewardmem/stewardmem"
 
 TAG=""
-REPO_SLUG="markfietje/brain-server"
+REPO_SLUG="stewardmem/stewardmem"
 SECRET_KEY="$DEFAULT_SECRET_KEY"
 PUBLIC_KEY="$DEFAULT_PUBLIC_KEY"
 ARTIFACT=""
@@ -104,7 +104,7 @@ die() {
 usage() {
 	cat >&2 <<'USAGE'
 usage:
-  scripts/release-app-sign.sh --tag vX.Y.Z [--repo markfietje/brain-server] [--dry-run]
+  scripts/release-app-sign.sh --tag vX.Y.Z [--repo stewardmem/stewardmem] [--dry-run]
   scripts/release-app-sign.sh --tag vX.Y.Z --artifact <file.tar.gz> --bundle <App.app> [--dry-run]
 
 options:
@@ -176,7 +176,7 @@ done
 #
 # THE REFUSAL LIVES WITH THE SIGNING STEP, where the key is used.
 signing_refused_in_public_actions() {
-	[[ "${GITHUB_ACTIONS:-}" == "true" && "${GITHUB_REPOSITORY:-}" == "markfietje/brain-server" ]]
+	[[ "${GITHUB_ACTIONS:-}" == "true" && "${GITHUB_REPOSITORY:-}" == "stewardmem/stewardmem" ]]
 }
 
 TMPDIR_SIGN="$(mktemp -d)"
@@ -322,7 +322,7 @@ fs.writeFileSync(process.argv[2], Buffer.from(process.argv[1].trim(), "base64").
 # refuse for an unrelated reason, so the refusal a caller sees in the public
 # Actions is about the SIGNING and not about the tree it happened to be in.
 signing_refused_in_public_actions() {
-	[[ "${GITHUB_ACTIONS:-}" == "true" && "${GITHUB_REPOSITORY:-}" == "markfietje/brain-server" ]]
+	[[ "${GITHUB_ACTIONS:-}" == "true" && "${GITHUB_REPOSITORY:-}" == "stewardmem/stewardmem" ]]
 }
 
 if signing_refused_in_public_actions; then

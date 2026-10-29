@@ -239,7 +239,7 @@ echo "=== waiting for the release to publish ==="
 RELEASED=0
 for _ in $(seq 1 240); do  # ≤ 120 min at 30s — the release jobs' own timeout
   if command -v gh >/dev/null 2>&1 && \
-     gh release view "$TAG" --repo "markfietje/brain-server" --json isDraft --jq '.isDraft' 2>/dev/null | grep -qx false; then
+     gh release view "$TAG" --repo "stewardmem/stewardmem" --json isDraft --jq '.isDraft' 2>/dev/null | grep -qx false; then
     RELEASED=1
     break
   fi
@@ -248,7 +248,7 @@ done
 if [[ "$RELEASED" != "1" ]]; then
   echo "error: the release for ${TAG} did not publish within 120 minutes — the chain" >&2
   echo "       cannot be published onto a release that does not exist. Inspect:" >&2
-  echo "       https://github.com/markfietje/brain-server/actions" >&2
+  echo "       https://github.com/stewardmem/stewardmem/actions" >&2
   exit 1
 fi
 echo "-- the release is published; publishing its chain."
@@ -301,10 +301,10 @@ else
   echo "error: the updater's endpoint does NOT answer for ${TAG}." >&2
   echo "       The release is published, but the address the application fetches" >&2
   echo "       is dead — so the updater cannot update. Inspect:" >&2
-  echo "       https://github.com/markfietje/brain-server/releases/latest" >&2
+  echo "       https://github.com/stewardmem/stewardmem/releases/latest" >&2
   exit 1
 fi
-echo "Chain:   https://github.com/markfietje/brain-server/releases/latest/download/latest.json"
+echo "Chain:   https://github.com/stewardmem/stewardmem/releases/latest/download/latest.json"
 
 if command -v gh >/dev/null 2>&1; then
   # The COMMIT the tag points at, never the tag object.
@@ -328,7 +328,7 @@ if command -v gh >/dev/null 2>&1; then
   # of the defect above, and just as wrong.
   RUN_SEEN=""
   for _ in $(seq 1 20); do  # ≤ 10 min for the runs to register after the push
-    RUN_SEEN="$(gh run list --repo markfietje/brain-server --commit "$SHA" \
+    RUN_SEEN="$(gh run list --repo stewardmem/stewardmem --commit "$SHA" \
                  --json databaseId,headBranch \
                  --jq "[.[] | select(.headBranch == \"$TAG\")] | .[0].databaseId // empty" \
                  2>/dev/null || true)"
@@ -339,7 +339,7 @@ if command -v gh >/dev/null 2>&1; then
     echo "error: no public runs registered for ${TAG} (${SHA:0:10}) within 10 min" >&2
     echo "       — the tag triggered nothing observable. Nothing was witnessed, and" >&2
     echo "       release.yml cannot have published without its own fail-closed check." >&2
-    echo "       Inspect: https://github.com/markfietje/brain-server/actions" >&2
+    echo "       Inspect: https://github.com/stewardmem/stewardmem/actions" >&2
     exit 1
   fi
   # THE WITNESS. `scripts/release-watch.sh` owns the verdict, so ONE
@@ -358,7 +358,7 @@ if command -v gh >/dev/null 2>&1; then
   # the release line has.
   #
   # So: no runs observed is UNKNOWN, and UNKNOWN keeps the watch alive.
-  REPO_SLUG="markfietje/brain-server"
+  REPO_SLUG="stewardmem/stewardmem"
   WATCH_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-watch.sh"
   VERDICT=""
   VERDICT_RC=0
@@ -370,7 +370,7 @@ if command -v gh >/dev/null 2>&1; then
     1)
       echo "error: public runs concluded not-green (${VERDICT#RED}). Nothing published:" >&2
       echo "       release.yml refuses to ship over a red matrix. Inspect:" >&2
-      echo "       https://github.com/markfietje/brain-server/actions" >&2
+      echo "       https://github.com/stewardmem/stewardmem/actions" >&2
       exit 1
       ;;
     3)
@@ -379,11 +379,11 @@ if command -v gh >/dev/null 2>&1; then
       ;;
     *)
       echo "warning: no green verdict for $TAG within 75 min — keep watching:" >&2
-      echo "         https://github.com/markfietje/brain-server/actions" >&2
+      echo "         https://github.com/stewardmem/stewardmem/actions" >&2
       echo "         Publication stays fail-closed until they land green." >&2
       exit 0
       ;;
   esac
 fi
-echo "Watch it: https://github.com/markfietje/brain-server/actions"
-echo "Result:   https://github.com/markfietje/brain-server/releases"
+echo "Watch it: https://github.com/stewardmem/stewardmem/actions"
+echo "Result:   https://github.com/stewardmem/stewardmem/releases"
