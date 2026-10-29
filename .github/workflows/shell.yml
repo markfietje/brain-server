@@ -263,14 +263,21 @@ jobs:
       - name: Stage both kernel arches, lipo, write provenance
         run: node shell/scripts/sidecar.mjs stage
 
-      - name: Build the universal app bundle (ad-hoc, hardened runtime)
+      # ARM64-ONLY (the operator's decision, 2026-10-29, III-5): the app
+      # mirrors the shipped shape. APPLE_SIGNING_IDENTITY overrides the
+      # overlay's Developer ID pin back to ad-hoc — the public Actions hold
+      # no certificate and must never sign (D6); the real identity lives in
+      # the signing lane.
+      - name: Build the arm64 app bundle (ad-hoc, hardened runtime)
         working-directory: shell
-        run: pnpm tauri build --bundles app --target universal-apple-darwin
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: pnpm tauri build --bundles app --target aarch64-apple-darwin
 
       - name: Verify every Mach-O in the real bundle
         run: |
           node shell/scripts/sidecar.mjs verify \
-            "shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/StewardMem.app"
+            "shell/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/StewardMem.app"
 
       # The phase's red-proof, on the REAL bundle: /bin/echo is Apple-signed,
       # so merely copying it stays green — the signature must be STRIPPED.
@@ -279,7 +286,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bundle="shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/StewardMem.app"
+          bundle="shell/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/StewardMem.app"
           scratch="$(mktemp -d)"
           trap 'rm -rf "$scratch"' EXIT
           cp -R "$bundle" "$scratch/StewardMem.app"
@@ -299,4 +306,4 @@ jobs:
 
       - name: Bundled sidecar answers with the recorded version
         run: |
-          "shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/StewardMem.app/Contents/MacOS/brain-server" --version
+          "shell/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/StewardMem.app/Contents/MacOS/brain-server" --version
