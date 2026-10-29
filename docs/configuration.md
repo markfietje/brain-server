@@ -1,6 +1,6 @@
 # Configuration
 
-Brain Server is configured entirely through **environment variables** — there is no config file to edit. Most resolve in `src/config.rs`; a few live in the module that owns them (`BIND_*` in `src/server/bootstrap.rs`, the `PRF_*`/`QUALITY_*` retrieval knobs in `src/config.rs` + `src/search/`, `CAPACITY_*` in `src/capacity.rs`, `MCP_*` in `src/bin/mcp.rs`). This page is the complete reference, grouped by concern.
+StewardMem is configured entirely through **environment variables** — there is no config file to edit. Most resolve in `src/config.rs`; a few live in the module that owns them (`BIND_*` in `src/server/bootstrap.rs`, the `PRF_*`/`QUALITY_*` retrieval knobs in `src/config.rs` + `src/search/`, `CAPACITY_*` in `src/capacity.rs`, `MCP_*` in `src/bin/mcp.rs`). This page is the complete reference, grouped by concern.
 
 ## Core server
 

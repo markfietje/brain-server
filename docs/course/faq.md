@@ -7,7 +7,7 @@ ask) searching for how to give an AI agent trustworthy memory.
 ## What is an AI memory server?
 
 A server that stores knowledge for an AI agent and hands the right facts
-back at the right moment, deterministically. Brain Server is one: a
+back at the right moment, deterministically. StewardMem is one: a
 single self-hosted Rust binary over one SQLite file. The agent asks, the
 server recalls, nothing in between non-deterministically decides
 anything. See [the course](README.md) or

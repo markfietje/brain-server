@@ -1,10 +1,10 @@
 # FAQ
 
-Frequently asked questions about **Brain Server** — the local-first governed decision and memory substrate for AI agents.
+Frequently asked questions about **StewardMem** — the local-first governed decision and memory substrate for AI agents.
 
 ## General
 
-**What is Brain Server?**
+**What is StewardMem?**
 A local-first governed decision and memory substrate for AI agents. It gives an agent a second brain that lives on the operator's own device — private, offline-capable, deterministic, and free to run.
 
 **Is it really free?**
@@ -31,7 +31,7 @@ Call `POST /recall` with a `QueryDoc`, or use `brain query "..."`. See **[Retrie
 Yes — two GUIs. The **Dioxus control surface** (`client/`, web + desktop) is what `/app` serves by default; the **SvelteKit + Tauri shell** (`shell/`) is the successor under active development, over the same API. In both, `mobile` is a compile-smoke target only; no store submission has shipped. See the **[Client GUI](./client-gui.md)**.
 
 **Does it work with OpenClaw?**
-Yes — Brain Server is the memory backend for OpenClaw via a `kind: "memory"` plugin. See the **[OpenClaw Integration](./openclaw-integration.md)** page.
+Yes — StewardMem is the memory backend for OpenClaw via a `kind: "memory"` plugin. See the **[OpenClaw Integration](./openclaw-integration.md)** page.
 
 ## Capability
 

@@ -2,7 +2,7 @@
 
 > **The human in the loop is a job, not a place.**
 
-Brain Server does not treat a human reviewer as a checkbox in the pipeline. It treats
+StewardMem does not treat a human reviewer as a checkbox in the pipeline. It treats
 human judgment as a **work product** — a real task with real tooling, real time, and
 real consequences — and it is designed so that the operator can actually *do* that job
 well instead of rubber-stamping a queue.
@@ -42,17 +42,17 @@ human-in-the-loop story — it is decoration.
 ### A system designed *against* its own failure modes
 
 The four failure modes below are not hypotheticals. They are the documented failure
-modes of human-supervised automation, and Brain Server is engineered so that the *default
+modes of human-supervised automation, and StewardMem is engineered so that the *default
 behaviour* of the machine does not push the operator into them:
 
 - **Out-of-the-loop skill loss** (Bainbridge, 1983) — the operator was *never in* the loop,
-  so they never learned to judge. Brain Server's proposals carry a scoring breakdown and a
+  so they never learned to judge. StewardMem's proposals carry a scoring breakdown and a
   sourcing prompt so judgment is *trained*, not assumed.
 - **Automation bias** (Parasuraman & Manzey, 2010) — errors of *omission* (trusting the
   machine, not checking) and *commission* (blindly following it). The review card never
   presents a bare "accept/dismiss" binary — it always shows *why*.
 - **The explainability paradox** (Harvard Business School, 2024) — a confident,
-  shallow explanation makes a reviewer **less** critical. Brain Server shows you *raw
+  shallow explanation makes a reviewer **less** critical. StewardMem shows you *raw
   evidence* (the actual span, source URI, revision, heading, line range) — not a summary
   that someone else wrote.
 - **The moral crumple zone** (Millar) — the human is blamed for an outcome the automation
@@ -68,7 +68,7 @@ behaviour* of the machine does not push the operator into them:
 
 ## 2. What reaches the human, and what never does
 
-Brain Server is deterministic by design — *recall* and *retrieval* run with no LLM in the
+StewardMem is deterministic by design — *recall* and *retrieval* run with no LLM in the
 hot path (the OPTIONAL operator-launched GDL provider lane for GDL runs is the one provider call
 the server can make, and it sits outside recall/retrieval entirely). But **write-back** — the decision of whether a captured fragment becomes part of
 the permanent memory — is a *human* decision. That is the boundary, and it is deliberate.
@@ -483,7 +483,7 @@ a slower path for power users in exchange for a smaller surface for the machine.
 ## Next steps
 
 - **Features** — the full capability tour: [Features](./features.md)
-- **Overview** — why Brain Server exists: [Overview](./overview.md)
+- **Overview** — why StewardMem exists: [Overview](./overview.md)
 - **The memory lifecycle** — capture → gate → store → retain → recall → erase, end to end: [Memory lifecycle](./memory-lifecycle.md)
 - **Client GUI** — every panel of the control room: [Client GUI](./client-gui.md)
 - **MemGhost mitigation** — why the human gate is the poisoning countermeasure: [MemGhost](./MEMGHOST_MITIGATION.md)

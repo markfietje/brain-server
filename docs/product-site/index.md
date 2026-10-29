@@ -1,16 +1,16 @@
-# Brain Server
+# StewardMem
 
 **Governed, local-first memory and decision infrastructure for AI agents.
 Deterministic, privacy-preserving, human-auditable.**
 
-Brain Server gives an agent a second brain that lives on the operator's own
+StewardMem gives an agent a second brain that lives on the operator's own
 device. Recall never has to think: a static, local embedding model plus a
 deterministic retrieval pipeline answer the question *without* an LLM deciding,
 *without* an embedding API on every read and write, and *without* data leaving
 the machine.
 
 The one-line framing for 2026: **your agent's memory is a compliance time bomb.
-Brain Server is the tamper-evident, human-gated memory store that defuses it.**
+StewardMem is the tamper-evident, human-gated memory store that defuses it.**
 
 ---
 

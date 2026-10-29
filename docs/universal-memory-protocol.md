@@ -1,8 +1,8 @@
 # Universal Memory Protocol (UMP 1.0)
 
-**Universal Memory Protocol** is an open standard for portable agent memory. The spec lives at [github.com/edihasaj/universal-memory-protocol](https://github.com/edihasaj/universal-memory-protocol). Brain Server implements it end to end, so memory written by one UMP agent can be read, verified, and reused by another, without a shared database or vendor lock-in.
+**Universal Memory Protocol** is an open standard for portable agent memory. The spec lives at [github.com/edihasaj/universal-memory-protocol](https://github.com/edihasaj/universal-memory-protocol). StewardMem implements it end to end, so memory written by one UMP agent can be read, verified, and reused by another, without a shared database or vendor lock-in.
 
-This page explains what the Universal Memory Protocol is, what Brain Server supports, and how to use it.
+This page explains what the Universal Memory Protocol is, what StewardMem supports, and how to use it.
 
 ## Why a memory protocol exists
 
@@ -15,16 +15,16 @@ The Universal Memory Protocol fixes that the way HTTP fixed web pages. It define
 - **Integrity.** Records can be signed by the owner's key, so a reader can prove the record is authentic and untampered.
 - **Bindings.** The same records move over HTTP, as MCP tools, and as plain files (markdown or JSON).
 
-Brain Server speaks all three bindings, so it can act as any agent's portable memory shelf.
+StewardMem speaks all three bindings, so it can act as any agent's portable memory shelf.
 
-## What Brain Server implements
+## What StewardMem implements
 
 Conformance is verified against the reference suite (`@universalmemoryprotocol/core`
 1.0.0): **13/13 checks, UMP 1.0 / L3** on a fresh keyed instance, re-run by CI on
 every push (the `integration` job asserts the badge line). The level
 definitions map to brain-server as follows:
 
-| Level | What it means | Brain Server status |
+| Level | What it means | StewardMem status |
 |---|---|---|
 | L0 | Portable records over file bindings | Full |
 | L1 | Server read/write operations | Full |
@@ -156,7 +156,7 @@ Each record is processed independently and gets its own status, so one invalid r
 
 ## MCP tools
 
-The MCP server mirrors the HTTP surface, so an MCP-capable agent talks to Brain Server without writing HTTP.
+The MCP server mirrors the HTTP surface, so an MCP-capable agent talks to StewardMem without writing HTTP.
 
 - `ump.capabilities`
 - `ump.remember`

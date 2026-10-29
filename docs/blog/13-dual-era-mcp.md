@@ -85,7 +85,7 @@ server posture isn't "upgrade everyone" (you can't) and isn't "freeze forever"
 and serves both faithfully, with the strictness turned up, not down, because
 two grammars means twice the injection surface.
 
-*The dispatcher is [`src/bin/mcp.rs`](https://github.com/markfietje/brain-server/blob/main/src/bin/mcp.rs);
+*The dispatcher is [`src/bin/mcp.rs`](https://github.com/stewardmem/stewardmem/blob/main/src/bin/mcp.rs);
 tool-level docs live in the [MCP server guide](../mcp.md), and the OpenClaw
 plugin wiring that uses it is covered in
 [OpenClaw integration](../openclaw-integration.md).*

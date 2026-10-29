@@ -1,12 +1,12 @@
 # Overview
 
-![Brain Server hero](assets/hero-light.png)
+![StewardMem hero](assets/hero-light.png)
 
-Brain Server is a **deterministic decision and memory substrate for teams and their AI agents**.
+StewardMem is a **deterministic decision and memory substrate for teams and their AI agents**.
 
 It is one Rust binary that stores what a team knows — past resolutions, runbooks, KB articles, decisions, customer context — and both *recalls* it and supports the structured decisions that depend on it **the same way every time**, on the operator's own hardware: private, offline-capable, no per-query cost on the hot path, and a human gate on everything an **agent** writes into permanent state (direct operator/API writes are screened and audited, and can be gated too — see `BRAIN_WRITE_POSTURE`).
 
-The core idea is simple: **recall that never has to think, and decisions that leave a trace**. Instead of asking a language model whether to recall, and instead of paying an embedding API on every read and write, Brain Server uses a static, local embedding model and a deterministic retrieval pipeline. Permanent writes and configuration changes remain under explicit human control, and every significant action lands on a tamper-evident audit chain.
+The core idea is simple: **recall that never has to think, and decisions that leave a trace**. Instead of asking a language model whether to recall, and instead of paying an embedding API on every read and write, StewardMem uses a static, local embedding model and a deterministic retrieval pipeline. Permanent writes and configuration changes remain under explicit human control, and every significant action lands on a tamper-evident audit chain.
 
 This is not a toy or a "local RAG." It is the compliance-grade substrate that enterprises deploy when both memory *and* the decisions that depend on it must be private, explainable, and under human control.
 
@@ -21,7 +21,7 @@ structural costs that don't fit every use case:
 2. **Data egress** — the agent's memory lives in someone else's datacenter.
 3. **Network latency** — recall waits on a round-trip to the cloud.
 
-Brain Server inverts all three: **zero per-query cost, zero data egress on the
+StewardMem inverts all three: **zero per-query cost, zero data egress on the
 retrieval path, zero
 network latency on recall.** (Operator-configured egress exists and is pinned
 at the boundary: webhook/DSAR sinks, OIDC/JWKS fetch, the loop engine's
@@ -108,7 +108,7 @@ verdict on every card, with every decision written to a tamper-evident audit cha
 
 ## One-line positioning
 
-> **Brain Server is a deterministic, self-hosted knowledge server for teams
+> **StewardMem is a deterministic, self-hosted knowledge server for teams
 > and their AI agents — one binary that stores what your team knows, recalls
 > it the same way every time, and never lets a write bypass a human.**
 
@@ -129,6 +129,6 @@ See **[The memory lifecycle](./memory-lifecycle.md)** for the full end-to-end pa
 takes from capture to storage, retention, recall, and erasure — and
 [Human in the loop](./human-in-the-loop.md) for the review gate + erasure procedure.
 
-**One-line positioning:** Brain Server is a local-first, governed decision and memory substrate for reproducible agent systems — deterministic retrieval, human-gated permanent state, and tamper-evident provenance.
+**One-line positioning:** StewardMem is a local-first, governed decision and memory substrate for reproducible agent systems — deterministic retrieval, human-gated permanent state, and tamper-evident provenance.
 
 Continue to the [Quickstart](./quickstart.md) to get running.

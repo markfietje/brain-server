@@ -1,11 +1,11 @@
-# Brain Server — Who it's for (target audiences)
+# StewardMem — Who it's for (target audiences)
 
-> **Meta description:** Brain Server is a local-first, offline, deterministic
+> **Meta description:** StewardMem is a local-first, offline, deterministic
 > decision and memory substrate for AI agents. Zero token cost,
 > human-gated writes, GDPR/DSAR erasure, SHA-256 audit, and the current MCP
 > 2026-07-28 stateless protocol — all in one self-hosted Rust binary.
 
-Brain Server is a **local-first, offline, deterministic decision and
+StewardMem is a **local-first, offline, deterministic decision and
 memory substrate for AI agents**. This page maps the product's **shipped**
 capabilities to the **concrete people and teams** who use them, so you can tell
 at a glance whether it fits your job — and exactly what you'd get.
@@ -97,7 +97,7 @@ The v2.0 "Cortex" milestone is explicitly **call-center intelligence**. The
 *controls* those teams need are largely **shipped today** (isolation, audit,
 DSAR, PII, human-gated writes); the *shared-tenant packaging* is the planned part.
 
-| Who you are | What you need | What Brain Server gives you | Status |
+| Who you are | What you need | What StewardMem gives you | Status |
 |---|---|---|---|
 | **BPO (Business Process Outsourcer)** | Serve multiple client accounts with hard isolation; per-client agent-assist memory; per-client audit + DSAR; PII containment | Per-domain isolation, per-tenant audit chain, DSAR + deletion certificates, PII redaction, human write-gate | Per-client domains, DSAR, holds, termination, QA queue and the complaint lifecycle ship today (v1.27–1.28.62, including warm standby and the Attestation line's provenance marks + kill-switch); shared-backend multi-team tenancy remains v2.0 Cortex |
 | **In-house contact / call center** | One org, many teams; agent memory that recalls past resolutions, policies, customer context; supervision + audit | Deterministic recall, knowledge graphs, temporal evidence, HITL write gate, audit chain, reviewer-calibration strip | **Shipped** (single-org form); multi-team packaging in v2.0 |
@@ -111,10 +111,10 @@ through the proposal queue to see the human write-gate in action.
 
 ## 2. Enterprise & regulated industries (sovereignty)
 
-Brain Server is **self-hosted, offline-capable, and audited**, so it fits
+StewardMem is **self-hosted, offline-capable, and audited**, so it fits
 organizations for whom memory must stay in-house and be provable.
 
-| Who you are | What you need | What Brain Server gives you | Status |
+| Who you are | What you need | What StewardMem gives you | Status |
 |---|---|---|---|
 | **Financial services** | PII containment, immutable audit, DSAR (GDPR/CCPA), no data egress | SHA-256 audit chain, read-time PII redaction, DSAR/certificates, loopback-only default | **Shipped** |
 | **Healthcare & clinical** | Local records, on-prem, explainable recall, erasure | Local-first, `/verify` span check, DSAR, `/.well-known/ai-notice` | **Shipped** |
@@ -131,7 +131,7 @@ footprint with zero erasure. Both are live, audited endpoints.
 The current primary audience — teams and individuals building agents that need
 memory.
 
-| Who you are | What you need | What Brain Server gives you | Status |
+| Who you are | What you need | What StewardMem gives you | Status |
 |---|---|---|---|
 | **OpenClaw users** | Deterministic memory in the memory slot, zero token cost | Native `kind: "memory"` plugin (autoRecall / autoCapture / Proposal), plugin 0.6.11 | **Shipped** |
 | **Agent / LLM developers** | A self-hosted memory store with standard contracts | Open HTTP API, **MCP** binary, OpenAPI, **UMP 1.0 L3** | **Shipped** |
@@ -145,21 +145,21 @@ memory.
 
 ## 4. Edge, field & hardware deployments
 
-| Who you are | What you need | What Brain Server gives you | Status |
+| Who you are | What you need | What StewardMem gives you | Status |
 |---|---|---|---|
 | **Retail / logistics field ops** | Offline memory on thin hardware | Single binary, low power, Jetson / Raspberry Pi | **Shipped** |
 | **Industrial / remote / air-gapped sites** | No cloud dependency, deterministic | Local static embeddings, no retrieval-path egress | **Shipped** |
 
 ## 5. Knowledge workers & individuals
 
-| Who you are | What you need | What Brain Server gives you | Status |
+| Who you are | What you need | What StewardMem gives you | Status |
 |---|---|---|---|
 | **Personal-knowledge (PKM) users** | A private second brain, temporal recall | Domains (health/business/code), point-in-time recall | **Shipped** |
 | **Researchers & academics** | A reproducible memory/RAG substrate | Open source, benchmark harness, frozen judged corpus | **Shipped** |
 
 ## 6. Ecosystem & delivery partners
 
-| Who you are | What you need | What Brain Server gives you | Status |
+| Who you are | What you need | What StewardMem gives you | Status |
 |---|---|---|---|
 | **SIs / MSPs / consultants** | A deployable, auditable memory layer to stand up for clients | One binary, edge-ready, documented deployment + DSAR drills | **Shipped** |
 | **Platform / tooling vendors** | An embeddable, standard memory contract | UMP 1.0 L3, MCP 2026-07-28, OpenAPI | **Shipped** |
@@ -168,7 +168,7 @@ memory.
 
 ## Why it's genuinely useful (the practical cases)
 
-Beyond the tables, here is what Brain Server does that most "agent memory"
+Beyond the tables, here is what StewardMem does that most "agent memory"
 solutions don't — in terms a buyer can hand to a decision-maker:
 
 - **Zero-cost recall.** Because embeddings are local/static and the recall
@@ -202,7 +202,7 @@ solutions don't — in terms a buyer can hand to a decision-maker:
 Being direct saves everyone a wasted proof-of-concept:
 
 - **You need shared multi-tenant SaaS** — several customer accounts on one
-  hosted backend with per-tenant limits and billing. Brain Server is single-node
+  hosted backend with per-tenant limits and billing. StewardMem is single-node
   and per-tenant-isolation is **per-domain on separate nodes** until v2.0.
 - **You want a hosted, managed memory API** with no ops. This is self-hosted; you
   run the binary and the SQLite file.
@@ -222,7 +222,7 @@ Being direct saves everyone a wasted proof-of-concept:
 
 ## Frequently asked questions
 
-**Is Brain Server free / self-hosted?**
+**Is StewardMem free / self-hosted?**
 Open source, MIT-licensed, self-hosted. One Rust binary + one SQLite file; no
 cloud dependency and no telemetry.
 

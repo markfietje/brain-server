@@ -1,6 +1,6 @@
 # Retrieval & Recall
 
-This page explains **how Brain Server finds the right memory** — the retrieval pipeline, the fusion algorithm, query expansion, and how it stays honest when it doesn't know the answer. No LLM decides here; everything is deterministic and inspectable.
+This page explains **how StewardMem finds the right memory** — the retrieval pipeline, the fusion algorithm, query expansion, and how it stays honest when it doesn't know the answer. No LLM decides here; everything is deterministic and inspectable.
 
 ## The retrieval pipeline
 

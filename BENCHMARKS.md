@@ -1,4 +1,4 @@
-# Brain Server Benchmarks — "Better than QMD" measurement plan
+# StewardMem Benchmarks — "Better than QMD" measurement plan
 
 > Status: **measured, incrementally.** The protocol below is the reproducible
 > contract; dated result sections (capacity envelopes v0.9.9+, recall-quality
@@ -12,12 +12,12 @@
 
  "Better than QMD" is a **measured** claim, not a list of features. This document fixes
 the workload, hardware, metrics, and commands so a third party can reproduce every number
-Brain Server publishes.
+StewardMem publishes.
 
 ## "Better than QMD" measurement rules
 
 1. **Same everything.** Use the **same corpus, chunking, judged queries, and hardware**
-   for Brain Server and QMD. No cherry-picked subsets.
+   for StewardMem and QMD. No cherry-picked subsets.
 2. **Quality must match/exceed on:** `recall@5`, `recall@10`, `nDCG@10`, `MRR`, and
    answer-grounding/citation accuracy.
 3. **Edge win is mandatory on 4 GB ARM.** The default profile must show a documented win
@@ -82,7 +82,7 @@ All ranking metrics are implemented in `tests/metrics.rs` (`recall_at_k`,
 
 ## Configurations under test
 
-Four Brain Server profiles plus the two QMD reference profiles:
+Four StewardMem profiles plus the two QMD reference profiles:
 
 > **Note (v0.9.5, `3fcac72`):** **BS-4 is suspended.** The rerank tier was
 > deleted entirely (Cargo feature flag + `src/search/rerank.rs`), so
@@ -93,10 +93,10 @@ Four Brain Server profiles plus the two QMD reference profiles:
 
 | Config ID | System | Profile | Notes |
 |---|---|---|---|
-| BS-1 | Brain Server | dense-only | vector retrieval only (no FTS/PRF/rerank) |
-| BS-2 | Brain Server | hybrid | dense + FTS, RRF fusion |
-| BS-3 | Brain Server | hybrid + PRF | BS-2 plus pseudo-relevance feedback |
-| BS-4 | Brain Server | hybrid + PRF + rerank | **Suspended in v0.9.5** — requires reverting `3fcac72` to build |
+| BS-1 | StewardMem | dense-only | vector retrieval only (no FTS/PRF/rerank) |
+| BS-2 | StewardMem | hybrid | dense + FTS, RRF fusion |
+| BS-3 | StewardMem | hybrid + PRF | BS-2 plus pseudo-relevance feedback |
+| BS-4 | StewardMem | hybrid + PRF + rerank | **Suspended in v0.9.5** — requires reverting `3fcac72` to build |
 | QMD-1 | QMD | default | QMD default profile (expansion + rerank) |
 | QMD-2 | QMD | fast / no-rerank | QMD fast profile (rerank disabled) |
 

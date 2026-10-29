@@ -1,6 +1,6 @@
 # Observability — metrics, audit, traces, health
 
-Brain Server ships a small but honest observability surface: a Prometheus-format
+StewardMem ships a small but honest observability surface: a Prometheus-format
 `/metrics` endpoint, an append-only SHA-256 audit chain, optional recall decision
 traces, an OpenTelemetry trace export, and health/stats/version
 endpoints. Everything is **local-first**: metrics and audit are on-device.

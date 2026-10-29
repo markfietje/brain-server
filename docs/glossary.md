@@ -9,7 +9,7 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 
 ## B
 
-- **Bearer token** — a secret string sent in the `Authorization` header to authenticate a request. Brain Server supports opaque bearer tokens (default) and JWT/JWS.
+- **Bearer token** — a secret string sent in the `Authorization` header to authenticate a request. StewardMem supports opaque bearer tokens (default) and JWT/JWS.
 - **Bi-temporal** — recording both *when a fact is valid in the world* (`valid_at`/`invalid_at`) and *when the system knew it* (`observed_at`/`superseded_at`). Graph edges carry all four timestamps; `superseded_at IS NULL` marks the current belief. Enables point-in-time recall.
 - **BM25** — the classic lexical scoring function (term-frequency × inverse-document-frequency) used by SQLite's FTS5 full-text index.
 
@@ -17,29 +17,29 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 
 - **Capacity envelope** — a configurable bound on docs / DB size / RSS. Writes that exceed it return HTTP 507; reads are never blocked.
 - **Chunk** — a unit of memory stored in a `knowledge` row. Text is split into chunks by a CommonMark-aware splitter (heading-boundary splits, code-fence-safe).
-- **CommonMark** — a standard, unambiguous specification of Markdown. Brain Server's chunker uses a CommonMark parser so all constructs are handled correctly.
+- **CommonMark** — a standard, unambiguous specification of Markdown. StewardMem's chunker uses a CommonMark parser so all constructs are handled correctly.
 - **Complaint remedy matrix** — the deterministic remedy suggestions proposed on a complaint run (each citing its legal basis and the published code-of-conduct clause); applying one is always a human decision.
 - **Connector** — a supervised ingester (e.g. GitHub issues) that backfills external sources through the source/revision pipeline.
 - **Content-digest binding** — an approval must echo the SHA-256 `content_digest` of exactly the review form the operator saw (`409` on any drift), so a decision binds to the shown bytes.
-- **CSP (Content Security Policy)** — an HTTP header controlling what resources a page may load. Brain Server serves a strict CSP for the API and a relaxed one for the WASM client.
+- **CSP (Content Security Policy)** — an HTTP header controlling what resources a page may load. StewardMem serves a strict CSP for the API and a relaxed one for the WASM client.
 
 ## D
 
 - **Decision path / trace** — the recorded record of a recall: injected chunks, fused scores, abstention decision, access scope, principal, and domains searched. Replayable via `GET /recall/{trace_id}/trace`.
 - **Domain** — a scoped memory namespace (health, business, code…) with its own knowledge graph. Retrieval auto-routes between domains by centroid and falls back on a miss.
-- **DSAR** — Data Subject Access Request. Brain Server's `/dsar` workflow locates → exports → purges → issues a chain-verifiable deletion certificate.
+- **DSAR** — Data Subject Access Request. StewardMem's `/dsar` workflow locates → exports → purges → issues a chain-verifiable deletion certificate.
 
 ## E
 
-- **Embedding** — a numeric vector representing text, such that semantically similar texts are close in vector space. Brain Server's *default* profile uses *static* embeddings (`model2vec`, no transformer forward pass); the opt-in `enterprise` / `desktop` profiles use local transformer embeddings (`BGE-M3` / `gte-base-en-v1.5`).
-- **Egress** — data leaving your device/network. Brain Server has no data egress by default.
+- **Embedding** — a numeric vector representing text, such that semantically similar texts are close in vector space. StewardMem's *default* profile uses *static* embeddings (`model2vec`, no transformer forward pass); the opt-in `enterprise` / `desktop` profiles use local transformer embeddings (`BGE-M3` / `gte-base-en-v1.5`).
+- **Egress** — data leaving your device/network. StewardMem has no data egress by default.
 - **Entitlement** — a memory kind for what someone is owed (warranty, plan, SLA rights); carries the longest default retention (1,825 days).
 - **Evidence** — the verbatim snippet, line span, source link, and highlight ranges attached to a retrieved chunk — what a result is *actually* based on.
 
 ## F
 
 - **FTS5** — SQLite's full-text-search index, scored with BM25. The lexical retrieval leg.
-- **Fusion** — merging multiple ranked lists into one. Brain Server uses Reciprocal Rank Fusion.
+- **Fusion** — merging multiple ranked lists into one. StewardMem uses Reciprocal Rank Fusion.
 
 ## G
 
@@ -48,7 +48,7 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 
 ## H
 
-- **Hybrid retrieval** — combining vector (semantic) and lexical (keyword) search. Brain Server runs both legs concurrently and fuses them.
+- **Hybrid retrieval** — combining vector (semantic) and lexical (keyword) search. StewardMem runs both legs concurrently and fuses them.
 - **Hub dampening** — a technique that reduces the influence of very-high-degree graph nodes (mega-hubs), so taxonomy tag clouds don't drown out real semantic edges.
 
 ## I
@@ -69,18 +69,18 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 
 - **Legal hold** — an operator-set hold that suspends retention expiry and purge for affected content until explicitly released; hold paths fail closed.
 - **LexSpec** — the structured lexical query: terms, quoted phrases, exclusions (`-"..."`), and exact code paths.
-- **Loopback** — `127.0.0.1`, the local machine. Brain Server supports direct loopback service; the deprecated public HTTP opt-in remains available through 2027-04-11.
+- **Loopback** — `127.0.0.1`, the local machine. StewardMem supports direct loopback service; the deprecated public HTTP opt-in remains available through 2027-04-11.
 
 ## M
 
-- **MCP** — Model Context Protocol, a standard for exposing tools to agents. Brain Server ships an `mcp` binary.
+- **MCP** — Model Context Protocol, a standard for exposing tools to agents. StewardMem ships an `mcp` binary.
 - **Mesh** — the multi-site federation shape: regional deployments exchanging signed knowledge parcels; site-to-site routing is v3.x.
 - **Multi-domain** — running several scoped domain databases that auto-route and cross-reference on a miss.
 
 ## P
 
 - **Parcel** — a signed export/import bundle of knowledge crossing a site boundary (`POST /parcels/export|import`); every crossing is signed and human-gated.
-- **PII** — personally identifiable information. Brain Server applies deterministic read-time output redaction to PII; there is no write-time placeholder vault (v1.20.19).
+- **PII** — personally identifiable information. StewardMem applies deterministic read-time output redaction to PII; there is no write-time placeholder vault (v1.20.19).
 - **PRF** — pseudo-relevance feedback: deterministic query expansion that fires only when the top result appears in *both* retrieval legs within a bounded rank.
 - **Proposal** — a write-back candidate scored by the server but held in a queue until a human approves it. Nothing enters memory autonomously.
 - **Provenance** — per-retriever ranks, fused score, expansion terms, and evidence attached to each result.
@@ -122,7 +122,7 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 
 ## W
 
-- **WAL** — Write-Ahead Logging, SQLite's concurrency mode used by Brain Server (with a busy timeout so concurrent writers queue rather than fail).
+- **WAL** — Write-Ahead Logging, SQLite's concurrency mode used by StewardMem (with a busy timeout so concurrent writers queue rather than fail).
 - **Workflow run** — an unbounded durable session for one governed case, recorded as queryable lineage events; rewind branches a run instead of rotating sessions.
 - **Worktype** — the post-sale work class a run routes to (troubleshoot, return, complaint, safety_recall…); each maps deterministically to an SLA priority class.
 - **Write posture** — `BRAIN_WRITE_POSTURE`: `open` writes directly; `review` converts agent-facing writes into proposals. Unknown values refuse boot.

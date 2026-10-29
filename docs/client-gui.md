@@ -1,6 +1,6 @@
 # Client GUI
 
-Brain Server has **two** operator GUIs over the same HTTP API.
+StewardMem has **two** operator GUIs over the same HTTP API.
 
 - **`client/` — the Dioxus control surface (Rust).** A single Rust codebase
   running as a **web app and a desktop app**, with 16 routed panels. This is

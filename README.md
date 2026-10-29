@@ -17,20 +17,20 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
 
 <p align="center">
 
-  <a href="https://github.com/markfietje/brain-server/actions/workflows/ci.yml?query=branch%3Av1.29.11">
-    <img alt="CI (release v1.29.11)" src="https://github.com/markfietje/brain-server/actions/workflows/ci.yml/badge.svg?branch=v1.29.10">
+  <a href="https://github.com/stewardmem/stewardmem/actions/workflows/ci.yml?query=branch%3Av1.29.11">
+    <img alt="CI (release v1.29.11)" src="https://github.com/stewardmem/stewardmem/actions/workflows/ci.yml/badge.svg?branch=v1.29.10">
   </a>
-  <a href="https://github.com/markfietje/brain-server/releases/latest">
-    <img alt="Latest release" src="https://img.shields.io/github/v/release/markfietje/brain-server?include_prereleases&sort=semver">
+  <a href="https://github.com/stewardmem/stewardmem/releases/latest">
+    <img alt="Latest release" src="https://img.shields.io/github/v/release/stewardmem/stewardmem?include_prereleases&sort=semver">
   </a>
   <a href="#">
     <img alt="Version 1.29.35" src="https://img.shields.io/badge/version-1.29.35-blue.svg">
   </a>
-  <a href="https://markfietje.github.io/brain-server/">
+  <a href="https://stewardmem.github.io/stewardmem/">
     <img alt="Documentation" src="https://img.shields.io/badge/docs-brain--server-1f6feb.svg">
   </a>
-  <a href="https://github.com/markfietje/brain-server/blob/main/LICENSE">
-    <img alt="Apache 2.0 license" src="https://img.shields.io/github/license/markfietje/brain-server.svg">
+  <a href="https://github.com/stewardmem/stewardmem/blob/main/LICENSE">
+    <img alt="Apache 2.0 license" src="https://img.shields.io/github/license/stewardmem/stewardmem.svg">
   </a>
 
 </p>
@@ -93,7 +93,7 @@ release, like the version badge.*
 
 ## Table of contents
 
-- [Why StewardMem?](#why-brain-server)
+- [Why StewardMem?](#why-stewardmem)
 - [What it provides](#what-it-provides)
 - [Architecture](#architecture)
 - [Governance model](#governance-model)
@@ -104,7 +104,7 @@ release, like the version badge.*
 - [MCP](#mcp)
 - [OpenClaw](#openclaw)
 - [Who is it for?](#who-is-it-for)
-- [Try StewardMem](#try-brain-server)
+- [Try StewardMem](#try-stewardmem)
 - [Build from source](#build-from-source)
 - [CLI](#cli)
 - [Verification and evidence](#verification-and-evidence)
@@ -112,7 +112,7 @@ release, like the version badge.*
 - [Compliance and regulated environments](#compliance-and-regulated-environments)
 - [Documentation](#documentation)
 - [Project principles](#project-principles)
-- [What StewardMem is not](#what-brain-server-is-not)
+- [What StewardMem is not](#what-stewardmem-is-not)
 - [License](#license)
 
 ---
@@ -476,7 +476,7 @@ The core use case is simple:
 
 ## Try StewardMem
 
-The fastest way to understand the system is the [Quickstart](https://markfietje.github.io/brain-server/quickstart.html).
+The fastest way to understand the system is the [Quickstart](https://stewardmem.github.io/stewardmem/quickstart.html).
 
 It covers:
 
@@ -490,7 +490,7 @@ It covers:
 - The `brain` CLI
 - Persistent service deployment
 
-For production deployment, see the [Deployment guide](https://markfietje.github.io/brain-server/deployment.html).
+For production deployment, see the [Deployment guide](https://stewardmem.github.io/stewardmem/deployment.html).
 
 ---
 
@@ -498,7 +498,7 @@ For production deployment, see the [Deployment guide](https://markfietje.github.
 
 ```bash
 git clone https://github.com/stewardmem/stewardmem.git
-cd brain-server
+cd stewardmem
 
 cargo build --release --features bench
 ./target/release/brain-server
@@ -619,9 +619,9 @@ See the full row-by-row control maps in [`COMPLIANCE.md`](COMPLIANCE.md) and the
 
 | Topic | Resource |
 |---|---|
-| Documentation | [brain-server docs](https://markfietje.github.io/brain-server/) |
-| Quickstart | [Get started](https://markfietje.github.io/brain-server/quickstart.html) |
-| Deployment | [Deployment guide](https://markfietje.github.io/brain-server/deployment.html) |
+| Documentation | [StewardMem docs](https://stewardmem.github.io/stewardmem/) |
+| Quickstart | [Get started](https://stewardmem.github.io/stewardmem/quickstart.html) |
+| Deployment | [Deployment guide](https://stewardmem.github.io/stewardmem/deployment.html) |
 | API | `GET /openapi.yaml` and [`API_CONTRACT.md`](API_CONTRACT.md) |
 | Security | [`SECURITY.md`](SECURITY.md) |
 | Threat model | [`THREAT_MODEL.md`](THREAT_MODEL.md) |

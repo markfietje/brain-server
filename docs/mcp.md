@@ -1,6 +1,6 @@
 # MCP Server (Model Context Protocol)
 
-Brain Server ships a **Model Context Protocol (MCP)** server as a separate
+StewardMem ships a **Model Context Protocol (MCP)** server as a separate
 binary, `mcp`. It speaks **JSON-RPC 2.0 over stdio** and translates MCP tool
 calls into HTTP requests against a running brain-server — so any MCP-capable
 host (Claude Desktop, IDEs, agent frameworks) can search, recall, and write to
@@ -291,7 +291,7 @@ Cordis. Rather than ship one bespoke adapter per memory system, it exposes a
 generic **MCP client bridge** (`@deepseek-ai/dsh-mcp-client`) and lets you pick
 the memory server — the documented slot for a "third-party memory MCP server"
 (its own `examples/mcp-memory` ship Memorix, MCP Reference Memory, and Engram
-this way). Brain Server's `mcp` binary is a drop-in for that slot.
+this way). StewardMem's `mcp` binary is a drop-in for that slot.
 
 **Alignment with dsh's expectations**
 
@@ -368,4 +368,4 @@ registers them as `mcp__brain-server__*`.
 - **[Universal Memory Protocol](./universal-memory-protocol.md)** — the `ump.*` contract.
 - **[API reference](./api.md)** — every endpoint the tools forward to.
 - **[OpenClaw integration](./openclaw-integration.md)** — the agent-facing plugin surface.
-- **[DeepSeek Harness (dsh) and Brain Server](./blog/10-dsh-deepseek-harness.md)** — the background post.
+- **[DeepSeek Harness (dsh) and StewardMem](./blog/10-dsh-deepseek-harness.md)** — the background post.

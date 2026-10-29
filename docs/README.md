@@ -1,10 +1,10 @@
-# Brain Server — Documentation
+# StewardMem — Documentation
 
 **The governed decision and memory substrate for AI agents — deployed on your infrastructure, audited to the letter.**
 
-Brain Server is a self-hosted engine that gives your AI agents a durable, deterministic second brain — entirely on hardware your organization controls. It combines high-quality local memory (hybrid vector + lexical + knowledge graph) with a governance layer and an emerging decision harness, so that both what an agent remembers *and* the structured decisions it makes can be private, explainable, and provably audited.
+StewardMem is a self-hosted engine that gives your AI agents a durable, deterministic second brain — entirely on hardware your organization controls. It combines high-quality local memory (hybrid vector + lexical + knowledge graph) with a governance layer and an emerging decision harness, so that both what an agent remembers *and* the structured decisions it makes can be private, explainable, and provably audited.
 
-Where every other memory framework puts an LLM or an embedding API between you and every read and write (metered per query, egressing your data to a vendor's datacenter), Brain Server does recall with **zero token cost, zero data egress, and zero network latency**. Every permanent write is human-gated, every decision and retrieval can carry a replayable trace, and the entire history lives on a tamper-evident append-only audit chain.
+Where every other memory framework puts an LLM or an embedding API between you and every read and write (metered per query, egressing your data to a vendor's datacenter), StewardMem does recall with **zero token cost, zero data egress, and zero network latency**. Every permanent write is human-gated, every decision and retrieval can carry a replayable trace, and the entire history lives on a tamper-evident append-only audit chain.
 
 This is not a toy or a "local RAG." It is the compliance-grade substrate that enterprises — BPOs, in-house contact and support centers, healthcare providers, financial institutions, legal, and government — deploy when both memory *and* the decisions that depend on it must be private, explainable, and under human control. Backed by an Enterprise edition that meets procurement where it lives: enterprise JWT/JWS authentication with OIDC discovery and JWKS, deny-by-default authorization, per-tenant capability tokens, OTel observability, and a SOC 2 evidence kit with contract-level support. See **[Editions](./product-site/editions.md)**.
 
@@ -87,15 +87,15 @@ and [Configuration](./configuration.md) for the knobs.
 
 ## Law-following by design
 
-Brain Server is built to **stay current with the latest regulation**. It turns
+StewardMem is built to **stay current with the latest regulation**. It turns
 compliance into shipped behavior — not a brochure: a jurisdiction table computes
 data-subject response deadlines, legal holds freeze records against every erasure
 path, retention windows are applied per domain and kind, cross-border transfer
 mechanisms are validated at registration, and every write, approval, and erasure
 lands on a tamper-evident SHA-256 audit chain you can verify. The inventory below
 groups the instruments by region and sector; the full row-by-row control map lives
-in [COMPLIANCE.md](https://github.com/markfietje/brain-server/blob/main/COMPLIANCE.md)
-and [COMPLIANCE_PH.md](https://github.com/markfietje/brain-server/blob/main/COMPLIANCE_PH.md).
+in [COMPLIANCE.md](https://github.com/stewardmem/stewardmem/blob/main/COMPLIANCE.md)
+and [COMPLIANCE_PH.md](https://github.com/stewardmem/stewardmem/blob/main/COMPLIANCE_PH.md).
 **This is a documented engineering posture, not a certification** — ISO/IEC 42001 and
 SOC 2 attestation are organization-level audits outside this repository.
 
@@ -163,9 +163,9 @@ Compliance is enforced, not documented: the same single binary that serves recal
 applies legal holds, retention windows, region residency stamps, and jurisdiction-aware
 deadlines — all of it auditable. For the honest ceilings (single-node audit chain, no
 PII-at-rest encryption without operator full-disk encryption, posture-not-certification),
-see [COMPLIANCE.md](https://github.com/markfietje/brain-server/blob/main/COMPLIANCE.md).
+see [COMPLIANCE.md](https://github.com/stewardmem/stewardmem/blob/main/COMPLIANCE.md).
 
-This directory is the public, informational documentation for Brain Server. For
+This directory is the public, informational documentation for StewardMem. For
 the technical contract and engineering records, see the linked files in the repo
 root.
 
@@ -175,7 +175,7 @@ root.
 
 | Document | What it is |
 |---|---|
-| [Overview](./overview.md) | What Brain Server is, who it is for, and the five differentiators |
+| [Overview](./overview.md) | What StewardMem is, who it is for, and the five differentiators |
 | [Quickstart](./quickstart.md) | Build, run, and make your first recall in minutes |
 | [Architecture](./architecture.md) | How recall, ingest, the knowledge graph, and governance fit together |
 | [Human in the loop](./human-in-the-loop.md) | Meaningful human control: what reaches a human, and how to evaluate it |

@@ -1,4 +1,4 @@
-# Reverse-Proxy SSO (B1) — Enterprise identity in front of Brain Server
+# Reverse-Proxy SSO (B1) — Enterprise identity in front of StewardMem
 
 > Enterprise plan §33.2 Phase B1 / §33.3 item 1. The cheapest enterprise
 > door-opener: put an identity edge in front of brain-server so users sign in
@@ -7,7 +7,7 @@
 
 ## Why proxy SSO and not native SSO
 
-Brain Server authenticates in two ways today (verified in code, Round 26):
+StewardMem authenticates in two ways today (verified in code, Round 26):
 
 1. **Opaque bearer mode** (default): `AUTH_TOKEN` / `AUTH_TOKEN_FILE`, constant-
    time compare, hot rotation.
@@ -28,7 +28,7 @@ proxy SSO also covers SAML without building it into the server.
 
 ```
 ┌────────┐   ┌───────────────┐   ┌───────────────┐   ┌──────────────┐
-│ User   │──▶│ SSO Proxy     │──▶│ Brain Server  │   │ IdP          │
+│ User   │──▶│ SSO Proxy     │──▶│ StewardMem  │   │ IdP          │
 │ browser│   │ OAuth2-Proxy  │   │ 127.0.0.1     │   │ Entra/Okta/  │
 │ / curl │   │ / Caddy       │   │ (compose net) │   │ Keycloak/    │
 └────────┘   └───────────────┘   └──────────────┘   │ Auth0        │
@@ -36,7 +36,7 @@ proxy SSO also covers SAML without building it into the server.
                     └───── OIDC login / token exchange ─────┘
 ```
 
-- The proxy is the only service the *internet* should see. Brain Server is
+- The proxy is the only service the *internet* should see. StewardMem is
   published on the **host loopback only** — `docker-compose.yml` maps
   `127.0.0.1:8765:8765` unconditionally, so the API stays reachable from the
   host machine but not from other machines. Remove that `ports:` mapping (or
@@ -117,7 +117,7 @@ mode and validate the forwarded token as in Option A.
 ## Principal handoff
 
 - The proxy establishes **who** (IdP subject / email).
-- Brain Server enforces **what** (AuthZ matrix in JWT mode; bearer token in
+- StewardMem enforces **what** (AuthZ matrix in JWT mode; bearer token in
   opaque mode).
 - Tenant isolation: `tenant_id` + `access_scope` on recall/audit rows already
   exist server-side (v1.14 M4); per-tenant quotas/rate limits are v2.0 B4.

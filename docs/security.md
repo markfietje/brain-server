@@ -8,7 +8,7 @@
 > DPO/Admin-gated evaluation records; see
 > [model-governance.md](./model-governance.md)) and its three security fixes.
 
-Brain Server is a local-first memory component for AI agents, so its security
+StewardMem is a local-first memory component for AI agents, so its security
 model centers on three questions: **who is allowed to talk to it, what can they
 do, and can anyone tamper with its records.** The full threat model lives in
 [Threat model](./THREAT_MODEL.md); this page

@@ -1,6 +1,6 @@
 # About & Contact
 
-**Brain Server** is governed, local-first memory and decision infrastructure for
+**StewardMem** is governed, local-first memory and decision infrastructure for
 AI agents. It is built to answer the hardest question an agent memory system
 faces in 2026: *"what did the agent know, when, and why — and can I delete it
 on request?"*
@@ -22,7 +22,7 @@ data can be erased on demand with a verifiable deletion certificate.
 - **Honest by design.** Every mechanism ships with its own documented ceiling.
   We would rather tell you what the system *doesn't* do than overstate it.
 - **Open source.** The code, the research explainers, and the security claims
-  are all in the [repository](https://github.com/markfietje/brain-server) —
+  are all in the [repository](https://github.com/stewardmem/stewardmem) —
   you can verify them live on a throwaway instance.
 
 The project is maintained by **Mark Fietje**, an independent developer focused
@@ -36,7 +36,7 @@ PowerStore, and OpenManage, with VMware and Linux underneath. For years he was
 the L3 escalation point for L2 on the VMware stack, the person who saw the
 cases the first two lines couldn't solve.
 
-That background is exactly why Brain Server exists the way it does:
+That background is exactly why StewardMem exists the way it does:
 
 - **He knows what support and contact-center teams need** — recall of past
   resolutions and policy, human-gated writes, and an audit trail you can defend
@@ -47,14 +47,14 @@ That background is exactly why Brain Server exists the way it does:
   available for remote or contract roles — including senior technical support,
   infrastructure engineering, or sysadmin work where that background matters.
 
-If you're an enterprise evaluating Brain Server, you're talking to someone who
+If you're an enterprise evaluating StewardMem, you're talking to someone who
 has run support at scale, not just built the tool. CV available on request.
 
 ---
 
 ## Free pilot & trial on your own hardware
 
-If you are an enterprise or team evaluating Brain Server for a real deployment,
+If you are an enterprise or team evaluating StewardMem for a real deployment,
 you don't need to take our word for it. Run it on **your own hardware** — a
 laptop, a VM, or an on-prem box — and see how it behaves with your data.
 
@@ -82,7 +82,7 @@ Issues / Discussions:
 
 - **LinkedIn:** [linkedin.com/in/markfietje](https://www.linkedin.com/in/markfietje/)
 - **GitHub (issues & discussions):**
-  [github.com/markfietje/brain-server](https://github.com/markfietje/brain-server)
+  [github.com/stewardmem/stewardmem](https://github.com/stewardmem/stewardmem)
 
-Reach out any time — I'm glad to help you get Brain Server running, and happy to
+Reach out any time — I'm glad to help you get StewardMem running, and happy to
 talk through whether it's the right fit for your use case.

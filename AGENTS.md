@@ -1,4 +1,4 @@
-# Agent Execution Log — brain-server
+# Agent Execution Log — StewardMem
 
 > **R142 "Fallback" (M3-d, 2026-10-26): the shell's chat stopped riding
 > `/recall` — a sent question now grounds, streams and finals over the chat

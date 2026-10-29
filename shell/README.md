@@ -64,7 +64,7 @@ against a commit it was not built from is a false provenance claim.
 node shell/scripts/sidecar.mjs stage
 cd shell && pnpm tauri build --bundles app --target universal-apple-darwin
 node shell/scripts/sidecar.mjs verify \
-  "shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/Brain Shell.app"
+  "shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/StewardMem.app"
 ```
 
 `verify` walks the bundle and FINDS every Mach-O by path (never by `file`
@@ -174,7 +174,7 @@ with no readable bearer refuses; the PWA bypasses without invoking Tauri.
 (`source_dirty: false`, kernel and `x-api-version` both `1.29.23`), then
 `pnpm --dir shell tauri build --bundles app --target universal-apple-darwin`
 (48.82 MiB) and
-`node shell/scripts/sidecar.mjs verify "…/Brain Shell.app"` →
+`node shell/scripts/sidecar.mjs verify "…/StewardMem.app"` →
 `ok — bundle seal, 2 Mach-O files, hardened runtime, arch parity [x86_64
 arm64], provenance 1.29.23 @ f52d4405e7e0` (the build at the round's CODE
 commit, which is where the S4 seal drill ran).

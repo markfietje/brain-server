@@ -1,6 +1,6 @@
 # Features
 
-Brain Server packs a lot of capability into a single Rust binary. This page is the complete feature tour — grouped by what the feature does for you. It is a **living inventory of what is shipped** (verified against the codebase up to v1.29.2, which adds the governed model-identity/delivery line: the digest-pinned model registry, decision-run + evaluation records, the delivery release family with its replay-gated promote, the reflection corpus export, the accounts record layer, the classify deferral receipt, and the drift census); if a capability is described here, it exists in the current source.
+StewardMem packs a lot of capability into a single Rust binary. This page is the complete feature tour — grouped by what the feature does for you. It is a **living inventory of what is shipped** (verified against the codebase up to v1.29.2, which adds the governed model-identity/delivery line: the digest-pinned model registry, decision-run + evaluation records, the delivery release family with its replay-gated promote, the reflection corpus export, the accounts record layer, the classify deferral receipt, and the drift census); if a capability is described here, it exists in the current source.
 
 ## Retrieval
 

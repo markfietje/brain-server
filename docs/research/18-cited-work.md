@@ -32,7 +32,7 @@ entirely and using only *ranks*, which is why it is parameter-light and hard to
 get wrong.
 
 The paper reports RRF almost invariably beating the best individual system, and
-beating Condorcet Fuse and CombMNZ, across TREC and LETOR. Brain Server uses
+beating Condorcet Fuse and CombMNZ, across TREC and LETOR. StewardMem uses
 `RRF_K = 60` (`src/search/mod.rs:31`), the standard value from the paper.
 Used in [08-hybrid-fusion](./08-hybrid-fusion.md).
 
@@ -46,7 +46,7 @@ Robertson & Zaragoza (2009), Foundations and Trends in Information Retrieval
 The reference treatment of BM25, deriving it from a probabilistic model rather
 than presenting it as a heuristic, and explaining why the saturating term exists:
 repeated terms should stop helping, because a document that says "audit" thirty
-times is not thirty times more relevant. Brain Server's lexical leg is SQLite
+times is not thirty times more relevant. StewardMem's lexical leg is SQLite
 FTS5 with BM25 ranking, so this is the leg's theoretical basis.
 Used in [08-hybrid-fusion](./08-hybrid-fusion.md).
 
@@ -61,7 +61,7 @@ millions of them is slow. Product quantization decomposes a vector into
 subvectors, quantizes each against a learned codebook, and represents the whole
 vector as a short code. Distances are then approximated from the codes.
 
-Brain Server does not implement PQ. It stores vectors as **int8 and binary**
+StewardMem does not implement PQ. It stores vectors as **int8 and binary**
 quantized in a `vec0` table (`vec_quantize_int8(…, 'unit')` plus
 `vec_quantize_binary(…)`), which is simpler scalar quantization in the same
 family. The claim in the docs is a storage and speed trade of 4× to 32×, against
@@ -134,7 +134,7 @@ retrieve.
 
 Related lineage, explicitly not the same thing: it summarizes and embeds
 clustered text rather than splitting markdown, which is why the mechanism note
-lists it as adjacent rather than as a source. Brain Server's graph leg is
+lists it as adjacent rather than as a source. StewardMem's graph leg is
 Personalized PageRank, closer to
 [04-ppr-graph](./04-ppr-graph.md).
 Used in [10-chunking](./10-chunking.md).

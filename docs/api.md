@@ -1,9 +1,9 @@
 # API
 
-Brain Server exposes a versioned HTTP API. Every response carries an
+StewardMem exposes a versioned HTTP API. Every response carries an
 `X-Api-Version` header. This page is the informational overview; the complete,
 machine-readable contract is at **`GET /openapi.yaml`** at runtime and
-[openapi.yaml](https://github.com/markfietje/brain-server/blob/main/openapi.yaml) in the repo, with the full written contract in
+[openapi.yaml](https://github.com/stewardmem/stewardmem/blob/main/openapi.yaml) in the repo, with the full written contract in
 [API_CONTRACT.md](./API_CONTRACT.md).
 
 ---

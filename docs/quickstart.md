@@ -1,12 +1,12 @@
 # Quickstart
 
-Get Brain Server running on your machine and make your first recall in minutes.
+Get StewardMem running on your machine and make your first recall in minutes.
 It builds from source with the Rust toolchain; there are no external services.
 
 > **Source:** the repo is
-> [github.com/markfietje/brain-server](https://github.com/markfietje/brain-server) —
+> [github.com/stewardmem/stewardmem](https://github.com/stewardmem/stewardmem) —
 > clone it below, or browse the
-> [releases](https://github.com/markfietje/brain-server/releases). The full
+> [releases](https://github.com/stewardmem/stewardmem/releases). The full
 > install runbooks are [Deployment](./deployment.md) (bare metal + launchd) and
 > [Docker](./docker.md). This page is the 5-minute run.
 
@@ -22,7 +22,7 @@ It builds from source with the Rust toolchain; there are no external services.
 ## 0. Get the code
 
 ```bash
-git clone https://github.com/markfietje/brain-server.git
+git clone https://github.com/stewardmem/stewardmem.git
 cd brain-server
 ```
 
@@ -159,7 +159,7 @@ scripts/install-service.sh
 
 This builds the release binaries, installs them to `~/.local/bin`, relocates the
 auth token to a 0600 file, restarts the service, and waits for `/health`
-(version-matched against the installed binary; the Brain Shell `.app` is
+(version-matched against the installed binary; the StewardMem `.app` is
 installed to `/Applications` too, when a bundle exists). See
 [Deployment](./deployment.md) for details and the client GUI.
 
@@ -173,6 +173,6 @@ installed to `/Applications` too, when a bundle exists). See
 4. Review the security posture in [Security](./security.md).
 5. Learn the write-back review job in [Human in the loop](./human-in-the-loop.md).
 
-All of it lives in the [brain-server repository](https://github.com/markfietje/brain-server) —
-star it, watch for [releases](https://github.com/markfietje/brain-server/releases),
+All of it lives in the [brain-server repository](https://github.com/stewardmem/stewardmem) —
+star it, watch for [releases](https://github.com/stewardmem/stewardmem/releases),
 or open an issue for anything that surprises you.

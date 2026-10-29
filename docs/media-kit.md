@@ -7,7 +7,7 @@
 
 ## Name / one-liner
 
-- **Product:** Brain Server
+- **Product:** StewardMem
 - **One-line (technical):** "A local-first decision and memory substrate for AI
   agents — deterministic retrieval, human-gated state promotion, tamper-evident
   provenance, and structured decision traces."
@@ -24,7 +24,7 @@
 ## Positioning statement
 
 For teams building AI agents that must hold memory and make structured
-decisions responsibly, Brain Server is a self-hosted substrate that makes both
+decisions responsibly, StewardMem is a self-hosted substrate that makes both
 recall and the decisions that depend on it deterministic, human-gated, and
 tamper-evident — unlike cloud memory services that charge per query and keep
 user data in a third-party datacenter.
@@ -70,7 +70,7 @@ roadmap).
 
 ## Brain vs. the field (sizing, with honest ceilings)
 
-| | Brain Server | Mem0-class (framework memory) | LangGraph-class (agent framework) | Plain RAG |
+| | StewardMem | Mem0-class (framework memory) | LangGraph-class (agent framework) | Plain RAG |
 |---|---|---|---|---|
 | Per-query cost | **$0** | LLM/embedding API | LLM/embedding API | LLM/embedding API |
 | Where memory lives | **Your device** | vendor/cloud | vendor/cloud | your infra |
@@ -104,7 +104,7 @@ memory store that tells you its limits.
 
 ## Logos / naming notes
 
-Name has no built-in icon yet (operator step). The wordmark is "Brain Server";
+Name has no built-in icon yet (operator step). The wordmark is "StewardMem";
 the CLI/product family is `brain` / `brain-server` / `mcp`. Repository:
 `markfietje/brain-server`.
 

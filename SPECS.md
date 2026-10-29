@@ -1,4 +1,4 @@
-# Brain Server — Technical Specification (SPECS)
+# StewardMem — Technical Specification (SPECS)
 
 **Scope:** This documents the actual system as built — the code, schema, retrieval pipeline, and
 HTTP contract described here correspond to the current source. Forward-looking changes
@@ -18,7 +18,7 @@ are noted in release milestones.
 
 ## 1. Overview
 
-Brain Server is a single-process Rust HTTP service that provides **hybrid retrieval using SQLite FTS5 and sqlite-vec (vec0) with Reciprocal Rank Fusion (RRF), adaptive retrieval-quality assessment, and optional pseudo-relevance feedback (PRF)** plus a
+StewardMem is a single-process Rust HTTP service that provides **hybrid retrieval using SQLite FTS5 and sqlite-vec (vec0) with Reciprocal Rank Fusion (RRF), adaptive retrieval-quality assessment, and optional pseudo-relevance feedback (PRF)** plus a
 **knowledge graph** over a local SQLite database, intended as a long-term "second brain" for an
 AI agent running on a Jetson Nano (4 GB RAM, ARM Cortex-A57).
 

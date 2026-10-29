@@ -1,4 +1,4 @@
-# Brain Server — API Contract (`/recall` + `/ingest`)
+# StewardMem — API Contract (`/recall` + `/ingest`)
 
 > **Wire contract** for the brain-server HTTP API. The JSON shapes here are the
 > source of truth; the Rust `serde` structs are kept equal to these shapes.

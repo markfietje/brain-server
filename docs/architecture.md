@@ -1,6 +1,6 @@
 # Architecture
 
-Brain Server's **server runtime is a single process** coupling a **retrieval
+StewardMem's **server runtime is a single process** coupling a **retrieval
 engine**, an **embedding model**, a **knowledge graph**, and a **governance
 layer** behind a versioned HTTP API. Persistence and compute are local-first:
 the only store is an on-disk SQLite database (WAL + `vec0` + FTS5) and

@@ -6,11 +6,11 @@
 > model-identity line (digest-pinned model registry, decision-run/evaluation
 > records) rides the same compliance evidence base. Root mirror: [COMPLIANCE.md](../COMPLIANCE.md).
 
-Brain Server is a single-node, loopback-first memory component for an AI system.
+StewardMem is a single-node, loopback-first memory component for an AI system.
 This page summarizes its compliance posture for buyers and procurement. It is a
 **documented engineering posture, not a certification** — ISO/IEC 42001 and SOC 2
 attestation are organization-level audits outside this repository. The full
-buyer-facing technical file is [COMPLIANCE.md](https://github.com/markfietje/brain-server/blob/main/COMPLIANCE.md).
+buyer-facing technical file is [COMPLIANCE.md](https://github.com/stewardmem/stewardmem/blob/main/COMPLIANCE.md).
 
 ---
 
@@ -140,7 +140,7 @@ placeholder entities, review each basis — then load each row with:
 
 The compliance pack's `gdpr_ropa` gate reads green only when the register has
 real rows behind it. The row-by-row depth for each lives in
-[COMPLIANCE.md](https://github.com/markfietje/brain-server/blob/main/COMPLIANCE.md).
+[COMPLIANCE.md](https://github.com/stewardmem/stewardmem/blob/main/COMPLIANCE.md).
 
 ---
 
@@ -157,7 +157,7 @@ real rows behind it. The row-by-row depth for each lives in
 | **GDPR / CCPA / PH DPA** | Data portability, erasure, DSAR workflow, jurisdiction posture |
 
 The full, row-by-row mapping with the intent-based-auditing coverage and the
-jurisdiction table is in [COMPLIANCE.md](https://github.com/markfietje/brain-server/blob/main/COMPLIANCE.md).
+jurisdiction table is in [COMPLIANCE.md](https://github.com/stewardmem/stewardmem/blob/main/COMPLIANCE.md).
 
 ---
 

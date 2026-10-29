@@ -28,7 +28,7 @@ giving the store a push channel?**
   must be reviewable*, nothing is silently injected.
 - **Mem0**, the `feedback` API shape (`memory_id`, `feedback`,
   `feedback_reason?`) and feedback analytics that track accept vs. dismiss,
-  the false-positive metric Brain Server mirrors.
+  the false-positive metric StewardMem mirrors.
 
 ## The implementation
 

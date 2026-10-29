@@ -1,6 +1,6 @@
 # OpenClaw Integration
 
-Brain Server is the **memory backend for [OpenClaw](https://github.com/openclaw)**, the open-source
+StewardMem is the **memory backend for [OpenClaw](https://github.com/openclaw)**, the open-source
 personal AI assistant gateway. The integration is a TypeScript plugin
 (`@markfietje/brain-server-openclaw`) that lives in `plugin/` and calls the Rust server over
 **loopback HTTP**. It plugs into OpenClaw's **memory slot** (`kind: "memory"`).

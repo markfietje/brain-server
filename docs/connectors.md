@@ -1,6 +1,6 @@
 # Connectors — supervised external backfill
 
-Connectors let Brain Server **backfill external sources** into the existing
+Connectors let StewardMem **backfill external sources** into the existing
 source/revision pipeline, supervised by an operator — the same way you ingest
 markdown or memories, but from a live external system (today: **GitHub**).
 

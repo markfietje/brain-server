@@ -1,6 +1,6 @@
 # Roadmap
 
-Brain Server ships in small, verifiable, named releases. This page summarizes the
+StewardMem ships in small, verifiable, named releases. This page summarizes the
 journey to the current version and where it is going. The full per-version record
 is [CHANGELOG.md](./CHANGELOG.md); the narrative history lives in
 [roadmap-and-release-history.md](./roadmap-and-release-history.md). (The former
@@ -16,7 +16,7 @@ on-device pilot's first real measurements, the afm-stdio transport and the
 CRANK scheduler's first flip, over 1.29.34's live chat answers, 1.29.33's
 durable sessions, 1.29.32's grounded chat spine, governed row hashes and
 self-installing app, with the two audit passes of 1.29.3 "Hardening"
-beneath it).** Brain Server ships two operator
+beneath it).** StewardMem ships two operator
 GUIs over one HTTP API: the **Dioxus control surface** (`client/` — one Rust
 codebase, web + desktop) and the **SvelteKit + Tauri shell** (`shell/` — the
 active successor; a typed-wire SvelteKit SPA with a Tauri desktop core, its
@@ -124,7 +124,7 @@ when it is verifiable and earned by a need, not speculation.
 
 ## Next steps
 
-- [Overview](./overview.md) — what Brain Server is and who it is for.
+- [Overview](./overview.md) — what StewardMem is and who it is for.
 - [API](./api.md) — the endpoint surface available today.
 - The full per-version record: [CHANGELOG.md](./CHANGELOG.md) and
   [roadmap-and-release-history.md](./roadmap-and-release-history.md).

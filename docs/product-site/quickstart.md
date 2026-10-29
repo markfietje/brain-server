@@ -3,9 +3,9 @@
 Five minutes from running server to a verified recall. Commands assume the
 `brain` CLI from [Install](./install.md) is on `$PATH`.
 
-> **Repository:** [github.com/markfietje/brain-server](https://github.com/markfietje/brain-server).
-> Clone it (`git clone https://github.com/markfietje/brain-server.git`) or open
-> the [releases](https://github.com/markfietje/brain-server/releases). Full
+> **Repository:** [github.com/stewardmem/stewardmem](https://github.com/stewardmem/stewardmem).
+> Clone it (`git clone https://github.com/stewardmem/stewardmem.git`) or open
+> the [releases](https://github.com/stewardmem/stewardmem/releases). Full
 > install runbooks: [Deployment](../deployment.md) and [Docker](../docker.md).
 
 ## 1. Run the server
@@ -74,4 +74,4 @@ that never thinks, writes a human can audit, and a chain a reviewer can verify.
 
 - [`docs/overview.md`](../overview.md) — the full design.
 - [`docs/architecture.md`](../architecture.md) — components + data flow.
-- [`docs/api.md`](../api.md) and [`openapi.yaml`](https://github.com/markfietje/brain-server/blob/main/openapi.yaml) — the contract.
+- [`docs/api.md`](../api.md) and [`openapi.yaml`](https://github.com/stewardmem/stewardmem/blob/main/openapi.yaml) — the contract.

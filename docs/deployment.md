@@ -1,6 +1,6 @@
 # Deployment
 
-Brain Server is designed to run as a persistent, self-managed service on a single
+StewardMem is designed to run as a persistent, self-managed service on a single
 host. This page covers installing it, configuring it, keeping it healthy, and
 backing it up.
 
@@ -45,7 +45,7 @@ This installs:
 > that Gatekeeper uses to SIGKILL on first exec (exit 137). The install script
 > strips it. A manual `cp` does not.
 
-> **Desktop app:** when the Tauri bundler has produced a Brain Shell `.app`
+> **Desktop app:** when the Tauri bundler has produced a StewardMem `.app`
 > (from `shell/src-tauri/target/universal-apple-darwin/release/bundle/macos`;
 > build it with `cd shell && pnpm tauri build`), the script installs it to
 > `/Applications` — override with `APP_INSTALL_DIR`. Best-effort like the
@@ -62,7 +62,7 @@ This installs:
 
 ## Configuration
 
-Brain Server is configured through environment variables (all resolved in
+StewardMem is configured through environment variables (all resolved in
 `src/config.rs`). The most important:
 
 | Variable | Default | Description |

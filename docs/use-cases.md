@@ -1,12 +1,12 @@
 # Use Cases
 
-Brain Server is built for the edge — private, offline, deterministic, and free to run. Here are the concrete scenarios it's designed for, with a worked example for each. For the **customer segments** these map to (BPOs, in-house contact & support centers, regulated enterprises, edge/field, and more — each marked shipped vs. planned), see **[Who it's for — target audiences](./audiences.md)**.
+StewardMem is built for the edge — private, offline, deterministic, and free to run. Here are the concrete scenarios it's designed for, with a worked example for each. For the **customer segments** these map to (BPOs, in-house contact & support centers, regulated enterprises, edge/field, and more — each marked shipped vs. planned), see **[Who it's for — target audiences](./audiences.md)**.
 
 ## 1. An agent with memory that costs nothing to recall
 
 **The problem.** Every turn of your agent, you want it to remember what it learned. Cloud memory services charge per read/write — an LLM or embedding API on every recall.
 
-**The fix.** Brain Server uses a **static, local embedding model** and a deterministic pipeline. Recall is **0 decision tokens, 0 embedding tokens**. The agent calls `/recall`, gets the evidence, and moves on. No per-query cost, no data egress, no network latency.
+**The fix.** StewardMem uses a **static, local embedding model** and a deterministic pipeline. Recall is **0 decision tokens, 0 embedding tokens**. The agent calls `/recall`, gets the evidence, and moves on. No per-query cost, no data egress, no network latency.
 
 **Worked example** — an OpenClaw agent that remembers across turns:
 

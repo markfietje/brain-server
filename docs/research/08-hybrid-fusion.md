@@ -9,7 +9,7 @@ A single retrieval strategy is rarely enough. Pure lexical search (BM25) finds
 exact terms but misses paraphrase; pure vector search finds semantics but
 misses rare, exact identifiers and code paths. Merging two ranked lists is
 itself the hard part: naively averaging scores from different scales destroys
-ranking quality. Brain Server fuses three legs with a single, parameter-free,
+ranking quality. StewardMem fuses three legs with a single, parameter-free,
 rank-based method and stores vectors in a space-efficient quantized form.
 
 ## The references
@@ -20,16 +20,16 @@ rank-based method and stores vectors in a space-efficient quantized form.
   `1/(k + rank)` and sums across result lists, it needs only ranks, not
   scores, so it fuses lists on incomparable scales. The paper reports it
   outperforming individual systems and Condorcet/CombMNZ on TREC + LETOR.
-  Brain Server uses the same constant `RRF_K = 60` (`src/search/mod.rs:31`),
+  StewardMem uses the same constant `RRF_K = 60` (`src/search/mod.rs:31`),
   the standard value from the paper.
   <https://dl.acm.org/doi/10.1145/582415.582418>
 - **BM25 (lexical leg).** Robertson, S. E., & Zaragoza, H. (2009). *The
   Probabilistic Relevance Framework: BM25 and Beyond.* Foundations and Trends
-  in IR 3(4). Brain Server's lexical leg is SQLite **FTS5** with BM25 ranking.
+  in IR 3(4). StewardMem's lexical leg is SQLite **FTS5** with BM25 ranking.
   <https://doi.org/10.1561/1500000019>
 - **Product / scalar quantization (vector leg).** Jégou, H., Douze, M., &
   Schmid, C. (2011). *Product Quantization for Nearest Neighbor Search.* IEEE
-  TPAMI 33(1). Brain Server stores vectors in **int8 and binary** quantized
+  TPAMI 33(1). StewardMem stores vectors in **int8 and binary** quantized
   form in a `vec0` table (`vec_quantize_int8(…,'unit')` +
   `vec_quantize_binary(…)`), trading a little precision for 4–32× smaller
   storage and faster scans, the same quantization family PQ belongs to.
@@ -67,7 +67,7 @@ rank-based method and stores vectors in a space-efficient quantized form.
   <https://arxiv.org/abs/2005.11401>); chunking-strategy trade-offs
   are surveyed in Gao et al. (2023), *Retrieval-Augmented Generation for Large
   Language Models: A Survey*
-  ([arXiv:2312.10997](https://arxiv.org/abs/2312.10997)). Brain Server's heading-aware
+  ([arXiv:2312.10997](https://arxiv.org/abs/2312.10997)). StewardMem's heading-aware
   splitter is its own choice, benchmarked against fixed-size in
   `src/chunker.rs` tests.
 

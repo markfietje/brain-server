@@ -1,12 +1,12 @@
 # Procedures & Runbooks
 
 > Procedures are how a team stops improvising the same thing over and over.
-> Brain Server stores the **current, correct way to do something** as a
+> StewardMem stores the **current, correct way to do something** as a
 > retrievable, ordered sequence of steps — so recall returns the same runbook to
 > everyone, instead of each person's half-remembered version.
 
 This page is the practical guide to authoring, finding, and maintaining
-**procedures** (runbooks) in Brain Server.
+**procedures** (runbooks) in StewardMem.
 
 ## What a procedure is
 
