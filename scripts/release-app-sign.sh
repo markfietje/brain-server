@@ -65,7 +65,7 @@
 #      is a broken promise the updater discovers at the user's machine.
 #
 #   6. THE PUBLICATION. One `gh release upload` with the chain's three files
-#      plus the stapled first-install zip (`StewardMem.app.zip`).
+#      plus the stapled first-install DMG (`StewardMem.dmg`).
 #
 # ── THE PASSPHRASE ─────────────────────────────────────────────────────────
 #
@@ -639,19 +639,25 @@ process.stdout.write(String(config?.version ?? ""));
 # sign the artifact it just built.
 	if [[ -z "$ARTIFACT" ]]; then
 		command -v pnpm >/dev/null 2>&1 || die "pnpm is unavailable — the release artifact must be built by the bundler"
-		# NO notary environment here (see THE NOTARY CREDENTIAL above): the
-		# bundler Developer-ID-signs — the overlay pins the identity — and
-		# writes its own updater archive. Notarization is the LANE's act,
-		# below, through notarytool.
-		echo ">> building the release artifact (bundler archive + Developer ID signature)…"
+	# NO notary environment here (see THE NOTARY CREDENTIAL above): the
+	# bundler Developer-ID-signs — the overlay pins the identity — and
+	# writes its own updater archive. Notarization is the LANE's act,
+	# below, through notarytool.
+	# ARM64-ONLY (the operator's decision, 2026-10-29, III-5): the app is
+	# built for aarch64 alone — Intel Macs run the KERNEL headless (the
+	# signed darwin-x86_64 artifacts), not the desktop app, and the
+	# external Intel-VM verification is retired with the slice. The staged
+	# sidecar stays universal; the aarch64 build resolves the
+	# -aarch64-apple-darwin staged file by its own target triple.
+		echo ">> building the release artifact (arm64 bundle + Developer ID signature)…"
 		(
 			cd "$SHELL_DIR"
 			TAURI_SIGNING_PRIVATE_KEY="$SIGN_KEY" \
 			TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$PASSPHRASE" \
-				pnpm tauri build --bundles app --target universal-apple-darwin \
+				pnpm tauri build --bundles app --target aarch64-apple-darwin \
 					--config "$RELEASE_CONFIG"
 		)
-	BUNDLE_DIR="$SHELL_DIR/src-tauri/target/universal-apple-darwin/release/bundle/macos"
+	BUNDLE_DIR="$SHELL_DIR/src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
 	ARTIFACT="$(ls "$BUNDLE_DIR"/*.app.tar.gz 2>/dev/null | head -1 || true)"
 	[[ -n "$ARTIFACT" ]] || die "the bundler produced no updater artifact under $BUNDLE_DIR"
 	BUNDLE="${BUNDLE:-$BUNDLE_DIR/$(basename "$ARTIFACT" .tar.gz)}"
@@ -717,13 +723,36 @@ spctl --assess --type execute "$BUNDLE" ||
 	die "Gatekeeper refuses the stapled app (spctl) — the signature or the ticket is not acceptable; fix and re-run, never skip"
 echo ">> the stapled app validates: stapler validate + spctl are green."
 
-# The FIRST-INSTALL artifact: the stapled app, zipped for the release page.
-# A download is quarantined; the staple inside makes its first launch clean
-# even offline. Published beside the updater chain (three assets + this one).
-STAPLED_ZIP="$(dirname "$ARTIFACT")/$(basename "$BUNDLE").zip"
-rm -f "$STAPLED_ZIP"
-ditto -c -k --keepParent "$BUNDLE" "$STAPLED_ZIP"
-echo ">> the first-install artifact: $STAPLED_ZIP (stapled)."
+# ── THE FIRST-INSTALL ARTIFACT: the DMG, built around the STAPLED app ──────
+#
+# THE OPERATOR'S DECISION (2026-10-29, III-5): the desktop app ships
+# arm64-only, and the release page's download is a DMG. Built here with
+# hdiutil around the ALREADY-STAPLED app — the updater never touches a DMG
+# (the III-4 hand-made-archive law forbids hand-made UPDATER artifacts; a
+# DMG is the human download, and the app inside is the bundler's own
+# signed, stapled bytes). Then the DMG is notarized and stapled itself, so
+# the whole first-install path — download, mount, drag, launch — is clean
+# even offline: the copied app carries its own staple.
+command -v hdiutil >/dev/null 2>&1 || die "hdiutil is not on PATH — the DMG cannot be built"
+DMG_DIR="$TMPDIR_SIGN/dmg"
+DMG_STAGING="$DMG_DIR/$(basename "$BUNDLE")"
+DMG="$(dirname "$ARTIFACT")/StewardMem.dmg"
+mkdir -p "$DMG_DIR"
+cp -R "$BUNDLE" "$DMG_STAGING"
+echo ">> building the DMG around the stapled app…"
+rm -f "$DMG"
+hdiutil create -volname "StewardMem" -srcfolder "$DMG_DIR" -ov -format UDZO "$DMG" > /dev/null ||
+	die "hdiutil could not build the DMG"
+[[ -f "$DMG" ]] || die "the DMG is absent after hdiutil: $DMG"
+echo ">> notarizing the DMG…"
+notary_submit "$DMG"
+echo ">> stapling the DMG…"
+xcrun stapler staple "$DMG" ||
+	die "stapler could not staple the DMG — fix and re-submit, never skip"
+echo ">> stapler validate (the stapled DMG)…"
+xcrun stapler validate "$DMG" ||
+	die "the stapled DMG does not validate — fix and re-run, never skip"
+echo ">> the first-install artifact: $DMG (stapled app inside, stapled DMG around it)."
 
 # ── THE PUBLICATION NAME ──────────────────────────────────────────────────
 #
@@ -855,12 +884,13 @@ fi
 command -v gh >/dev/null 2>&1 || die "gh is not on PATH — the chain cannot be published from here"
 echo ">> publishing the chain to $REPO_SLUG $TAG…"
 gh release upload "$TAG" "$ARTIFACT" "$SIGNATURE" "$MANIFEST" --repo "$REPO_SLUG" --clobber
-# The FOURTH asset: the stapled app for first install (the updater chain
+# The FOURTH asset: the stapled DMG for first install (the updater chain
 # stays exactly three — artefact, signature, manifest; this one is the
-# release page's download, quarantine + staple = an offline-clean first
-# launch). Published in the same act, so a release never half-carries it.
-[[ -f "$STAPLED_ZIP" ]] || die "the stapled first-install artifact is absent: $STAPLED_ZIP"
-gh release upload "$TAG" "$STAPLED_ZIP" --repo "$REPO_SLUG" --clobber
+# release page's download: quarantine + staple = an offline-clean first
+# launch, drag to Applications). Published in the same act, so a release
+# never half-carries it.
+[[ -f "$DMG" ]] || die "the stapled first-install DMG is absent: $DMG"
+gh release upload "$TAG" "$DMG" --repo "$REPO_SLUG" --clobber
 echo ">> published. The updater's endpoint now resolves to this release's latest.json."
 
 # ── THE DARWIN KERNEL ARTIFACTS (III-5 · the shipped-binary story) ─────────

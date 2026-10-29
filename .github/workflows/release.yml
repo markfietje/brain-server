@@ -319,20 +319,27 @@ jobs:
       # private key. This job builds the APP; the signing lane builds the
       # SIGNED artefact, where the key is.
       #
+      # ARM64-ONLY (the operator's decision, 2026-10-29, III-5): the app is
+      # built for aarch64 alone — no Intel slice. Intel Macs run the KERNEL
+      # headless (the darwin-x86_64 artifacts below), not the desktop app.
+      # The staged sidecar stays universal (the stage is the kernel's
+      # record); the aarch64 build resolves the -aarch64-apple-darwin
+      # staged file by its own target triple.
+      #
       # APPLE_SIGNING_IDENTITY overrides the overlay's Developer ID pin back
       # to ad-hoc: the public Actions hold no certificate and must never sign
       # (D6). The real identity is exercised — and its every Mach-O verified —
       # in the signing lane, where the certificate is.
-      - name: Build the universal app bundle (ad-hoc, hardened runtime)
+      - name: Build the arm64 app bundle (ad-hoc, hardened runtime)
         working-directory: shell
         env:
           APPLE_SIGNING_IDENTITY: "-"
-        run: pnpm tauri build --bundles app --target universal-apple-darwin
+        run: pnpm tauri build --bundles app --target aarch64-apple-darwin
 
       - name: Verify every Mach-O in the real bundle
         run: |
           node shell/scripts/sidecar.mjs verify \
-            "shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/StewardMem.app"
+            "shell/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/StewardMem.app"
 
       # The required-asset gate, in the same shape as the release's own
       # per-binary loop: a missing asset is refused BY NAME, never published
@@ -340,7 +347,7 @@ jobs:
       - name: Verify the app bundle is present
         run: |
           set -e
-          APP="shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/StewardMem.app"
+          APP="shell/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/StewardMem.app"
           [ -d "$APP" ] || { echo "::error::required asset missing: $APP"; exit 1; }
           [ -f "$APP/Contents/Info.plist" ] || { echo "::error::required asset missing: $APP/Contents/Info.plist"; exit 1; }
           echo "OK  the app bundle is present: $APP"
@@ -352,7 +359,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: app-universal
-          path: shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/StewardMem.app
+          path: shell/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/StewardMem.app
           include-hidden-files: true
 
   docs-deploy:
