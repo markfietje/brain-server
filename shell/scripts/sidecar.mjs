@@ -5,7 +5,7 @@
 // type-checked library and `checkJs` would demand annotations on every
 // internal helper without proving anything the behavioral pins do not.
 /**
- * III-1 — the kernel sidecar that ships INSIDE the Brain Shell.app bundle.
+ * III-1 — the kernel sidecar that ships INSIDE the StewardMem.app bundle.
  *
  * One module, builtins only, two subcommands:
  *

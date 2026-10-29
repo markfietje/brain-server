@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the release binary, install it to ~/.local/bin, and restart the
 # launchd service so the running com.brain.server picks up the new binary.
-# When the Tauri bundler has produced a Brain Shell .app (universal release
+# When the Tauri bundler has produced a StewardMem .app (universal release
 # bundle dir), it is installed to /Applications as well — best-effort, so
 # CLI-only installs keep working when no bundle exists.
 #
@@ -145,7 +145,7 @@ for entry in "${OPTIONAL_BINS[@]}"; do
 	fi
 done
 
-# 2a. Install the Brain Shell desktop app (v1.29.31: the chat-first IA — the
+# 2a. Install the StewardMem desktop app (v1.29.31: the chat-first IA — the
 #     app is now the product surface, so an operator install should not have
 #     to hand-copy the bundle out of the target tree). Best-effort like the
 #     optional bins: no bundle → skip with a log line, never fatal, so
