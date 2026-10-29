@@ -106,9 +106,14 @@ test('the_macos_bundle_lane_stages_builds_and_walks', () => {
 	// the stage step.
 	expect(workflow).toContain('runs-on: xcode-27');
 	expect(workflow).toContain('node shell/scripts/sidecar.mjs stage');
-	expect(workflow).toContain(
-		'pnpm tauri build --bundles app --target universal-apple-darwin'
-	);
+	// ARM64-ONLY (III-5, the operator's 2026-10-29 decision): the lane
+	// mirrors the shipped shape, and APPLE_SIGNING_IDENTITY overrides the
+	// overlay's Developer ID pin back to ad-hoc — the public Actions hold
+	// no certificate and must never sign (D6; the measured red that taught
+	// this: the first push carrying the overlay failed in 2m13s trying to
+	// sign with an identity the runner does not hold).
+	expect(workflow).toContain('pnpm tauri build --bundles app --target aarch64-apple-darwin');
+	expect(workflow).toContain('APPLE_SIGNING_IDENTITY: "-"');
 	expect(workflow).toContain('node shell/scripts/sidecar.mjs verify');
 	expect(workflow).toContain('targets: aarch64-apple-darwin,x86_64-apple-darwin');
 	expect(workflow).toContain('codesign --remove-signature');
