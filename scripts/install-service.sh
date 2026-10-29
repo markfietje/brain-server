@@ -150,14 +150,16 @@ done
 #     to hand-copy the bundle out of the target tree). Best-effort like the
 #     optional bins: no bundle → skip with a log line, never fatal, so
 #     CLI-only/headless installs are unaffected. The bundler's raw bundle is
-#     "Brain Shell.app" (tauri.conf productName); the "Brain-Shell.app.tar.gz"
-#     beside it is the signing lane's renamed PUBLICATION artefact (the hyphen
-#     survives GitHub's space→dot asset-name rewrite) and is not an
-#     installable .app — only a real .app directory is.
+#     "StewardMem.app" (tauri.conf productName — "Brain Shell.app" before the
+#     rebrand, kept as a fallback for older build trees); the
+#     "Brain-Shell.app.tar.gz" beside an OLD bundle was the signing lane's
+#     renamed PUBLICATION artefact (the hyphen survives GitHub's space→dot
+#     asset-name rewrite) and is not an installable .app — only a real .app
+#     directory is.
 APP_BUNDLE_DIR="$REPO/shell/src-tauri/target/universal-apple-darwin/release/bundle/macos"
 APP_INSTALL_DIR="${APP_INSTALL_DIR:-/Applications}"
 SRC_APP=""
-for cand in "Brain-Shell.app" "Brain Shell.app"; do
+for cand in "StewardMem.app" "Brain-Shell.app" "Brain Shell.app"; do
     [[ -d "$APP_BUNDLE_DIR/$cand" ]] && SRC_APP="$APP_BUNDLE_DIR/$cand" && break
 done
 if [[ -z "$SRC_APP" ]]; then
@@ -181,7 +183,7 @@ else
     # Never replace a RUNNING app: the live instance would keep executing a
     # half-replaced bundle while its resources shift underneath it.
     if pgrep -f "$DEST_APP/Contents/MacOS" >/dev/null 2>&1; then
-        die "Brain Shell is running from $DEST_APP -- quit it, then re-run"
+        die "StewardMem is running from $DEST_APP -- quit it, then re-run"
     fi
     # Remove-then-copy, never merge: a plain copy-over leaves stale files from
     # the previous bundle inside the new one. The rm is guarded to the install
