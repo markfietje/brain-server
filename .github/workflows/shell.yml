@@ -270,7 +270,7 @@ jobs:
       - name: Verify every Mach-O in the real bundle
         run: |
           node shell/scripts/sidecar.mjs verify \
-            "shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/Brain Shell.app"
+            "shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/StewardMem.app"
 
       # The phase's red-proof, on the REAL bundle: /bin/echo is Apple-signed,
       # so merely copying it stays green — the signature must be STRIPPED.
@@ -279,14 +279,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bundle="shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/Brain Shell.app"
+          bundle="shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/StewardMem.app"
           scratch="$(mktemp -d)"
           trap 'rm -rf "$scratch"' EXIT
-          cp -R "$bundle" "$scratch/Brain Shell.app"
-          cp /bin/echo "$scratch/Brain Shell.app/Contents/MacOS/planted-helper"
-          codesign --remove-signature "$scratch/Brain Shell.app/Contents/MacOS/planted-helper"
+          cp -R "$bundle" "$scratch/StewardMem.app"
+          cp /bin/echo "$scratch/StewardMem.app/Contents/MacOS/planted-helper"
+          codesign --remove-signature "$scratch/StewardMem.app/Contents/MacOS/planted-helper"
           set +e
-          node shell/scripts/sidecar.mjs verify "$scratch/Brain Shell.app" > "$scratch/plant.log" 2>&1
+          node shell/scripts/sidecar.mjs verify "$scratch/StewardMem.app" > "$scratch/plant.log" 2>&1
           status=$?
           set -e
           cat "$scratch/plant.log"
@@ -299,4 +299,4 @@ jobs:
 
       - name: Bundled sidecar answers with the recorded version
         run: |
-          "shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/Brain Shell.app/Contents/MacOS/brain-server" --version
+          "shell/src-tauri/target/universal-apple-darwin/release/bundle/macos/StewardMem.app/Contents/MacOS/brain-server" --version

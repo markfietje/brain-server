@@ -58,7 +58,7 @@ to its new home: the bundle identifier is `com.stewardmem.shell`.
   so stored tokens are simply re-granted and the updater signing passphrase
   is re-stored once with `scripts/updater-key-passphrase.sh`.
 
-**Fixed**
+**Bug fixes**
 
 - **A poisoned replay no longer kills a case.** Model text that merely
   *looks* like JSON (a bracket-leading refusal, for example) was refused by
@@ -1451,7 +1451,7 @@ corpus.
   unreachable endpoint is its **own** state and is never rendered as "you are
   up to date".
 
-**Fixed**
+**Bug fixes**
 
 - **The install dropped its outcome.** The check's answer reached the panel;
   the install's did not, so a refusal during an install rendered as nothing
@@ -1488,7 +1488,7 @@ and by the update section's absence.
 
 ## [Unreleased] — the local install links again (the `rerank-tier` feature)
 
-**Fixed**
+**Bug fixes**
 
 - **`scripts/install-service.sh` failed at the link step**, so the operator
   could not install the kernel: `Undefined symbols for architecture arm64:
@@ -1547,7 +1547,7 @@ and by the update section's absence.
 
 ## [Unreleased] — the webview's wire can reach the kernel (III-4a)
 
-**Fixed**
+**Bug fixes**
 
 - **The shipped app could not talk to its own kernel.** The wizard showed
   *"Could not reach the kernel"* for a kernel that was running, healthy and
@@ -4874,7 +4874,7 @@ linking table; and the two tables share no hash column (`proposals` has no
 `content_hash`). Option (a), the audit chain, was measured closed first:
 `audit_events` stores only SHA-256 digests and a hash is not reversible.
 
-**Fixed**
+**Bug fixes**
 
 - **`proposals.promoted_chunk_id INTEGER`** (schema **1.32.25 → 1.32.26**): one
   additive, NULLable, `pragma_table_info`-guarded column — the proposal→chunk
@@ -5017,7 +5017,7 @@ F8-01 (HIGH), F8-02 (HIGH), F8-05 (MEDIUM) from `docs/audit8/`. **No runtime
 authorization behaviour changes** — the authz half is prose and pins only, and
 `src/authz/policy.rs` is diff-empty.
 
-**Fixed**
+**Bug fixes**
 
 - **`no_sql_in_handlers_enforced` now runs a second, STRUCTURAL counter.** The
   keyword counter recognised exactly four statement openers (`select` /
