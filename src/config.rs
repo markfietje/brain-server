@@ -1563,22 +1563,23 @@ pub fn gdl_case_token_budget() -> Option<u64> {
         .or(GDL_CASE_TOKEN_BUDGET_DEFAULT)
 }
 
-/// The measured default (F12b): the p99 of per-case usage over the 12
-/// judged `eval_run1` seeds (112 under the eval harness's loopback
-/// accounting — 79 `gdl_gate` usage rows, 7-9 exchanges x 14
-/// tokens/call, deterministic), times the bounded retry ladder
-/// (MAX_PHASE_ATTEMPTS = 3): a case that exercises every phase's full
-/// gate-error retry budget must still resolve; only spend beyond the
-/// bounded shape caps. 336 = 112 x 3. Re-derived by
-/// `gdl_eval::tests::the_default_case_budget_is_the_measured_p99`; the
-/// pin fails when the measurement drifts, so the default is the
-/// measurement and the repo's own retry constant, never a chosen
-/// number. Scale caveat, recorded: 14 tokens/exchange is the LOOPBACK
-/// PROVIDER's own accounting, not a frontier model's — the default
-/// tracks the harness scale and an operator running real providers
-/// should set `BRAIN_GDL_CASE_TOKEN_BUDGET` to their own measured
-/// ceiling.
-pub const GDL_CASE_TOKEN_BUDGET_DEFAULT: Option<u64> = Some(3 * 112);
+/// The measured default. THE PILOT'S NAMED ACT (2026-10-29, preregistered
+/// in the private repo's `plans/loop-learning/PILOT_EVIDENCE_2026-10-29.md`
+/// BEFORE the first live run): the basis moved from loopback accounting to
+/// the LIVE provider population — the pilot's 19 inputs (12 structural
+/// seeds + the 7-case gold pack) through the real `afm-stdio` bridge, whose
+/// per-case total-usage p99 measured 3,987 tokens (every case advanced past
+/// a first-attempt intake and terminated at the triage escalation; a
+/// RESOLVING case costs more — the default is the measured floor of the
+/// observed population, and the operator override remains the seam until a
+/// tier re-measure completes cases). The construction is unchanged from
+/// F12b: p99 × the bounded retry ladder (`MAX_PHASE_ATTEMPTS = 3`);
+/// 11,961 = 3,987 × 3. The loopback pin
+/// (`gdl_eval::tests::the_default_case_budget_is_the_measured_p99`) is
+/// re-based as the FLOOR: it still re-derives the loopback population each
+/// run (the drift alarm for the harness scale), and holds the shipped
+/// default above 3 × the loopback p99 — the live basis is named here.
+pub const GDL_CASE_TOKEN_BUDGET_DEFAULT: Option<u64> = Some(3 * 3_987);
 
 /// whether the opt-in `/suggest` routes are live. Defaults
 /// to `true` (the feature ships on); set `BRAIN_SUGGEST_ENABLED=false` to

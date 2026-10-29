@@ -37,12 +37,12 @@ that applies them, not in prose that can drift from it.
 
 | Class | Tests | Share |
 |---|---:|---:|
-| `behavioral_pin` | 3155 | 86.3% |
+| `behavioral_pin` | 3157 | 86.3% |
 | `structural` | 368 | 10.1% |
 | `control` | 62 | 1.7% |
 | `residual_documentation` | 63 | 1.7% |
 | `unclassified` | 9 | 0.2% |
-| **total** | **3657** | |
+| **total** | **3659** | |
 
 Scope: `src/` + `tests/`, the two trees the badge's count comes from.
 The census reads HIGHER than the README badge for two reasons, both
@@ -85,8 +85,8 @@ have no call in it.
 | `src/trace.rs:47` `trace_traversal_caps_are_bounded` |
 | `src/workflow/decide/router.rs:351` `alias_checkpoints_table_is_the_three_names` |
 | `src/workflow/decide/router.rs:361` `alias_bundle_repo_is_the_english_root` |
-| `src/workflow/gdl.rs:6283` `adversarial_task_bound_is_pinned_by_value` |
-| `src/workflow/gdl.rs:6294` `artifact_bounds_are_pinned_by_value` |
+| `src/workflow/gdl.rs:6288` `adversarial_task_bound_is_pinned_by_value` |
+| `src/workflow/gdl.rs:6299` `artifact_bounds_are_pinned_by_value` |
 | `src/workflow/session_log.rs:1161` `scope_caps_are_pinned_by_value` |
 
 ## What this census does NOT police

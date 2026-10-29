@@ -879,15 +879,12 @@ pub(crate) mod tests {
             "body: {v}"
         );
         assert_eq!(v["error"]["code"], "gdl_bridge_unavailable", "body: {v}");
-        // The run is untouched: the refusal preceded every mutation.
+        // The run is untouched: the refusal preceded every mutation (read
+        // through the state core — handlers are protocol adapters, tests
+        // included; the SQL inventory pins it).
         let conn = f.state.pool.get().unwrap();
-        let (status, revision): (String, i64) = conn
-            .query_row(
-                "SELECT status, state_revision FROM workflow_runs WHERE id = ?1",
-                [run_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
+        let (_, _, status, _, revision) =
+            crate::workflow::state::launch_row(&conn, run_id).unwrap().unwrap();
         assert_eq!(status, "active");
         assert_eq!(revision, 0, "a refused launch leaves the run fresh");
     }

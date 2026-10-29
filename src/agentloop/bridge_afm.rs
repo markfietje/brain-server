@@ -426,6 +426,18 @@ fn fail_all_pending(
     }
 }
 
+/// The candidate locations of the built bridge child (the shipped-bundle
+/// layout first, then the plain swift-build layout). ONE list, shared by
+/// the chat spawn path's callers and every lane that drives the real child,
+/// so a build-layout change moves all of them together.
+pub(crate) fn bridge_path_candidates() -> Vec<std::path::PathBuf> {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    vec![
+        repo_root.join("shell-macos/.build/out/Products/Debug/brain-afm"),
+        repo_root.join("shell-macos/.build/arm64-apple-darwin/debug/brain-afm"),
+    ]
+}
+
 /// The process-wide chat bridge, spawned once from the configured path.
 /// `None` means "no bridge binary here" — the chat route's named refusal,
 /// never a crash: every other surface of the server is unaffected.
@@ -460,11 +472,7 @@ mod tests {
     /// — the shell-macos suite owns the binary's own pins.
     #[tokio::test]
     async fn the_real_bridge_answers_capabilities_and_a_refusal_by_name() {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let candidates = [
-            repo_root.join("shell-macos/.build/out/Products/Debug/brain-afm"),
-            repo_root.join("shell-macos/.build/arm64-apple-darwin/debug/brain-afm"),
-        ];
+        let candidates = bridge_path_candidates();
         let Some(binary) = candidates.iter().find(|p| p.is_file()) else {
             eprintln!(
                 "brain-afm not built; run `swift build` in shell-macos — SKIPPING (owned by the Swift suite)"

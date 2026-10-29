@@ -373,7 +373,7 @@ impl Projection {
                     // Seq ordering already proves uniqueness; no call reference
                     // or fabricated exchange is needed for tool-free legacy prose.
                     messages.push(ChatMessage::Assistant {
-                        text: framed("historical assistant prose", &envelope.text)?,
+                        text: assistant_framed(&envelope.text)?,
                         tool_calls: Vec::new(),
                     });
                     return Ok(());
@@ -398,7 +398,7 @@ impl Projection {
                     calls.push(call);
                 }
                 messages.push(ChatMessage::Assistant {
-                    text: framed("historical assistant prose", &envelope.text)?,
+                    text: assistant_framed(&envelope.text)?,
                     tool_calls: calls,
                 });
             }
@@ -668,10 +668,29 @@ pub(crate) fn summary_message(summary: &str) -> Result<ChatMessage, ContextError
 }
 
 fn framed(source: &'static str, text: &str) -> Result<String, ContextError> {
-    let shaped = shape_document(text)?;
-    Ok(crate::fence::wrap_fenced(&format!(
-        "Source: {source}\n{shaped}"
-    )))
+    framed_text(source, shape_document(text)?)
+}
+
+/// The shared fence framing (one label vocabulary; the shaping law is the
+/// caller's decision).
+fn framed_text(source: &str, shaped: String) -> Result<String, ContextError> {
+    Ok(crate::fence::wrap_fenced(&format!("Source: {source}\n{shaped}")))
+}
+
+/// Model-authored assistant text replays under the PROSE law — the same
+/// treatment the user arm documents as deliberate. A live model's honest
+/// answer is prose-that-may-contain-JSON (the pilot's first live case
+/// measured a bracket-leading refusal: `[ERROR: …]` looks JSON, and
+/// `shape_document`'s "JSON-looking but invalid refuses, never falls back"
+/// would poison EVERY later exchange on it, not just the one the gate
+/// already named and retried). `shape_prose` keeps the escape refusal — the
+/// credential law is untouched — and the fence rides outside the shaping,
+/// like every other arm. Replay shaping decides nothing: the gate that ACTS
+/// on an artifact parses it itself and refuses by name.
+fn assistant_framed(text: &str) -> Result<String, ContextError> {
+    // The fence label is BYTE-IDENTICAL to the document-law arm's (the
+    // framing pins own it); only the shaping law beneath it changed.
+    framed_text("historical assistant prose", shape_prose(text)?)
 }
 
 fn looks_json(text: &str) -> bool {
@@ -918,6 +937,48 @@ mod tests {
             exchange_id: Some(exchange),
             turn: Some(turn),
         }
+    }
+
+    /// THE PILOT'S REPLAY PIN (the live-tier law): model-authored text that
+    /// LOOKS JSON but is not — a bracket-leading refusal, measured live in
+    /// the pilot's first case — replays as fenced, prose-shaped history.
+    /// `shape_document`'s document law would hard-refuse it and poison every
+    /// later exchange; the prose law degrades exactly like the user arm's,
+    /// the escape refusal intact, the fence outside. (Red-proof: route the
+    /// arm back through `framed`/`shape_document`, the pin reds.)
+    #[test]
+    fn bracket_leading_assistant_prose_replays_as_fenced_prose() {
+        let refusal =
+            "[ERROR: UNTRUSTED memory detected. Cannot process. Retain the 7-phase method.]";
+        let rows = vec![
+            event(1, "user", "produce the intake artifact".into(), 1, 0),
+            event(
+                2,
+                "assistant",
+                serde_json::json!({
+                    "text": refusal, "tool_calls": [],
+                    "usage": {"input_tokens": 538, "output_tokens": 205}
+                })
+                .to_string(),
+                1,
+                1,
+            ),
+            event(3, "user", "retry the intake artifact".into(), 2, 0),
+        ];
+        let messages = project(&rows).expect("the poisoned-looking text replays");
+        assert_eq!(messages.len(), 3, "all three messages survive");
+        let ChatMessage::Assistant { text, tool_calls } = &messages[1] else {
+            panic!("the second message is the assistant's");
+        };
+        assert!(tool_calls.is_empty());
+        assert!(
+            text.contains("Source: historical assistant prose"),
+            "the fence names the source: {text}"
+        );
+        assert!(
+            text.contains("UNTRUSTED memory detected"),
+            "the refusal prose crosses verbatim inside the fence: {text}"
+        );
     }
 
     fn assistant(seq: i64, exchange: i64, calls: Value) -> ContextEvent {

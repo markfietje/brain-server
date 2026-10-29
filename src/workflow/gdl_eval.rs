@@ -465,13 +465,16 @@ pub(crate) mod runner {
 mod tests {
     use super::*;
 
-    /// F12b: the measured default. Every judged seed's gate rows now carry
-    /// per-exchange usage; this pin re-runs the 12-seed population, derives
-    /// the per-phase and total p99 from the PERSISTED rows, and holds the
-    /// shipped default to the measurement — a retune of the loopback
-    /// accounting or the scripts shows up as a drift, which is a
-    /// re-measure, not a silence. The record lives in `docs/AGENTS.md` and
-    /// the F12b commit message.
+    /// F12b, re-based by the pilot's named act (2026-10-29): every judged
+    /// seed's gate rows carry per-exchange usage; this pin re-runs the
+    /// 12-seed population, derives the per-phase and total p99 from the
+    /// PERSISTED rows, and holds the shipped default at or above 3 x the
+    /// loopback p99 — the harness scale as the floor. The default's BASIS
+    /// is now the live population (the constant's doc names it); a loopback
+    /// retune that would push the floor past the shipped default reds here
+    /// — a re-measure of the live basis, never a silence. The record lives
+    /// in `docs/AGENTS.md`, the F12b commit message, and the private repo's
+    /// PILOT_EVIDENCE.
     #[test]
     fn the_default_case_budget_is_the_measured_p99() {
         use crate::workflow::gdl::eval_fixtures;
@@ -575,14 +578,19 @@ mod tests {
             eval_fixtures::structural_seeds().len(),
             totals.iter().copied().max().unwrap_or(0)
         );
-        // The default is the measured p99 times the bounded retry ladder
-        // (MAX_PHASE_ATTEMPTS = 3): the happy-path measurement with full
-        // headroom for the retries the phase contract already allows.
-        assert_eq!(
-            crate::config::GDL_CASE_TOKEN_BUDGET_DEFAULT,
-            Some(3 * total_p99),
-            "the shipped default must be the measured p99 x the retry ladder, \
-             not a chosen number"
+        // THE PILOT'S RE-BASE (the named act of 2026-10-29): the default's
+        // BASIS moved to the LIVE population (see the constant's doc — the
+        // pilot's 19 inputs through the real bridge, p99 3,987 x 3). This
+        // pin keeps its drift-alarm role on the loopback scale: the
+        // loopback population re-derives here every run, and the shipped
+        // default must stay at or above 3 x the loopback p99 — the harness
+        // scale is the floor, the live measurement is the basis. A loopback
+        // retune that would push the floor PAST the shipped default reds
+        // here, which is a re-measure of the live basis, never a silence.
+        assert!(
+            crate::config::GDL_CASE_TOKEN_BUDGET_DEFAULT >= Some(3 * total_p99),
+            "the shipped default must not fall below the loopback population's \
+             own p99 x the retry ladder (3 x {total_p99})"
         );
     }
 
@@ -1329,5 +1337,325 @@ never rewritten).\n",
         let legacy: EvalRow = serde_json::from_value(legacy_value).unwrap();
         assert_eq!(legacy.soft_handoff_fired, 0);
         assert_eq!(legacy.soft_handoff_justified, 0);
+    }
+}
+
+/// The PILOT's live instrument (P-3). PREREGISTERED in the private repo's
+/// `plans/loop-learning/PILOT_EVIDENCE_2026-10-29.md` BEFORE the first run:
+/// what is measured (per-case outcomes, gdl_gate token rows, per-phase
+/// exchange counts, wall time, the disagreement tuples) and how the budget
+/// act is derived (3 × live total p99) were fixed in advance; this module
+/// only executes that contract. Env-gated: `BRAIN_PILOT_LIVE=1` and the
+/// real bridge binary — otherwise a NAMED skip (the lane belongs to the
+/// operator machine; CI never runs a model). Zero egress beyond the bridge's
+/// stdio; nothing recorded here is case content.
+#[cfg(test)]
+mod pilot_live {
+    use super::super::gdl::eval_fixtures::{
+        ExecutionEnv, GdlOutcome, LoopConfig, SqliteWorkflowHost, structural_seeds,
+    };
+    use crate::agentloop::bridge_afm::{AfmBridge, bridge_path_candidates};
+    use crate::agentloop::provider::LlmProvider;
+    use crate::agentloop::provider_afm::AfmBridgeProvider;
+    use crate::config;
+    use crate::migration::run_migration;
+    use crate::pool::SqliteConnectionManager;
+    use crate::register_sqlite_vec::register_sqlite_vec;
+    use brain_engine_sdk::env::DenyAll;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::Instant;
+    use tokio_util::sync::CancellationToken;
+
+    fn live_lane_ready() -> Option<PathBuf> {
+        if std::env::var("BRAIN_PILOT_LIVE").ok().as_deref() != Some("1") {
+            return None;
+        }
+        bridge_path_candidates().into_iter().find(|p| p.is_file())
+    }
+
+    fn outcome_label(outcome: &GdlOutcome) -> (String, Option<String>) {
+        match outcome {
+            GdlOutcome::Resolved { .. } => ("resolved".into(), None),
+            GdlOutcome::Routed { at, .. } => ("routed".into(), Some(at.as_str().into())),
+            GdlOutcome::Escalated { at, .. } => ("escalated".into(), Some(at.as_str().into())),
+            GdlOutcome::VerifyFailed { at, .. } => {
+                ("verify_failed".into(), Some(at.as_str().into()))
+            }
+            GdlOutcome::Canceled => ("canceled".into(), None),
+            GdlOutcome::Capped { at, .. } => ("capped".into(), Some(at.as_str().into())),
+            GdlOutcome::ProviderFailed { at, .. } => {
+                ("provider_failed".into(), Some(at.as_str().into()))
+            }
+        }
+    }
+
+    /// One live case over a fresh substrate: returns the case's record line
+    /// value (outcome, tokens, exchange count, wall ms, tuples). The
+    /// plumbing is the budget pin's, with the REAL provider injected.
+    async fn run_live_case(
+        provider: Arc<dyn LlmProvider>,
+        ticket: &str,
+        domain: &str,
+    ) -> serde_json::Value {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mgr = SqliteConnectionManager::file(tmp.path());
+        let pool: crate::workflow::gdl::eval_fixtures::EvalPool =
+            r2d2::Pool::builder().max_size(4).build(mgr).unwrap();
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).unwrap();
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES (?1, 'troubleshoot', '{}', 0, 'active', 1, 1)",
+                rusqlite::params![domain],
+            )
+            .unwrap();
+        let run_id: i64 = pool
+            .get()
+            .unwrap()
+            .query_row("SELECT MAX(id) FROM workflow_runs", [], |r| r.get(0))
+            .unwrap();
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO knowledge(domain, title, content, flagged) VALUES (?1, 'Test playbook', ?2, 0)",
+                rusqlite::params![domain, format!("Test playbook covering the ticket: {ticket}")],
+            )
+            .unwrap();
+        let host = Arc::new(SqliteWorkflowHost::new(pool.clone()));
+        let driver = crate::workflow::gdl::eval_fixtures::GdlDriver::new(
+            pool.clone(),
+            host,
+            provider.clone(),
+            vec![],
+            ExecutionEnv {
+                fs: Arc::new(DenyAll),
+                read_only: true,
+                allow_process: false,
+                root: "/".into(),
+                allowed_commands: vec![],
+            },
+            LoopConfig::default(),
+        );
+        let started = Instant::now();
+        let outcome = match driver
+            .run_case(run_id, ticket, &CancellationToken::new())
+            .await
+        {
+            Ok(o) => o,
+            Err(e) => panic!("the live case drives to an outcome: {e}"),
+        };
+        let wall_ms = started.elapsed().as_millis() as u64;
+        let conn = pool.get().unwrap();
+        let mut tokens = (0u64, 0u64);
+        let mut exchanges = 0usize;
+        let mut gate_errors: Vec<serde_json::Value> = Vec::new();
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT payload_json FROM agent_session_events \
+                     WHERE run_id = ?1 AND kind = 'gdl_gate'",
+                )
+                .unwrap();
+            let rows: Vec<String> = stmt
+                .query_map([run_id], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            for row in rows {
+                let v: serde_json::Value = serde_json::from_str(&row).unwrap();
+                exchanges += 1;
+                if let Some(u) = v["usage"].as_array() {
+                    tokens.0 += u[0].as_u64().unwrap_or(0);
+                    tokens.1 += u[1].as_u64().unwrap_or(0);
+                }
+                // The disagreement shape: the named errors the gate returned
+                // (deduplicated by phase) — the κ story's raw material.
+                if v["verdict"] == "fail" {
+                    let phase = v["phase"].as_str().unwrap_or("?").to_string();
+                    let errors = v["errors"].as_array().cloned().unwrap_or_default();
+                    if !gate_errors
+                        .iter()
+                        .any(|e| e["phase"] == phase && e["errors"].as_array() == Some(&errors))
+                    {
+                        gate_errors.push(serde_json::json!({ "phase": phase, "errors": errors }));
+                    }
+                }
+            }
+        }
+        // The tuples are agent_session_events rows of the disagreement kind
+        // (session_log::append, not a table of their own).
+        let tuples: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events \
+                 WHERE run_id = ?1 AND kind = 'reflection_disagreement'",
+                [run_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let (kind, at) = outcome_label(&outcome);
+        serde_json::json!({
+            "run_id": run_id,
+            "outcome": { "kind": kind, "at_phase": at },
+            "tokens": { "input": tokens.0, "output": tokens.1, "total": tokens.0 + tokens.1 },
+            "exchanges": exchanges,
+            "wall_ms": wall_ms,
+            "disagreement_tuples": tuples,
+            "gate_errors": gate_errors,
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_pilot_population_runs_live() {
+        let Some(binary) = live_lane_ready() else {
+            eprintln!(
+                "SKIP the_pilot_population_runs_live: BRAIN_PILOT_LIVE != 1 or no brain-afm binary \
+                 (the live lane belongs to the operator machine with the bridge)"
+            );
+            return;
+        };
+        let bridge = AfmBridge::spawn(&binary).expect("spawn the real bridge");
+        let adapter = AfmBridgeProvider::for_bridge(bridge)
+            .await
+            .expect("the real child answers capabilities");
+        let provider: Arc<dyn LlmProvider> = Arc::new(adapter);
+        let mut records: Vec<(String, serde_json::Value)> = Vec::new();
+
+        // BRAIN_PILOT_ONLY: an optional comma-separated id selector so an
+        // operator can batch the population across runs — the per-case
+        // records are the measurement; the preregistered aggregates are
+        // computed over the UNION, never per batch.
+        let only: Option<Vec<String>> = std::env::var("BRAIN_PILOT_ONLY")
+            .ok()
+            .map(|v| v.split(',').map(|s| s.trim().to_string()).collect());
+        let wants = |id: &str| {
+            only.as_ref()
+                .map(|v| v.iter().any(|x| x == id))
+                .unwrap_or(true)
+        };
+
+        // The 12 structural seeds (arm A — the FULL machine; the passage
+        // never yet run live).
+        for seed in structural_seeds() {
+            if !wants(seed.id) {
+                continue;
+            }
+            let r = run_live_case(provider.clone(), seed.ticket, "acme").await;
+            eprintln!(
+                "PILOT_CASE {}",
+                serde_json::json!({
+                    "source": "seed", "id": seed.id, "must_resolve": seed.must_resolve,
+                    "record": r,
+                })
+            );
+            records.push((seed.id.to_string(), r));
+        }
+
+        // The 7-case gold pack: two-door rule (explicit GDL_R10_PACK_DIR is
+        // a fail-closed operator request; the private-sibling default is a
+        // named skip when absent).
+        let dir = match std::env::var("GDL_R10_PACK_DIR") {
+            Ok(d) if !d.trim().is_empty() => Some(PathBuf::from(d)),
+            _ => {
+                let sibling = PathBuf::from("../brain-steward-ip/conformance");
+                if sibling.join("gdl_gold_pack_v1.jsonl").is_file() {
+                    Some(sibling)
+                } else {
+                    eprintln!("PILOT_PACK_SKIP: no gold pack sibling and no GDL_R10_PACK_DIR");
+                    None
+                }
+            }
+        };
+        let mut ambiguous: Vec<String> = Vec::new();
+        if let Some(dir) = dir {
+            let register_raw =
+                std::fs::read_to_string(dir.join("gdl_ambiguity_register_v1.jsonl")).unwrap();
+            ambiguous = register_raw
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| {
+                    serde_json::from_str::<serde_json::Value>(l).expect("register line")["case_id"]
+                        .as_str()
+                        .expect("case_id")
+                        .to_string()
+                })
+                .collect();
+            let pack_raw = std::fs::read_to_string(dir.join("gdl_gold_pack_v1.jsonl")).unwrap();
+            for line in pack_raw.lines().filter(|l| !l.trim().is_empty()) {
+                let case: serde_json::Value = serde_json::from_str(line).expect("pack line");
+                let case_id = case["case_id"].as_str().unwrap().to_string();
+                if !wants(&case_id) {
+                    continue;
+                }
+                let ticket = case["ticket"].as_str().unwrap().to_string();
+                let r = run_live_case(provider.clone(), &ticket, "acme").await;
+                eprintln!(
+                    "PILOT_CASE {}",
+                    serde_json::json!({
+                        "source": "pack", "id": case_id,
+                        "excluded_ambiguous": ambiguous.contains(&case_id),
+                        "expected": case.get("expected").cloned().unwrap_or(serde_json::Value::Null),
+                        "record": r,
+                    })
+                );
+                records.push((case_id, r));
+            }
+        }
+
+        // ── the aggregates, computed ONLY from the population ──────────
+        let totals: Vec<u64> = records
+            .iter()
+            .map(|(_, r)| r["tokens"]["total"].as_u64().unwrap_or(0))
+            .collect();
+        let p99 = |mut v: Vec<u64>| -> u64 {
+            v.sort_unstable();
+            let idx = ((v.len() as f64) * 0.99).ceil() as usize;
+            v.get(idx.saturating_sub(1)).copied().unwrap_or(0)
+        };
+        let a1 = p99(totals);
+        eprintln!(
+            "PILOT_A1 total_p99={a1} cases={} (the budget act: 3 × {a1} vs the loopback 336)",
+            records.len()
+        );
+        eprintln!(
+            "PILOT_A6 direction: live_p99({a1}) >= loopback_112 → {}",
+            a1 >= 112
+        );
+        let max_wall = records
+            .iter()
+            .map(|(_, r)| r["wall_ms"].as_u64().unwrap_or(0))
+            .max()
+            .unwrap_or(0);
+        let max_tokens = records
+            .iter()
+            .map(|(_, r)| r["tokens"]["total"].as_u64().unwrap_or(0))
+            .max()
+            .unwrap_or(0);
+        eprintln!(
+            "PILOT_A3 max_case_wall_ms={max_wall} max_case_total_tokens={max_tokens} (the 120s rail is per-exchange; case wall is the coarse bound)"
+        );
+        let tuples: u64 = records
+            .iter()
+            .map(|(_, r)| r["disagreement_tuples"].as_u64().unwrap_or(0))
+            .sum();
+        eprintln!(
+            "PILOT_H4 disagreement_tuples={tuples} over {} resolved-or-not cases (≥1 per 2 cases is the floor)",
+            records.len()
+        );
+        let resolved = records
+            .iter()
+            .filter(|(_, r)| r["outcome"]["kind"] == "resolved")
+            .count();
+        eprintln!(
+            "PILOT_SUMMARY cases={} resolved={resolved} routed={} other={}",
+            records.len(),
+            records
+                .iter()
+                .filter(|(_, r)| r["outcome"]["kind"] == "routed")
+                .count(),
+            records.len() - resolved
+        );
     }
 }
