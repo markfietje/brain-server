@@ -88,7 +88,7 @@ const PROVENANCE_NAME = 'SIDECAR_PROVENANCE.json';
  * URL found it on the day it was written.)
  */
 const DEFAULT_URL_TEMPLATE =
-	'https://github.com/markfietje/brain-server/releases/download/{tag}';
+	'https://github.com/stewardmem/stewardmem/releases/download/{tag}';
 
 /**
  * The release tag, and whether this repository HAS it.

@@ -977,7 +977,7 @@ test('the_signing_lane_refuses_to_sign_in_the_public_actions', () => {
 			fresh.secretKey,
 			'--dry-run'
 		],
-		{ GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'markfietje/brain-server' }
+		{ GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'stewardmem/stewardmem' }
 	);
 
 	expect(result.status).not.toBe(0);
