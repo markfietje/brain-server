@@ -1023,8 +1023,12 @@ describe('the envelope law', () => {
 		// bytes gzipped (+2,666 over the F-2 midpoint). §1.4 is a BUILD
 		// round, not a refactor: the surface grew by a named act, the
 		// band's midpoint moves to the measurement, and the register row
-		// carries it.
-		const R0_BASELINE = 213_910;
+		// carries it. AND AGAIN (2026-10-30, the S-4 onboarding round):
+		// the retrieval model's download surface (settings section + poll,
+		// the Advanced fold, the drag-region fix, 30 message keys × five
+		// locales) → 215,696 gzipped (+1,786) — the same law: a named
+		// surface act moves the midpoint, the register row carries it.
+		const R0_BASELINE = 215_696;
 		const BAND = 512;
 		expect(
 			Math.abs(total - R0_BASELINE),

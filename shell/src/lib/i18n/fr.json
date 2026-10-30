@@ -432,5 +432,11 @@
   "review.approve.drift": "Cette ligne a changé depuis l’affichage — rechargez la file et décidez à nouveau.",
   "review.approve.refused": "Le noyau a refusé l’approbation (HTTP {status}).",
   "review.approve.offline": "Le noyau était injoignable — rien n’a été approuvé.",
-  "review.approve.malformed": "La réponse du noyau n’a pas pu être vérifiée — rien n’a été approuvé."
+  "review.approve.malformed": "La réponse du noyau n’a pas pu être vérifiée — rien n’a été approuvé.",
+  "settings.model.heading": "Modèle de récupération",
+  "settings.model.loading": "Téléchargement de {model} — une fois.",
+  "settings.model.ready": "{model} — prêt.",
+  "settings.model.failed": "Échec du téléchargement. Relancez pour réessayer.",
+  "settings.model.fallback_name": "le modèle de récupération",
+  "settings.model.hint": "Sur ce Mac seul. Recall marche."
 }

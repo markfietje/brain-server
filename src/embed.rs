@@ -80,6 +80,24 @@ pub trait Embedder: Send + Sync {
     /// The model id (HF repo or local path) — for `/health` reporting +
     /// provenance, mirroring the existing `MODEL_ID` surfacing.
     fn model_id(&self) -> &str;
+
+    /// The boot-lazy load state (the first-run download surface). Every
+    /// eagerly-constructed backend is `Ready` by definition — only the
+    /// [`LazyEmbedder`] overrides it, which is the point: the server BINDS
+    /// while the model still downloads, and the app names that posture
+    /// instead of staring at a dead port (the S-4 clean-machine witness
+    /// measured the old boot order timing out the app's 10-second wait on
+    /// every first launch: 16.8 s of HuggingFace fetch inside a 10 s
+    /// window).
+    fn model_state(&self) -> ModelState {
+        ModelState::Ready
+    }
+
+    /// The load failure, when [`Self::model_state`] is `Failed` — named in
+    /// `/health/db`'s `model_error` so a stuck onboarding names its cause.
+    fn model_error(&self) -> Option<String> {
+        None
+    }
 }
 
 // ── Default backend: model2vec StaticModel (edge/Jetson, unchanged) ─────────
@@ -418,7 +436,180 @@ pub mod neural {
     }
 }
 
-// ── Factory: profile → backend ──────────────────────────────────────────────
+// ── Factory: profile → backend ──────────────────────────────────────────
+
+/// The boot-lazy model state. `Loading` means the HuggingFace fetch (or the
+/// local load) is still running in the background thread — the server is UP
+/// and serving; `Ready` means encode calls hit the real model; `Failed`
+/// means the fetch errored (named in `/health/db`'s `model_error`). Recall
+/// in the Loading/Failed states returns the documented caller-skip shape
+/// (missing embedding ⇒ empty vec ⇒ caller skips): the deterministic
+/// answer path works WITHOUT the model — the R142 fallback posture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelState {
+    Loading,
+    Ready,
+    Failed,
+}
+
+impl ModelState {
+    /// The wire spelling (`/health/db`'s additive `model_state` field).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelState::Loading => "loading",
+            ModelState::Ready => "ready",
+            ModelState::Failed => "failed",
+        }
+    }
+}
+
+/// The store dimension per retrieval profile — WITHOUT loading the model.
+///
+/// The migration stamps `embedding_dim` from the embedder's `store_dim()`,
+/// which historically forced the full model download to complete BEFORE
+/// the migration could run, before the port could bind — the app's bounded
+/// 10-second sidecar wait starved on every clean machine (measured in the
+/// S-4 clean-machine witness: 16.8 s of first-fetch inside the window, and
+/// the app killed the kernel at 10 s — the first-run defect, reproduced).
+/// The dimension is a KNOWN CONSTANT of each profile's model, so the table
+/// below resolves it statically and the model itself loads in the
+/// background after bind.
+///
+/// PINNED BY `dim_table_matches_the_loaded_factory`: every row must equal
+/// the loaded embedder's `store_dim()` for the same profile — the table is
+/// a mirror of the factory, and the pin is what keeps it a mirror.
+pub fn dim_for_profile(profile: &str) -> usize {
+    match profile {
+        #[cfg(feature = "neural-embed")]
+        "enterprise" => 1_024, // bge-m3 dense (NeuralEmbedder::new(…, 1024))
+        #[cfg(feature = "neural-embed")]
+        "desktop" => 768, // gte-base-en-v1.5 (GteEmbedder)
+        // The static backends share the trait's default store_dim — the
+        // `static_embedder_default_store_dim_is_512` pin holds it.
+        _ => 512,
+    }
+}
+
+type BoxedLoader = Box<dyn FnOnce() -> Result<Arc<dyn Embedder>, EmbedError> + Send>;
+type Slot = Option<Result<Arc<dyn Embedder>, String>>;
+
+/// The boot-lazy embedder: the server binds while the model downloads.
+///
+/// Constructed at boot in place of the eager `embedder_for_profile` call;
+/// the real backend loads on a background thread (started immediately —
+/// the fetch runs PARALLEL to the migrations, not after them). Encode
+/// calls in the `Loading`/`Failed` states return the documented caller-skip
+/// shape (empty vecs), so recall serves its deterministic answer without
+/// the model and picks it up transparently the moment the slot fills. The
+/// state rides `/health/db` via the trait's `model_state` (the app's
+/// first-run download surface names it, with the model id).
+pub struct LazyEmbedder {
+    model_id: String,
+    dim: usize,
+    slot: std::sync::Mutex<Slot>,
+    loader: std::sync::Mutex<Option<BoxedLoader>>,
+}
+
+impl LazyEmbedder {
+    /// The production constructor: the loader is the real factory.
+    pub fn new(profile: &str, model_id: &str, dim: usize) -> Self {
+        let p = profile.to_string();
+        Self::new_with_loader(profile, model_id, dim, move || embedder_for_profile(&p))
+    }
+
+    /// The test seam: inject the loader (a closure that either succeeds
+    /// with an embedder or fails) — no network, no HF cache in a pin. The
+    /// `profile` param is kept for signature parity with [`Self::new`] (the
+    /// production loader captures it in its own closure).
+    pub fn new_with_loader(
+        _profile: &str,
+        model_id: &str,
+        dim: usize,
+        loader: impl FnOnce() -> Result<Arc<dyn Embedder>, EmbedError> + Send + 'static,
+    ) -> Self {
+        Self {
+            model_id: model_id.to_string(),
+            dim,
+            slot: std::sync::Mutex::new(None),
+            loader: std::sync::Mutex::new(Some(Box::new(loader))),
+        }
+    }
+
+    /// Spawn the background load. Called ONCE at boot, right after
+    /// construction — the fetch runs parallel to the migrations, and the
+    /// slot fills whenever it lands (the server is long since bound).
+    pub fn start_background_load(self: &std::sync::Arc<Self>) {
+        let me = std::sync::Arc::clone(self);
+        std::thread::Builder::new()
+			.name("embed-model-load".to_string())
+			.spawn(move || {
+				let loader = me
+					.loader
+					.lock()
+					.ok()
+					.and_then(|mut g| g.take());
+				let Some(loader) = loader else {
+					return; // already taken — never double-fetch
+				};
+				let outcome = loader().map_err(|e| e.to_string());
+				match &outcome {
+					Ok(_) => tracing::info!("background model load complete"),
+					Err(e) => tracing::error!("background model load FAILED: {e} — recall serves the deterministic fallback; restart retries the fetch"),
+				}
+				if let Ok(mut slot) = me.slot.lock() {
+					*slot = Some(outcome);
+				}
+			})
+			.expect("spawn the embed-model-load thread");
+    }
+}
+
+impl Embedder for LazyEmbedder {
+    fn encode(&self, texts: &[&str]) -> Vec<Vec<f32>> {
+        let guard = self.slot.lock();
+        match guard.as_deref() {
+            // Ready: delegate verbatim (the golden-vector contract).
+            Ok(Some(Ok(m))) => m.encode(texts),
+            // Loading or Failed: the caller-skip law — "encode returns one
+            // Vec<f32> per input, in order; a failed/empty input yields an
+            // empty vec" — so the skip shape is ONE EMPTY VEC PER TEXT (row
+            // alignment preserved; a whole-batch empty list would desync
+            // every zip). One warn names the posture (the log is the
+            // onboarding signal when a fetch is stuck).
+            state => {
+                tracing::warn!(
+                    "model not ready ({}); skipping embed of {} text(s)",
+                    match state {
+                        Ok(Some(Err(_))) => "load failed",
+                        _ => "still loading",
+                    },
+                    texts.len()
+                );
+                texts.iter().map(|_| Vec::new()).collect()
+            }
+        }
+    }
+    fn model_id(&self) -> &str {
+        &self.model_id
+    }
+    fn store_dim(&self) -> usize {
+        self.dim
+    }
+    fn model_state(&self) -> ModelState {
+        match self.slot.lock().as_deref() {
+            Ok(Some(Ok(_))) => ModelState::Ready,
+            Ok(Some(Err(_))) => ModelState::Failed,
+            _ => ModelState::Loading,
+        }
+    }
+    fn model_error(&self) -> Option<String> {
+        self.slot
+            .lock()
+            .as_deref()
+            .ok()
+            .and_then(|slot| slot.as_ref().and_then(|r| r.as_ref().err()).cloned())
+    }
+}
 
 /// Resolve the embedder for the active profile. Mirrors `config::model_id_for_profile`
 /// but returns the typed backend. `edge-default` / `quality-local` / `air-gapped`
@@ -464,6 +655,148 @@ mod tests {
             s.store_dim()
         }
         let _ = _accepts_shared;
+    }
+
+    /// BIND-FIRST (the S-4 clean-machine finding): the dim table must mirror
+    /// the LOADED factory's `store_dim()` for every profile — the migration
+    /// stamps the table's number while the model downloads, and a drift
+    /// would stamp a dimension the real model never emits (a cross-dim
+    /// store, the exact failure the profile law exists to prevent). The
+    /// feature-gated rows mirror the factory's own cfg gates.
+    #[test]
+    fn dim_table_matches_the_loaded_factory() {
+        for profile in [
+            "edge-default",
+            "quality-local",
+            "air-gapped",
+            "compact",
+            "multilingual",
+        ] {
+            let table = dim_for_profile(profile);
+            let loaded = embedder_for_profile(profile)
+                .unwrap_or_else(|e| panic!("{profile}: factory load failed: {e}"))
+                .store_dim();
+            assert_eq!(
+                table, loaded,
+                "dim_for_profile({profile}) = {table} but the loaded embedder reports {loaded} — the table drifted from the factory"
+            );
+        }
+        // The feature-gated rows: only assertable when the feature builds
+        // (the factory's arms vanish without it — both resolve to the 512
+        // static default then, which the loop above already covers).
+        #[cfg(feature = "neural-embed")]
+        {
+            assert_eq!(
+                dim_for_profile("enterprise"),
+                embedder_for_profile("enterprise").unwrap().store_dim()
+            );
+            assert_eq!(
+                dim_for_profile("desktop"),
+                embedder_for_profile("desktop").unwrap().store_dim()
+            );
+        }
+    }
+
+    /// The lazy embedder starts `Loading`, serves the caller-skip shape
+    /// (one empty vec PER TEXT — the documented row-alignment law), and
+    /// flips to `Ready` when the slot fills — the encode picks the real
+    /// model up TRANSPARENTLY. The loader is channel-gated so the loading
+    /// phase is deterministic (an in-memory stub completes in µs — the
+    /// race this pin's first draft lost).
+    #[test]
+    fn lazy_embedder_serves_skip_shape_then_picks_up_the_model() {
+        struct Stub;
+        impl Embedder for Stub {
+            fn encode(&self, texts: &[&str]) -> Vec<Vec<f32>> {
+                texts.iter().map(|t| vec![t.len() as f32]).collect()
+            }
+            fn model_id(&self) -> &str {
+                "stub"
+            }
+        }
+        // The gate: the loader blocks until THIS thread releases it, so
+        // the loading-phase asserts run against a genuinely unfilled slot.
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let lazy = LazyEmbedder::new_with_loader("edge-default", "stub/model", 512, move || {
+            let _ = gate.recv();
+            Ok(Arc::new(Stub))
+        });
+        let lazy = Arc::new(lazy);
+        lazy.start_background_load();
+        // Loading (the thread is parked on the gate): the skip shape is one
+        // EMPTY VEC PER TEXT — not an empty list (row alignment).
+        assert_eq!(lazy.model_state(), ModelState::Loading);
+        let during = lazy.encode(&["a", "bb"]);
+        assert_eq!(during, vec![Vec::<f32>::new(), Vec::<f32>::new()]);
+        // Release the loader; the slot fills and the SAME call site picks
+        // the real model up transparently.
+        drop(release);
+        let mut waited = 0;
+        while lazy.model_state() == ModelState::Loading && waited < 5_000 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            waited += 10;
+        }
+        assert_eq!(lazy.model_state(), ModelState::Ready);
+        assert_eq!(lazy.encode(&["a", "bb"]), vec![vec![1.0], vec![2.0]]);
+        assert!(lazy.model_error().is_none());
+    }
+
+    /// A failed load is a NAMED posture (`Failed` + the error string), not
+    /// a silent permanent skip — `/health/db` carries both.
+    #[test]
+    fn lazy_embedder_names_a_failed_load() {
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let lazy = LazyEmbedder::new_with_loader("edge-default", "stub/model", 512, move || {
+            let _ = gate.recv();
+            Err(EmbedError::Load("hf unreachable".to_string()))
+        });
+        let lazy = Arc::new(lazy);
+        lazy.start_background_load();
+        assert_eq!(lazy.model_state(), ModelState::Loading);
+        drop(release);
+        let mut waited = 0;
+        while lazy.model_state() == ModelState::Loading && waited < 5_000 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            waited += 10;
+        }
+        assert_eq!(lazy.model_state(), ModelState::Failed);
+        // The error rides the EmbedError Display (the wire spelling).
+        assert_eq!(
+            lazy.model_error().as_deref(),
+            Some("embedder load failed: hf unreachable")
+        );
+        // And the encode STILL serves the per-text skip shape (recall works).
+        assert_eq!(lazy.encode(&["x"]), vec![Vec::<f32>::new()]);
+    }
+
+    /// The background thread lands its outcome in the slot (the production
+    /// path: start_background_load → the slot fills without any test poke).
+    #[test]
+    fn background_load_fills_the_slot() {
+        struct Stub;
+        impl Embedder for Stub {
+            fn encode(&self, texts: &[&str]) -> Vec<Vec<f32>> {
+                texts.iter().map(|_| vec![1.0]).collect()
+            }
+            fn model_id(&self) -> &str {
+                "stub-bg"
+            }
+        }
+        let lazy = Arc::new(LazyEmbedder::new_with_loader(
+            "edge-default",
+            "stub/bg",
+            512,
+            || Ok(Arc::new(Stub)),
+        ));
+        lazy.start_background_load();
+        let mut waited = 0;
+        while lazy.model_state() == ModelState::Loading && waited < 5_000 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            waited += 10;
+        }
+        assert_eq!(lazy.model_state(), ModelState::Ready);
+        assert_eq!(lazy.model_id(), "stub/bg");
+        assert_eq!(lazy.store_dim(), 512);
     }
 
     #[test]

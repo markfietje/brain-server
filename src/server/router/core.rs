@@ -369,6 +369,18 @@ pub async fn health_db(
                 crate::audit::busy_hits(),
             );
             if let serde_json::Value::Object(ref mut m) = body {
+                // BIND-FIRST (the S-4 clean-machine finding): the model loads
+                // in a background thread after the server binds, so the
+                // body names the posture — loading / ready / failed (with
+                // the named error) — instead of the old lie where `model`
+                // was present while the model was still downloading.
+                m.insert(
+                    "model_state".to_string(),
+                    s.model.model_state().as_str().into(),
+                );
+                if let Some(err) = s.model.model_error() {
+                    m.insert("model_error".to_string(), err.into());
+                }
                 m.insert("database_size_bytes".to_string(), db_size.into());
                 m.insert("last_write".to_string(), last_write.into());
                 // Throughput: contention telemetry as additive JSON keys

@@ -538,3 +538,16 @@ textarea {
 		@apply font-sans;
 	}
 }
+
+/* The macOS overlay titlebar has no visible bar — the user grabs whatever
+   looks like the window's top (the sidebar header, the main column's top
+   strip, a dialog's title row). Tauri's `data-tauri-drag-region` activates
+   only on the exact mousedown TARGET, so every non-interactive child of a
+   drag region is made pointer-transparent: grabbing the brand text, the
+   kernel version, or a dialog title drags the window. Interactive children
+   (buttons, inputs) opt themselves back in — the rule is scoped to direct
+   children so nothing deeper is affected. (The S-4 clean-machine finding:
+   "I am not able to move the App Window when I click the top.") */
+[data-tauri-drag-region] > *:not(button):not(input):not(select):not(textarea):not(a) {
+	pointer-events: none;
+}

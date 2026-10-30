@@ -1057,7 +1057,17 @@ test('the_authz_table_is_derived_from_the_wire_the_routes_call', () => {
 	// census: it is chrome, not a page, and its derivation stays out of the
 	// per-route authz rows (a shared path's scope is not stateable by this
 	// census — kernelScopeFor's own refusal).
-	const frameConsumers = [join(shellRoot, 'src', 'lib', 'components', 'AppShell.svelte')];
+	const frameConsumers = [
+		join(shellRoot, 'src', 'lib', 'components', 'AppShell.svelte'),
+		// The settings sections join the frame walk (the S-4 onboarding
+		// round): the Settings dialog renders ON EVERY ROUTE (the nav opens
+		// it from the frame), so its data modules are user-reachable by
+		// construction — the same class as AppShell above. The walk reads
+			// the extension manifest (which wires the sections into the
+		// registry AppShell renders) and the section components themselves.
+		join(shellRoot, 'src', 'lib', 'extensions', 'core-settings.ts'),
+		join(shellRoot, 'src', 'lib', 'components', 'settings', 'model-section.svelte')
+	];
 	for (const file of apiModules) {
 		const bySymbol = apiModuleSymbolPaths(readFileSync(file, 'utf8'));
 		expect(

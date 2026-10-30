@@ -432,5 +432,11 @@
   "review.approve.drift": "Esta fila cambió desde que se mostró — recarga la cola y decide de nuevo.",
   "review.approve.refused": "El kernel rechazó la aprobación (HTTP {status}).",
   "review.approve.offline": "No se pudo contactar al kernel — no se aprobó nada.",
-  "review.approve.malformed": "La respuesta del kernel no se pudo verificar — no se aprobó nada."
+  "review.approve.malformed": "La respuesta del kernel no se pudo verificar — no se aprobó nada.",
+  "settings.model.heading": "Modelo de recuperación",
+  "settings.model.loading": "Descargando {model} — una vez.",
+  "settings.model.ready": "{model} — listo.",
+  "settings.model.failed": "Descarga fallida. Reinicia para reintentar.",
+  "settings.model.fallback_name": "el modelo de recuperación",
+  "settings.model.hint": "Solo este Mac. Recall funciona igual."
 }

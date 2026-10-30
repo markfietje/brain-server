@@ -432,5 +432,11 @@
   "review.approve.drift": "This row changed since it was shown — reload the queue and decide again.",
   "review.approve.refused": "The kernel refused the approval (HTTP {status}).",
   "review.approve.offline": "The kernel could not be reached — nothing was approved.",
-  "review.approve.malformed": "The kernel’s answer could not be verified — nothing was approved."
+  "review.approve.malformed": "The kernel’s answer could not be verified — nothing was approved.",
+  "settings.model.heading": "Retrieval model",
+  "settings.model.loading": "Downloading {model} — one time.",
+  "settings.model.ready": "{model} — ready.",
+  "settings.model.failed": "Download failed. Restart to retry.",
+  "settings.model.fallback_name": "the retrieval model",
+  "settings.model.hint": "Stays on this Mac. Recall works."
 }

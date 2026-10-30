@@ -62,6 +62,17 @@ paths:
                   status: { type: string, example: ok }
                   version: { type: string }
                   model: { type: string }
+                  model_state:
+                    type: string
+                    enum: [loading, ready, failed]
+                    description: >-
+                      The boot-lazy retrieval model's posture (bind-first:
+                      the server serves while the first-run HuggingFace
+                      download runs in the background; recall serves the
+                      deterministic fallback until ready).
+                  model_error:
+                    type: string
+                    description: Present only when model_state is failed.
                   system:
                     type: object
                     properties:

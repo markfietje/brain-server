@@ -685,13 +685,20 @@ pub fn bootstrap() -> Result<BootOutcome> {
     // silently cross-dim-comparing.
     let profile = config::model_profile();
     let model_id = config::model_id_for_profile(profile);
-    info!("Loading model: {} (profile: {})", model_id, profile);
-    let model = crate::embed::embedder_for_profile(profile)?;
+    // BIND-FIRST (the S-4 clean-machine finding): the dimension is a static
+    // property of the profile's model, so the migration stamps it WITHOUT
+    // the download, the server binds, and the model fetch runs on a
+    // background thread. The old order downloaded synchronously HERE —
+    // 16.8 s on a clean machine against the app's bounded 10-second sidecar
+    // wait, so first launch died on every retry until the HF cache warmed.
+    let dim = crate::embed::dim_for_profile(profile);
     info!(
-        "Model loaded (profile: {}, dim: {})",
-        profile,
-        model.store_dim()
+        "Retrieval model {} (profile: {}, dim: {}) loads in the background — binding first",
+        model_id, profile, dim
     );
+    let lazy = std::sync::Arc::new(crate::embed::LazyEmbedder::new(profile, model_id, dim));
+    lazy.start_background_load();
+    let model: std::sync::Arc<dyn crate::embed::Embedder> = lazy;
 
     // Enable the cross-encoder rerank tier on the profiles
     // whose hardware can afford it (enterprise/desktop). search/mod.rs is lib

@@ -432,5 +432,11 @@
   "review.approve.drift": "Deze regel is gewijzigd sinds de weergave — laad de wachtrij opnieuw en beslis opnieuw.",
   "review.approve.refused": "De kernel heeft de goedkeuring geweigerd (HTTP {status}).",
   "review.approve.offline": "De kernel was niet bereikbaar — er is niets goedgekeurd.",
-  "review.approve.malformed": "Het antwoord van de kernel kon niet worden geverifieerd — er is niets goedgekeurd."
+  "review.approve.malformed": "Het antwoord van de kernel kon niet worden geverifieerd — er is niets goedgekeurd.",
+  "settings.model.heading": "Retrievmodel",
+  "settings.model.loading": "{model} wordt gedownload — eenmalig.",
+  "settings.model.ready": "{model} — klaar.",
+  "settings.model.failed": "Download mislukt. Herstart om opnieuw te proberen.",
+  "settings.model.fallback_name": "het retrievmodel",
+  "settings.model.hint": "Alleen deze Mac. Recall werkt toch."
 }

@@ -432,5 +432,11 @@
   "review.approve.drift": "Diese Zeile hat sich seit der Anzeige geändert — Liste neu laden und erneut entscheiden.",
   "review.approve.refused": "Der Kernel hat die Genehmigung abgelehnt (HTTP {status}).",
   "review.approve.offline": "Der Kernel war nicht erreichbar — nichts wurde genehmigt.",
-  "review.approve.malformed": "Die Antwort des Kernel konnte nicht verifiziert werden — nichts wurde genehmigt."
+  "review.approve.malformed": "Die Antwort des Kernel konnte nicht verifiziert werden — nichts wurde genehmigt.",
+  "settings.model.heading": "Retrieval-Modell",
+  "settings.model.loading": "{model} wird geladen — einmalig.",
+  "settings.model.ready": "{model} — bereit.",
+  "settings.model.failed": "Laden fehlgeschlagen. Neustart versucht erneut.",
+  "settings.model.fallback_name": "das Retrieval-Modell",
+  "settings.model.hint": "Nur dieser Mac. Recall läuft trotzdem."
 }

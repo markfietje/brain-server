@@ -517,6 +517,16 @@ const TEXT_AUDIT: Readonly<Record<string, AuditRow>> = {
 	'settings.update.unreachable': 'law',
 	'settings.update.refused': 'law',
 	'settings.update.error': 'law',
+	// The retrieval model's download surface (the S-4 onboarding round):
+	// heading + the three postures + the hint; the model NAME interpolates,
+	// so the loading/ready sentences are HINT-class (a name makes them
+		// open-ended) — the bounds law applies to the FIXED prose only.
+	'settings.model.heading': 'label',
+	'settings.model.loading': 'hint',
+	'settings.model.ready': 'hint',
+	'settings.model.failed': 'verdict',
+	'settings.model.fallback_name': 'label',
+	'settings.model.hint': 'hint',
 	// chat.empty.*
 	'chat.empty.greeting': { kind: 'hint', max: 8 },
 	'chat.empty.chip.ask': 'label',

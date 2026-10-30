@@ -64,25 +64,40 @@
 		<div
 			{...api.getContentProps()}
 			class={cn(
-				"bg-popover text-popover-foreground ring-foreground/10 grid max-w-[calc(100%_-_2rem)] w-full gap-6 rounded-xl p-6 text-sm ring-1 outline-none sm:max-w-md",
+				"bg-popover text-popover-foreground ring-foreground/10 grid max-w-[calc(100%-2rem)] w-full gap-6 rounded-xl p-6 text-sm ring-1 outline-none sm:max-w-md",
 				className
 			)}
 		>
-			<h2 {...api.getTitleProps()} class="text-base leading-none font-semibold">
-				{title}
-			</h2>
+			<!-- The window moves from the dialog's top strip like any macOS
+			     window (the operator's S-4 finding: the overlay titlebar is
+			     invisible, so the user grabs the dialog's top and nothing
+			     happened). The attribute must be on the exact mousedown
+			     target — hence it rides BOTH the strip and the title, while
+			     the close button stays outside the strip and interactive. -->
+			<div
+				class="-mx-6 -mt-6 mb-4 flex items-center justify-between px-6 pb-2 pt-6"
+				data-tauri-drag-region
+			>
+				<h2
+					{...api.getTitleProps()}
+					class="text-base leading-none font-semibold"
+					data-tauri-drag-region
+				>
+					{title}
+				</h2>
+				{#if showCloseButton}
+					<Button {...closeProps} data-slot="dialog-close">
+						<XIcon />
+						<span class="sr-only">{closeLabel}</span>
+					</Button>
+				{/if}
+			</div>
 			{#if description}
 				<p {...api.getDescriptionProps()} class="text-muted-foreground text-sm">
 					{description}
 				</p>
 			{/if}
 			{@render children?.()}
-			{#if showCloseButton}
-				<Button {...closeProps} data-slot="dialog-close">
-					<XIcon />
-					<span class="sr-only">{closeLabel}</span>
-				</Button>
-			{/if}
 		</div>
 	</div>
 {/if}

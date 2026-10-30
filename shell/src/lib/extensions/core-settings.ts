@@ -7,10 +7,10 @@
  * shared `#lib/shell/locale` module, whose reader is the frame's clock).
  */
 
-import OriginSection from '#lib/components/settings/origin-section.svelte';
 import LocaleSection from '#lib/components/settings/locale-section.svelte';
-import TokenSection from '#lib/components/settings/token-section.svelte';
 import UpdateSection from '#lib/components/settings/update-section.svelte';
+import AdvancedSection from '#lib/components/settings/advanced-section.svelte';
+import ModelSection from '#lib/components/settings/model-section.svelte';
 import type { ExtensionManifest } from './types.js';
 
 export const coreSettings: ExtensionManifest = {
@@ -18,10 +18,14 @@ export const coreSettings: ExtensionManifest = {
 	version: '0.1.1',
 	contributes: {
 		settingsSections: [
-			{ id: 'origin', component: OriginSection },
+			{ id: 'model', component: ModelSection },
 			{ id: 'locale', component: LocaleSection },
-			{ id: 'token', component: TokenSection },
-			{ id: 'update', component: UpdateSection }
+			{ id: 'update', component: UpdateSection },
+			// The operator affordances FOLDED (the operator's UX call,
+			// 2026-10-30): origin + token are rotation/override acts — the
+			// credential bootstraps automatically, so they are not onboarding
+			// steps. One collapsed disclosure instead of two top sections.
+			{ id: 'advanced', component: AdvancedSection }
 		]
 	}
 };

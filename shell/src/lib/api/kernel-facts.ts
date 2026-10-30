@@ -25,6 +25,15 @@ export interface KernelFacts {
 	readonly model: string | null;
 }
 
+/** The retrieval model's boot-lazy posture (bind-first; the S-4 finding). */
+export type ModelState = 'loading' | 'ready' | 'failed';
+
+export interface ModelStateRead {
+	readonly model: string | null;
+	readonly state: ModelState | 'unknown';
+	readonly error: string | null;
+}
+
 export type KernelFactsRead =
 	| { readonly kind: 'ok'; readonly facts: KernelFacts }
 	| { readonly kind: 'offline'; readonly fault: WireFault };
@@ -61,4 +70,34 @@ export async function fetchKernelFacts(): Promise<KernelFactsRead> {
 		// above already decided whether the kernel is reachable at all.
 	}
 	return { kind: 'ok', facts: { version, count, model } };
+}
+
+/**
+ * The retrieval model's boot-lazy posture, from the app's OWN `/health/db`
+ * (Admin body — the sidecar's token is the kernel's superuser; the field
+ * is additive there, openapi same commit). Read by the settings model
+ * section's bounded poll — ONLY while the state is `loading` (1.5 s
+ * cadence, stopped at ready/failed), never a standing request.
+ *
+ * The state is never guessed: `unknown` means this read did not name it
+ * (a refused/failed read is a tick the next poll retries), so the section
+ * cannot show `ready` over a refusal.
+ */
+export async function fetchModelState(): Promise<ModelStateRead> {
+	try {
+		const { data, response } = await client.GET('/health/db');
+		if (response.status === 200 && data) {
+			const wire = data.model_state;
+			if (wire === 'loading' || wire === 'ready' || wire === 'failed') {
+				return {
+					model: stringOrNull(data['model']),
+					state: wire,
+					error: stringOrNull(data['model_error'])
+				};
+			}
+		}
+	} catch {
+		// the tick retries; nothing is guessed
+	}
+	return { model: null, state: 'unknown', error: null };
 }

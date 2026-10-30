@@ -211,11 +211,15 @@ test('the_registry_contributes_exactly_the_three_acting_chips', () => {
 // ── the settings dialog's section order ───────────────────────────────────
 
 test('the_settings_dialog_renders_the_registry_s_sections_in_contribution_order', () => {
+	// 2026-10-30 (the S-4 onboarding round): the model section joins the top
+	// (the first-run download surface), and origin + token FOLD into one
+	// Advanced disclosure — the credential bootstraps automatically, so
+	// they are rotation acts, not onboarding steps.
 	expect(settingsSections.map((section) => section.id)).toEqual([
-		'origin',
+		'model',
 		'locale',
-		'token',
-		'update'
+		'update',
+		'advanced'
 	]);
 });
 

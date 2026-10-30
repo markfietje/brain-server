@@ -424,13 +424,15 @@
 		<!-- The top strip is the window's drag region; under the macOS overlay
 		     titlebar it is tall enough to clear the traffic lights. -->
 		<div
-			data-slot="sidebar-top"
 			class="flex shrink-0 items-center justify-end px-2"
 			style="min-height: var(--titlebar-inset)"
 			data-tauri-drag-region
 		></div>
-
-		<div class="flex items-center gap-3 px-3 pt-2 pb-3" data-tauri-drag-region>
+		<div
+			class="flex items-center gap-3 px-3 pt-2 pb-3"
+			style="min-height: var(--titlebar-inset)"
+			data-tauri-drag-region
+		>
 			<span
 				class="grid size-9 shrink-0 place-items-center rounded-xl bg-[#1d2b3a] text-base font-extrabold text-white"
 				aria-hidden="true"

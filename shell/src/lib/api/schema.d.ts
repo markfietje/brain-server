@@ -5804,6 +5804,13 @@ export interface operations {
                         status?: string;
                         version?: string;
                         model?: string;
+                        /**
+                         * @description The boot-lazy retrieval model's posture (bind-first: the server serves while the first-run HuggingFace download runs in the background; recall serves the deterministic fallback until ready).
+                         * @enum {string}
+                         */
+                        model_state?: "loading" | "ready" | "failed";
+                        /** @description Present only when model_state is failed. */
+                        model_error?: string;
                         system?: {
                             memory_used_mb?: number;
                             memory_total_mb?: number;
