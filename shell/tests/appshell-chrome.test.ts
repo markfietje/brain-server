@@ -196,9 +196,10 @@ test('the_frame_renders_one_nav_with_the_surface_list_in_order_one_main_and_a_he
 	expect(status.getAttribute('data-wire')).toBe('healthy');
 	expect(status.textContent).toContain(m['shell.status.healthy']());
 
-	// The brand and the ⌘K control are present; the settings control is the
-	// nav's own entry, so no second settings button hides elsewhere.
-	expect(screen.getByTestId('shell-brand').textContent).toContain(m['shell.brand']());
+	// The brand and the ⌘K control are present. The brand is the RAIL'S
+	// S-MARK now (zero chrome text — the Codex shape): the mark's presence
+	// is the assertion, and the accessible brand name lives on the aside.
+	expect(screen.getByTestId('shell-brand').textContent).toBe('S');
 	expect(screen.getByTestId('shell-palette').getAttribute('aria-label')).toBe(m['palette.open']());
 	expect(
 		[...document.querySelectorAll('[aria-label="' + m['nav.settings']() + '"]')].length,
@@ -343,12 +344,12 @@ test('the_collapsed_rail_keeps_every_entry_named', async () => {
 	responder = quiet;
 	await renderHost();
 	const shell = document.querySelector('[data-slot="app-shell"]');
-	expect(shell?.getAttribute('data-sidebar')).toBe('open');
+	expect(shell?.getAttribute('data-threads')).toBe('shown');
 
 	const toggle = screen.getByTestId('shell-sidebar-toggle');
 	expect(toggle.getAttribute('aria-expanded')).toBe('true');
 	await userEvent.click(toggle);
-	expect(shell?.getAttribute('data-sidebar')).toBe('collapsed');
+	expect(shell?.getAttribute('data-threads')).toBe('hidden');
 	expect(toggle.getAttribute('aria-expanded')).toBe('false');
 
 	// Collapsed hides the labels VISUALLY only: every entry still resolves an
@@ -578,16 +579,14 @@ test('the_collapsed_rail_keeps_every_session_name_accessible', async () => {
 	await renderHost();
 	await screen.findAllByTestId('session-row');
 	await userEvent.click(screen.getByTestId('shell-sidebar-toggle'));
-	expect(document.querySelector('[data-slot="app-shell"]')?.getAttribute('data-sidebar')).toBe(
-		'collapsed'
+	expect(document.querySelector('[data-slot="app-shell"]')?.getAttribute('data-threads')).toBe(
+		'hidden'
 	);
-	// Collapsed hides the labels VISUALLY only: the name-span carries the
-	// sr-only class and the row still carries its name in the accessible
-	// tree, the R141 rail law for sessions.
-	const row = screen.getByTestId('session-row');
-	const nameSpan = row.querySelector('span');
-	expect(nameSpan?.getAttribute('class')).toContain('sr-only');
-	expect(row.textContent).toContain('rail visible');
+	// THE CODEX LAW (re-lawed 2026-10-30): hiding the threads column
+	// REMOVES it (unmount) — the old R141 sr-only-while-collapsed law
+	// belonged to the old rail-collapse shape. The sessions return fully
+		// named when the column is shown again.
+	expect(screen.queryByTestId('session-row')).toBeNull();
 });
 
 test('session_delete_confirms_then_refreshes_the_list', async () => {

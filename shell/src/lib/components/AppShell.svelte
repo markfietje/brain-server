@@ -124,6 +124,9 @@
 	// The browser fallback's context-menu position (Tauri uses the NATIVE
 	// menu instead; this is only for the no-menu runtime).
 	let browserMenu = $state<{ x: number; y: number } | null>(null);
+	// The divider gesture's pointer anchor (clientX at drag start — see the
+	// divider's handlers; movementX is 0 in WKWebView outside pointer lock).
+	let dividerStartX = $state(0);
 
 	$effect(() => {
 		try {
@@ -446,70 +449,61 @@
 
 <div
 	data-slot="app-shell"
-	data-sidebar={collapsed ? 'collapsed' : 'open'}
+	data-threads={collapsed ? 'hidden' : 'shown'}
 	class="grid h-dvh w-full overflow-hidden"
 	class:data-dragging={layout.dragging}
-	style="grid-template-columns: {collapsed ? 60 : layout.width}px 5px minmax(0, 1fr)"
+	// THE CODEX SHAPE (the operator's call, 2026-10-30, measured against the
+	// Codex sidebar): a permanent ICON RAIL (fixed, zero chrome text), the
+	// THREADS column (resizable + toggleable — session names are CONTENT,
+	// not chrome), and the chat. The track count follows the child count:
+	// threads hidden drops its track AND the divider (the S-4 sliver law).
+	style="grid-template-columns: {collapsed
+		? '60px minmax(0, 1fr)'
+		: `60px ${layout.width}px 5px minmax(0, 1fr)`}"
 >
+	<!-- THE ICON RAIL (the Codex shape, the operator's call 2026-10-30):
+	     permanent, fixed-width, ZERO chrome text — every control is an icon
+	     with an accessible name (the sr-only spans stay; the visible labels
+	     go). The proof surfaces' icons appear here only when revealed
+			 (right-click). -->
 	<aside
 		data-slot="sidebar"
-		class="flex min-h-0 flex-col border-r border-sidebar-border bg-sidebar"
+		class="flex min-h-0 flex-col items-center border-r border-sidebar-border bg-sidebar py-2"
 		aria-label={m['shell.sidebar']()}
 	>
-		<!-- The top strip is the window's drag region; under the macOS overlay
-		     titlebar it is tall enough to clear the traffic lights. -->
+		<!-- The top strip is the window's drag region (the overlay titlebar). -->
 		<div
-			class="flex shrink-0 items-center justify-end px-2"
-			style="min-height: var(--titlebar-inset)"
-			data-tauri-drag-region
-		></div>
-		<div
-			class="flex items-center gap-3 px-3 pt-2 pb-3"
+			class="flex w-full shrink-0 items-center justify-center"
 			style="min-height: var(--titlebar-inset)"
 			data-tauri-drag-region
 		>
 			<span
 				class="grid size-9 shrink-0 place-items-center rounded-xl bg-[#1d2b3a] text-base font-extrabold text-white"
 				aria-hidden="true"
+				data-testid="shell-brand"
 			>
 				S
 			</span>
-			{#if !collapsed}
-				<div class="min-w-0" data-tauri-drag-region>
-					<p class="truncate text-sm font-medium tracking-tight" data-testid="shell-brand">
-						{m['shell.brand']()}
-					</p>
-					<p class="truncate text-xs text-muted-foreground" data-testid="shell-kernel">
-						{#if facts?.version}
-							{m['shell.kernel']({ version: facts.version })}
-						{:else}
-							{m['shell.kernel.unknown']()}
-						{/if}
-					</p>
-				</div>
-			{/if}
 		</div>
 
-		<div class="px-2 pb-2">
+		<div class="grid justify-items-center gap-1 py-2">
 			<Button
 				variant="outline"
-				size={collapsed ? 'icon-sm' : 'sm'}
-				class="w-full justify-start gap-2"
+				size="icon-sm"
 				data-testid="shell-new-chat"
 				aria-label={m['shell.new_chat']()}
 				onclick={newChat}
 			>
 				<PlusIcon aria-hidden="true" />
-				{#if !collapsed}<span>{m['shell.new_chat']()}</span>{/if}
 			</Button>
 		</div>
 
 		<nav
 			aria-label={m['shell.nav']()}
-			class="px-2"
+			class="grid justify-items-center gap-0.5"
 			oncontextmenu={(event) => {
 				// THE PROOF SURFACES' REVEAL (the operator's ask): right-click
-				// the sidebar → the NATIVE macOS context menu (Tauri
+				// the rail → the NATIVE macOS context menu (Tauri
 				// CheckMenuItems) toggles Memory/Review/Audit/Governance;
 				// the first GUI shows only the conversation. The browser
 				// build gets the same menu as a minimal custom popup.
@@ -531,23 +525,22 @@
 								href={resolve(item.route)}
 								data-testid="nav-{item.id}"
 								aria-current={active ? 'page' : undefined}
-								class="relative flex h-9 items-center gap-3 rounded-lg px-2.5 text-sm transition-colors
+								title={m[item.labelKey]()}
+								class="relative grid size-9 place-items-center rounded-lg transition-colors
 									{active
 									? 'bg-sidebar-active text-foreground'
 									: 'text-muted-foreground hover:bg-sidebar-hover hover:text-foreground'}"
 							>
-								<item.Icon class="size-4 shrink-0" aria-hidden="true" />
-								<span class={collapsed ? 'sr-only' : 'flex-1 truncate'}>{m[item.labelKey]()}</span>
+								<item.Icon class="size-4.5 shrink-0" aria-hidden="true" />
+								<span class="sr-only">{m[item.labelKey]()}</span>
 								{#if item.id === 'review' && queueCount !== null && queueCount > 0}
-									<!-- The count rides the entry only while the queue holds
-									     rows: an empty queue costs the UI nothing. The state
-										   token is the stable hook; the count joins the
+									<!-- The count badge rides the icon: the state token
+									     is the stable hook; the count joins the
 										   accessible name. -->
 									<span
 										data-testid="review-badge"
 										data-queue="nonempty"
-										class="grid min-w-5 place-items-center rounded-full bg-primary px-1.5 text-xs font-medium text-primary-foreground tabular-nums
-											{collapsed ? 'absolute translate-x-3 -translate-y-3' : ''}"
+										class="absolute -right-0.5 -top-0.5 grid min-w-4 place-items-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground tabular-nums"
 										aria-label={m['review.badge']({ count: queueCount })}
 									>
 										<span aria-hidden="true">{queueCount}</span>
@@ -557,151 +550,42 @@
 						</li>
 					{/if}
 				{/each}
-				<!-- The Settings entry is NOT a nav item (the operator's call:
-				     not under Governance; it is the app's preferences). It
-				     moved to the sidebar FOOT below — the dsh pattern's
-				     `sidebar.settings` seat — and the desktop adds the native
-				     StewardMem → Settings… ⌘, item (both open one surface). -->
 			</ul>
 		</nav>
 
-		<!-- The session region (plan 23 §2 D5) — the frame's one empty slot,
-		     between the nav and the facts foot. Chrome-by-exception: ZERO rows
-		     (and any state that is not a live list) render NOTHING here — an
-		     empty rail is noise, and a refusal is not an empty list. The rail
-		     (collapsed) keeps every name in the accessible tree via sr-only
-		     rows, the R141 law. The pointer pair below only flips the column's
-		     scrollbar affordance (plan 24 D4) — no behaviour rides on it and
-		     nothing a keyboard or screen-reader user needs, so the static
-		     element stays static. -->
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div
-			class="min-h-0 flex-1 overflow-y-auto"
-			data-testid="session-region"
-			data-slot="scroll-column"
-			style:--scrollbar-thumb={sessionScroll.thumb}
-			onpointerenter={sessionScroll.enter}
-			onpointerleave={sessionScroll.leave}
-		>
-			{#if sessionRows.length > 0}
-				<p class="px-3 pb-1 pt-2 text-xs font-medium text-muted-foreground {collapsed ? 'sr-only' : ''}">
-					{m['chat.sessions.heading']()}
-				</p>
-				<ul class="grid gap-0.5 px-2">
-					{#each sessionRows as row (row.session_key)}
-						{@const active = row.session_key === activeSessionKey}
-						{@const name = rowName(row.label)}
-						<li class="group relative" data-testid="session-item">
-							{#if renamingKey === row.session_key}
-								<!-- The inline rename: an input with a named label,
-								     Enter commits, Escape cancels. -->
-								<input
-									class="h-8 w-full rounded-md border border-brand bg-background px-2 text-sm outline-none"
-									bind:value={renameDraft}
-									maxlength={80}
-									aria-label={m['chat.sessions.rename.label']({ name })}
-									data-testid="session-rename-input"
-									onkeydown={(event) => {
-										if (event.key === 'Enter') {
-											event.preventDefault();
-											void commitRename(row.session_key);
-										} else if (event.key === 'Escape') {
-											event.preventDefault();
-											renamingKey = null;
-										}
-									}}
-								/>
-							{:else}
-								<button
-									type="button"
-									data-testid="session-row"
-									data-active={active ? 'true' : 'false'}
-									aria-current={active ? 'true' : undefined}
-									class="flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm text-muted-foreground transition-colors hover:bg-sidebar-hover hover:text-foreground {active
-									? 'bg-sidebar-active text-foreground'
-									: ''}"
-									onclick={() => activateSession(row.session_key)}
-								>
-									<span class="min-w-0 flex-1 truncate {collapsed ? 'sr-only' : ''}">{name}</span>
-									{#if !collapsed}
-										<span
-											class="shrink-0 text-xs text-muted-foreground tabular-nums"
-											data-testid="session-relative-time"
-										>
-											{relativeTime(row.last_turn_at)}
-										</span>
-									{/if}
-								</button>
-								<!-- The row's two affordances, visible on hover/focus
-								     (and always in the tab order), collapsed-rail safe:
-								     each carries its own accessible name. -->
-								<span class="absolute right-1 top-1 flex {collapsed ? 'sr-only' : ''}">
-									<button
-										type="button"
-										data-testid="session-rename"
-										aria-label={m['chat.sessions.rename']({ name })}
-										class="grid size-6 place-items-center rounded-md text-muted-foreground opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
-										onclick={() => startRename(row.session_key, row.label)}
-									>
-										<PencilIcon class="size-3.5" aria-hidden="true" />
-									</button>
-									<button
-										type="button"
-										data-testid="session-delete"
-										aria-label={m['chat.sessions.delete']({ name })}
-										class="grid size-6 place-items-center rounded-md text-muted-foreground opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 hover:text-destructive"
-										onclick={() => askDelete(row.session_key)}
-									>
-										<Trash2Icon class="size-3.5" aria-hidden="true" />
-										</button>
-									</span>
-									{/if}
-								</li>
-							{/each}
-				</ul>
-			{/if}
-		</div>
-
-		<div
-			class="border-t border-sidebar-border px-3 py-3 text-xs text-muted-foreground"
-			data-testid="shell-facts"
-			data-integrity={chain}
-		>
-			<p class="flex items-center gap-2 {collapsed ? 'justify-center' : ''}">
+		<div class="mt-auto grid justify-items-center gap-1">
+			<!-- The integrity dot: visually THE FACT (the rail carries no
+			     text); the rows/integrity sentence stays in the accessible
+						 tree for the screen reader. -->
+			<div
+				class="grid h-6 w-6 place-items-center"
+				data-testid="shell-facts"
+				data-integrity={chain}
+				title={rowsLabel !== null ? `${rowsLabel} · ${integrityLabel}` : integrityLabel}
+			>
 				<span
-					class="size-2 shrink-0 rounded-full {chain === 'verified'
+					class="size-2 rounded-full {chain === 'verified'
 						? 'bg-ok'
 						: chain === 'broken'
 							? 'bg-destructive'
 							: 'bg-muted-foreground/50'}"
 					aria-hidden="true"
 				></span>
-				<span class={collapsed ? 'sr-only' : 'leading-snug'}>
+				<span class="sr-only">
 					{#if rowsLabel !== null}{`${rowsLabel} · `}{/if}{integrityLabel}
 				</span>
-			</p>
-		</div>
+			</div>
 
-		<!-- The settings FOOT (the dsh `sidebar.settings` seat): bottom-pinned,
-		     separated from the nav list — Settings is the app's preferences,
-		     not a surface. The desktop ALSO carries the native StewardMem →
-		     Settings… ⌘, item; both open this one surface. -->
-		<div class="mt-auto border-t border-sidebar-border px-2 pt-2 {collapsed ? 'pb-2' : ''}">
-			<button
-				type="button"
+			<Button
+				variant="ghost"
+				size="icon-sm"
 				data-testid="nav-settings"
-				class="flex h-9 w-full items-center gap-3 rounded-lg px-2.5 text-sm text-muted-foreground transition-colors hover:bg-sidebar-hover hover:text-foreground"
 				aria-label={m['nav.settings']()}
 				onclick={() => goto(resolve('/settings'))}
 			>
-				<SettingsIcon class="size-4 shrink-0" aria-hidden="true" />
-				<span class={collapsed ? 'sr-only' : 'flex-1 truncate text-left'}>
-					{m['nav.settings']()}
-				</span>
-			</button>
-		</div>
+				<SettingsIcon aria-hidden="true" />
+			</Button>
 
-		<div class="flex items-center gap-1 px-2 pb-2 {collapsed ? 'flex-col' : ''}">
 			<Button
 				variant="ghost"
 				size="icon-sm"
@@ -711,6 +595,7 @@
 			>
 				<CommandIcon aria-hidden="true" />
 			</Button>
+
 			<Button
 				variant="ghost"
 				size="icon-sm"
@@ -723,6 +608,106 @@
 			</Button>
 		</div>
 	</aside>
+
+	<!-- THE THREADS COLUMN (the dsh session region, promoted to its own
+	     Codex-style zone): toggleable (the rail's PanelLeft), resizable (the
+			 divider), and hidden when empty-listed sessions would be noise — no,
+			 hidden only BY THE TOGGLE; rows render here whenever the store has
+			 them. Session names are CONTENT, not chrome text. -->
+	{#if !collapsed}
+		<div
+			data-testid="threads-column"
+			class="flex min-h-0 flex-col border-r border-sidebar-border bg-sidebar"
+		>
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div
+				class="min-h-0 flex-1 overflow-y-auto"
+				data-testid="session-region"
+				data-slot="scroll-column"
+				style:--scrollbar-thumb={sessionScroll.thumb}
+				onpointerenter={sessionScroll.enter}
+				onpointerleave={sessionScroll.leave}
+			>
+				{#if sessionRows.length > 0}
+					<ul class="grid gap-0.5 px-2 pt-2">
+						{#each sessionRows as row (row.session_key)}
+							{@const active = row.session_key === activeSessionKey}
+							{@const name = rowName(row.label)}
+							<li class="group relative" data-testid="session-item">
+								{#if renamingKey === row.session_key}
+									<input
+										class="h-8 w-full rounded-md border border-brand bg-background px-2 text-sm outline-none"
+										bind:value={renameDraft}
+										maxlength={80}
+										aria-label={m['chat.sessions.rename.label']({ name })}
+										data-testid="session-rename-input"
+										onkeydown={(event) => {
+											if (event.key === 'Enter') {
+												event.preventDefault();
+												void commitRename(row.session_key);
+											} else if (event.key === 'Escape') {
+												event.preventDefault();
+												renamingKey = null;
+											}
+										}}
+									/>
+								{:else}
+									<button
+										type="button"
+										data-testid="session-row"
+										data-active={active ? 'true' : 'false'}
+										aria-current={active ? 'true' : undefined}
+										class="flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm text-muted-foreground transition-colors hover:bg-sidebar-hover hover:text-foreground {active
+										? 'bg-sidebar-active text-foreground'
+										: ''}"
+										onclick={() => activateSession(row.session_key)}
+									>
+										<span class="min-w-0 flex-1 truncate">{name}</span>
+										<span
+											class="shrink-0 text-xs text-muted-foreground tabular-nums"
+											data-testid="session-relative-time"
+										>
+											{relativeTime(row.last_turn_at)}
+										</span>
+									</button>
+									<span class="absolute right-1 top-1 flex">
+										<button
+											type="button"
+											data-testid="session-rename"
+											aria-label={m['chat.sessions.rename']({ name })}
+											class="grid size-6 place-items-center rounded-md text-muted-foreground opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
+											onclick={() => startRename(row.session_key, row.label)}
+										>
+											<PencilIcon class="size-3.5" aria-hidden="true" />
+										</button>
+										<button
+											type="button"
+											data-testid="session-delete"
+											aria-label={m['chat.sessions.delete']({ name })}
+											class="grid size-6 place-items-center rounded-md text-muted-foreground opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 hover:text-destructive"
+											onclick={() => askDelete(row.session_key)}
+										>
+											<Trash2Icon class="size-3.5" aria-hidden="true" />
+										</button>
+									</span>
+								{/if}
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</div>
+
+			<div
+				class="border-t border-sidebar-border px-3 py-3 text-xs text-muted-foreground"
+				data-testid="shell-facts-text"
+			>
+				<p class="flex items-center gap-2">
+					{#if facts?.version}<span data-testid="shell-kernel">{m['shell.kernel']({ version: facts.version })}</span>{' · '}{/if}
+					{#if rowsLabel !== null}{`${rowsLabel} · `}{/if}{integrityLabel}
+				</p>
+			</div>
+		</div>
+	{/if}
 
 	<!-- The resize divider (the dsh AppFrame gesture): 5px hit strip, with
 	     a wider invisible hit area via ::before (the CSS keeps the visible
@@ -739,10 +724,14 @@
 			class="sidebar-resizer relative z-10 cursor-col-resize"
 			onpointerdown={(event) => {
 				(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+				// The delta is computed from clientX (NOT movementX — WKWebView
+				// reports 0 outside pointer lock; the dsh harness tracks the
+				// same base), frozen at gesture start.
+				dividerStartX = event.clientX;
 				layout.startDrag();
 			}}
 			onpointermove={(event) => {
-				if (layout.dragging) layout.dragBy(event.movementX);
+				if (layout.dragging) layout.dragBy(dividerStartX - event.clientX);
 			}}
 			onpointerup={(event) => {
 				(event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
