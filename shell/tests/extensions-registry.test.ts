@@ -215,10 +215,14 @@ test('the_settings_dialog_renders_the_registry_s_sections_in_contribution_order'
 	// (the first-run download surface), and origin + token FOLD into one
 	// Advanced disclosure — the credential bootstraps automatically, so
 	// they are rotation acts, not onboarding steps.
+	// 2026-10-31 (the MAS fork round): the Signal gateway's DESCRIBE + DETECT
+	// surface joins the Advanced category — an optional connect-your-own
+	// module, so it lives with the operator acts, never the onboarding steps.
 	expect(settingsSections.map((section) => section.id)).toEqual([
 		'model',
 		'locale',
 		'update',
+		'signal',
 		'advanced'
 	]);
 });

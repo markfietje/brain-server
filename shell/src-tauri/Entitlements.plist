@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The Mac App Store edition's entitlements (PLAN_MAS_FORK §3, 2026-10-30).
+  Referenced ONLY by tauri.appstore.conf.json — the direct channel
+  (Developer ID DMG) signs with NO entitlements, deliberately: the store
+  edition is the sandboxed one.
+
+  The set is the plan's sanctioned v1 exactly:
+    app-sandbox          — the store's hard requirement; the kernel's data
+                           root (app_data_dir()/kernel) is container-
+                           redirected by construction, so nothing relocates
+    network.server       — the sidecar kernel LISTENS on 127.0.0.1:8765;
+                           this is also what lets the openclaw host AND a
+                           user-installed signal-gateway connect from outside
+    network.client       — the webview's fetches to the loopback kernel, the
+                           model fetch, and the gateway DETECT probe
+    application-identifier / team-identifier — the store's signing identity
+
+  Deliberately ABSENT (named, not hidden — PLAN_MAS_FORK §6 carries them as
+  open questions): keychain-access-groups (the default app group is drilled
+  at Phase 0), the com.apple.developer.private-cloud-compute entitlement
+  (requested in the ASC record, never depended on), and the 27-era
+  hardened-process enhanced-security-version (measured, not assumed, before
+  it ships). The provisionprofile is injected by the MAS lane's generated
+  overlay — never committed.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.network.server</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.application-identifier</key>
+	<string>JHB4UNPL3G.com.stewardmem.shell.mas</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>JHB4UNPL3G</string>
+</dict>
+</plist>

@@ -11,6 +11,7 @@ import LocaleSection from '#lib/components/settings/locale-section.svelte';
 import UpdateSection from '#lib/components/settings/update-section.svelte';
 import AdvancedSection from '#lib/components/settings/advanced-section.svelte';
 import ModelSection from '#lib/components/settings/model-section.svelte';
+import SignalSection from '#lib/components/settings/signal-section.svelte';
 import type { ExtensionManifest } from './types.js';
 
 export const coreSettings: ExtensionManifest = {
@@ -21,6 +22,10 @@ export const coreSettings: ExtensionManifest = {
 			{ id: 'model', component: ModelSection, category: 'model' },
 			{ id: 'locale', component: LocaleSection, category: 'general' },
 			{ id: 'update', component: UpdateSection, category: 'updates' },
+			// The optional Signal gateway module (PLAN_MAS_FORK §1): an optional
+			// connect-your-own-gateway surface — describe + detect, nothing more —
+			// so it lives with the operator acts, not the onboarding steps.
+			{ id: 'signal', component: SignalSection, category: 'advanced' },
 			// The operator affordances FOLDED (the operator's UX call,
 			// 2026-10-30): origin + token are rotation/override acts — the
 			// credential bootstraps automatically, so they are not onboarding

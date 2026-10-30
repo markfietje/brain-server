@@ -1,14 +1,18 @@
 <script lang="ts">
-	// The software update (III-4; Tauri only — the section renders NOTHING in
-	// a plain browser). The Rust core owns the check and the install; the
+	// The software update (III-4; direct channel only — the section renders
+	// NOTHING in a plain browser, and NOTHING in the App Store edition: the
+	// store owns updates there, so the updater surface is absent by channel,
+	// not merely hidden). The Rust core owns the check and the install; the
 	// webview is granted no updater permission and only ever sees a DTO.
 	// `unreachable` is its OWN state: an endpoint that cannot be reached is
 	// never "you are up to date", and a refusal names its reason rather than
 	// reading like an answer.
 	import { m } from '$paraglide/messages.js';
 	import { Button } from '#lib/components/ui/button/index.js';
+	import { buildChannel } from '#lib/api/channel.js';
 
 	const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+	let channel = $state<'unknown' | 'direct' | 'mas' | 'pwa'>('unknown');
 
 	type UpdateState =
 		| 'idle'
@@ -82,16 +86,22 @@
 	}
 
 	// The dialog mounts its content only while open, so mount IS open: the
-	// panel states the CURRENT version and the current kernel version, and
-	// only the core knows either of them (the kernel's comes from the sealed
-	// provenance). Opening the panel asks the core once — the old
-	// settings-button call, moved to where the state lives.
-	$effect(() => {
-		if (inTauri) void checkForUpdate();
-	});
-</script>
+		// panel states the CURRENT version and the current kernel version, and
+		// only the core knows either of them (the kernel's comes from the sealed
+		// provenance). Opening the panel asks the core once — the old
+		// settings-button call, moved to where the state lives. The channel answer
+		// gates BOTH the surface and the check: the store edition renders nothing
+		// here, and a mas build's invoke would name a command that no longer
+		// exists.
+		$effect(() => {
+			void buildChannel().then((answer) => {
+				channel = answer;
+				if (inTauri && answer === 'direct') void checkForUpdate();
+			});
+		});
+	</script>
 
-{#if inTauri}
+{#if inTauri && channel === 'direct'}
 	<div class="grid gap-2">
 		<h3 class="text-sm font-semibold">{m["settings.update.heading"]()}</h3>
 		<p class="text-xs text-muted-foreground">

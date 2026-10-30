@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The App Store privacy manifest (PLAN_MAS_FORK §2 row 9). Placed at
+  Contents/Resources/PrivacyInfo.xcprivacy by tauri.appstore.conf.json's
+  macOS.files map.
+
+  NSPrivacyTracking false + empty collected-types is the truthful "Data Not
+  Collected" posture: the app is local-first; the kernel is the only backend
+  and it runs on this machine's loopback. The required-reason API rows are
+  the measured closure of what the linked binaries actually touch:
+
+  FileTimestamp
+    DDA9.1 — timestamps/metadata of files inside the app container: the
+             kernel's auth-token mtime watcher (the rotation-without-restart
+             reload), brain.db and the per-domain DBs, the 0700 data root's
+             mode law
+    3B52.1 — timestamps/metadata of files inside the app bundle: the sealed
+             SIDECAR_PROVENANCE.json read and the Mach-O arch walk
+  DiskSpace
+    E174.1 — the kernel's capacity envelope checks space before its writes
+             (the 507 capacity_exceeded refusal)
+    85F4.1 — /health/db reports used/total MB, which the app surfaces
+
+  Deliberately NOT declared (measured absent): boot time (nothing reads
+  the kernel boot clock; std::time is process-monotonic), the active
+  keyboard, and the defaults store (no linked binary calls the system
+  defaults API; the webview's sessionStorage is WebKit storage, not the
+  app's).
+-->
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>DDA9.1</string>
+				<string>3B52.1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryDiskSpace</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>E174.1</string>
+				<string>85F4.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

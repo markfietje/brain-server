@@ -1122,3 +1122,171 @@ fn the_wire_probe_asks_the_origin_from_the_auth_exempt_route() {
         requests[1]
     );
 }
+
+// ── the MAS fork: sandboxed, updater-free, Signal-free, guideline-shaped ───
+// (PLAN_MAS_FORK_APP_STORE_2026-10-30; the pins hold the boundary so it
+// cannot silently close. The AGPL-absence arm is §1 rule 3 — a CI pin, so
+// the licence boundary between the app and the gateway stack is enforced,
+// not surveyed.)
+
+/// §1 rule 3 — the AGPL-ABSENCE PIN. The gateway stack (presage →
+/// libsignal-service-rs → libsignal, and the gateway itself) is AGPL-3.0;
+/// Apple's MAS terms conflict with the GPL family, so the store edition's
+/// dependency closure must carry ZERO of its names — in BOTH lockfiles, the
+/// kernel's and the shell core's. The arm asserts its own population first:
+/// a lockfile that lost its known dependencies would pass an absence scan
+/// vacuously, and a vacuous green is the one failure this family exists to
+/// prevent.
+#[test]
+fn the_bundle_dependency_closure_stays_agpl_free() {
+    for (name, lockfile) in [
+        ("kernel", include_str!("../../../Cargo.lock")),
+        ("shell", include_str!("../Cargo.lock")),
+    ] {
+        assert!(
+            lockfile.contains("name = \"serde\""),
+            "the {name} lockfile lost its population — the absence scan below would be vacuous"
+        );
+        for stack in ["presage", "libsignal", "signal-gateway", "zkgroup"] {
+            assert!(
+                !lockfile.contains(stack),
+                "the {name} lockfile carries the AGPL stack's `{stack}` — no Signal-bearing shell ever ships to the store (LICENSES.md rule 3)"
+            );
+        }
+    }
+}
+
+/// §3 — the MAS OVERLAY: the distinct bundle id, the sandbox entitlements,
+/// and the privacy manifest placement. The overlay cannot REMOVE the base's
+/// `plugins.updater` (config merging is additive per key) — the excision is
+/// the `mas` cargo feature, so the overlay's law is: it adds NOTHING
+/// updater-shaped, and everything store-shaped.
+#[test]
+fn the_mas_overlay_is_the_sandboxed_store_edition() {
+    let overlay = include_str!("../tauri.appstore.conf.json");
+    assert!(
+        overlay.contains("com.stewardmem.shell.mas"),
+        "the store edition carries the DISTINCT bundle id — store/DMG update paths never cross, and the id must NOT end in .app (the Tauri CLI's own warning: it conflicts with the bundle extension convention)"
+    );
+    assert!(
+        !overlay.contains("com.stewardmem.shell\""),
+        "the overlay must not collapse onto the direct channel's identifier"
+    );
+    assert!(
+        !overlay.contains("updater"),
+        "the overlay must add nothing updater-shaped (the excision is the mas feature)"
+    );
+    assert!(
+        overlay.contains("./Entitlements.plist")
+            && overlay.contains("Resources/PrivacyInfo.xcprivacy"),
+        "the overlay must reference the entitlements and place the privacy manifest"
+    );
+
+    let entitlements = include_str!("../Entitlements.plist");
+    for required in [
+        "com.apple.security.app-sandbox",
+        "com.apple.security.network.server",
+        "com.apple.security.network.client",
+        "JHB4UNPL3G.com.stewardmem.shell.mas",
+        "JHB4UNPL3G",
+    ] {
+        assert!(
+            entitlements.contains(required),
+            "the store entitlements must carry {required}"
+        );
+    }
+    for forbidden in ["updater", "com.apple.security.cs.allow", "com.apple.vm"] {
+        assert!(
+            !entitlements.contains(forbidden),
+            "the store entitlements must not carry {forbidden} — the v1 set is the plan's sanctioned set"
+        );
+    }
+}
+
+/// §2 row 9 — the PRIVACY MANIFEST: tracking false, nothing collected, and
+/// the required-reason rows for the APIs the linked binaries measurably
+/// touch (file timestamps for the mtime watcher + the provenance seal; disk
+/// space for the capacity envelope + the health report). Apple's
+/// ITMS-91053 refuses an upload whose manifest misses a category the binary
+/// uses — this pin is the pre-upload witness.
+#[test]
+fn the_privacy_manifest_declares_the_required_reason_apis() {
+    let manifest = include_str!("../privacy/PrivacyInfo.xcprivacy");
+    assert!(
+        manifest.contains("NSPrivacyTracking</key>\n\t<false"),
+        "the manifest must declare NSPrivacyTracking false"
+    );
+    assert!(
+        manifest.contains("NSPrivacyCollectedDataTypes</key>\n\t<array/>"),
+        "'Data Not Collected' is the posture — the collected-types array stays empty"
+    );
+    let categories = [
+        "NSPrivacyAccessedAPICategoryFileTimestamp",
+        "NSPrivacyAccessedAPICategoryDiskSpace",
+    ];
+    for category in categories {
+        assert!(
+            manifest.contains(category),
+            "the manifest must declare {category} (the kernel's measured usage)"
+        );
+    }
+    for reason in ["DDA9.1", "3B52.1", "E174.1", "85F4.1"] {
+        assert!(
+            manifest.contains(reason),
+            "the manifest must carry required-reason code {reason}"
+        );
+    }
+    for undeclared in ["SystemBootTime", "ActiveKeyboard", "UserDefaults"] {
+        assert!(
+            !manifest.contains(undeclared),
+            "{undeclared} is measured ABSENT from the linked binaries — declaring it would be a lie"
+        );
+    }
+}
+
+/// §3 — the channel-neutral compliance keys (the export-compliance answer
+/// and the ASC category) ride the auto-merged Info.plist. Both are true for
+/// BOTH channels, which is why they are here and not in an overlay.
+#[test]
+fn the_info_plist_carries_the_channel_neutral_compliance_keys() {
+    let plist = include_str!("../Info.plist");
+    assert!(
+        plist.contains("ITSAppUsesNonExemptEncryption"),
+        "the export-compliance answer must ride the built Info.plist"
+    );
+    assert!(
+        plist.contains("LSApplicationCategoryType"),
+        "the ASC category must ride the built Info.plist"
+    );
+}
+
+/// §3 — the EXCISION, structurally: under the `mas` feature the updater
+/// module, its pins, its two commands and its plugin registration are all
+/// compiled out. The source-scan arms name each site; the post-build
+/// witness (strings on the binary) lives in scripts/release-app-store.sh.
+/// OWED, named: the behavioral conversion is the MAS lane's own step-5
+/// verification, which runs on every operator submission.
+#[test]
+fn the_mas_feature_excises_the_updater_at_every_registration_site() {
+    let lib = include_str!("lib.rs");
+    let sites = [
+        "#[cfg(not(feature = \"mas\"))]\npub mod updater;",
+        "#[cfg(all(test, not(feature = \"mas\")))]\nmod updater_pins;",
+        "#[cfg(not(feature = \"mas\"))]\n#[tauri::command]\nasync fn update_check",
+        "#[cfg(not(feature = \"mas\"))]\n#[tauri::command]\nasync fn update_install",
+        "#[cfg(not(feature = \"mas\"))]\n    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());",
+    ];
+    for site in sites {
+        assert!(
+            lib.contains(site),
+            "an updater registration site lost its mas gate: {site:?}"
+        );
+    }
+    // And the channel answer + the detect-only gateway probe are
+    // UNCONDITIONAL: both channels carry them (the store edition must be
+    // able to say what it is and whether a module is running).
+    assert!(
+        lib.contains("fn build_channel") && lib.contains("fn signal_gateway_status"),
+        "the channel + gateway-detect commands must be unconditional"
+    );
+}

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Channel-neutral compliance truths, merged into the generated Info.plist by
+  the Tauri CLI (auto-discovered at src-tauri/Info.plist). True for BOTH
+  channels, which is why they live here rather than in an overlay:
+
+  ITSAppUsesNonExemptEncryption=false — the app's cryptography (rustls
+  transport, the JWT/JWKS verification, the minisign updater chain, HMAC
+  sealing) is mass-market: standard, unchanged-algorithm use exempt from
+  most reporting. The annual self-classification duty is named in
+  PLAN_MAS_FORK §5 and docs/compliance.md.
+
+  LSApplicationCategoryType — the ASC record's primary category.
+-->
+<plist version="1.0">
+<dict>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+</dict>
+</plist>

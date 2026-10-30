@@ -23,8 +23,13 @@
 pub mod forget;
 pub mod recall;
 pub mod sidecar;
-pub mod updater;
 pub mod verify;
+// The direct channel's updater (III-4). EXCLUDED from the `mas` build: the
+// store owns updates there (guideline 2.5.2), so the module, its pins, its
+// commands and its plugin are all compiled out — an excision, not a runtime
+// flag (PLAN_MAS_FORK §3).
+#[cfg(not(feature = "mas"))]
+pub mod updater;
 
 mod token;
 
@@ -36,7 +41,7 @@ mod recall_pins;
 mod sidecar_pins;
 #[cfg(test)]
 mod token_pins;
-#[cfg(test)]
+#[cfg(all(test, not(feature = "mas")))]
 mod updater_pins;
 #[cfg(test)]
 mod verify_pins;
@@ -227,6 +232,7 @@ async fn kernel_wire_status() -> Result<sidecar::WireDto, String> {
 /// III-4 — the update CHECK. Read-only: it never installs and never writes.
 /// The answer is a DTO, never a thrown error, and `unreachable` is its own
 /// state — an endpoint that cannot be reached is never "you are up to date".
+#[cfg(not(feature = "mas"))]
 #[tauri::command]
 async fn update_check(app: tauri::AppHandle) -> Result<updater::UpdateDto, String> {
     updater::check(&app).await
@@ -234,14 +240,59 @@ async fn update_check(app: tauri::AppHandle) -> Result<updater::UpdateDto, Strin
 
 /// III-4 — the update INSTALL. The same gate, then the download, then the
 /// install and the relaunch. A refusal never reaches the download.
+#[cfg(not(feature = "mas"))]
 #[tauri::command]
 async fn update_install(app: tauri::AppHandle) -> Result<updater::UpdateDto, String> {
     updater::install(&app).await
 }
 
+/// The distribution channel this binary was built for (PLAN_MAS_FORK §3).
+/// The renderer gates the direct channel's affordances on it — the store
+/// edition renders no updater surface and never learns an update endpoint.
+#[tauri::command]
+fn build_channel() -> &'static str {
+    if cfg!(feature = "mas") {
+        "mas"
+    } else {
+        "direct"
+    }
+}
+
+/// The optional Signal gateway module's local posture (PLAN_MAS_FORK §1):
+/// DESCRIBE + DETECT, nothing more. The gateway is a SEPARATE, AGPL-licensed
+/// process the user installs themselves from the website — this command
+/// never installs, downloads, executes, or configures it (guideline
+/// 2.4.5(iv)); it probes the gateway's documented loopback address with a
+/// bounded TCP connect and reports what it found. A sandboxed app may
+/// connect out to localhost (`network.client`), which is exactly this shape.
+#[tauri::command]
+fn signal_gateway_status() -> SignalGatewayStatus {
+    // tools/signal-gateway/config.example.yaml: 127.0.0.1:8080, loopback-only
+    // unless the operator deliberately widened it — the app probes the
+    // documented default and nothing else.
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], 8080));
+    let bound =
+        std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(300))
+            .is_ok();
+    SignalGatewayStatus {
+        present: bound,
+        address: "127.0.0.1:8080".to_string(),
+    }
+}
+
+/// The detect-only DTO: whether a gateway answered on the documented
+/// loopback address. No version, no capability list, no content — the less
+/// the surface says, the less there is to review (4.2.3(i): fully
+/// functional without it).
+#[derive(Clone, Debug, serde::Serialize)]
+struct SignalGatewayStatus {
+    present: bool,
+    address: String,
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(sidecar::KernelState::default())
         .setup(|app| {
             // The native menu (HIG structure above) + the settings event:
@@ -259,12 +310,18 @@ pub fn run() {
                 }
             });
             Ok(())
-        })
-        // III-4 — the updater plugin, and NOTHING of it to the webview: the
-        // capability grants no `updater:*` permission, so the renderer cannot
-        // check or install anything. The Rust core owns both, and it reads
-        // the pinned public key from the app's own configuration.
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        });
+    // III-4 — the updater plugin, and NOTHING of it to the webview: the
+    // capability grants no `updater:*` permission, so the renderer cannot
+    // check or install anything. The Rust core owns both, and it reads the
+    // pinned public key from the app's own configuration. ABSENT from the
+    // `mas` build entirely (2.5.2: the store owns updates) — an excision,
+    // not a runtime flag, which is why the registration lives on its own
+    // statement and not in the chain above (a method chain cannot carry a
+    // cfg gate).
+    #[cfg(not(feature = "mas"))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    let app = builder
         .invoke_handler(tauri::generate_handler![
             kernel_token,
             store_kernel_token,
@@ -272,7 +329,11 @@ pub fn run() {
             kernel_status,
             kernel_start,
             kernel_wire_status,
+            build_channel,
+            signal_gateway_status,
+            #[cfg(not(feature = "mas"))]
             update_check,
+            #[cfg(not(feature = "mas"))]
             update_install,
             recall_memory,
             shape_recall_command,

@@ -18,6 +18,15 @@ categories = ["gui"]
 name = "brain_shell_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# The App Store (MAS) edition's excision gate (PLAN_MAS_FORK §3, 2026-10-30).
+# A cargo feature — NOT a config-merge omission: Tauri config merging is
+# additive per key, so an overlay can never REMOVE the base's
+# `plugins.updater`; the registration itself is compiled out under `mas`
+# (guideline 2.5.2: the store owns updates). Build with:
+#   pnpm tauri build --config src-tauri/tauri.appstore.conf.json --features mas
+mas = []
+
 [build-dependencies]
 tauri-build = { version = "2.7.3", features = [] }
 

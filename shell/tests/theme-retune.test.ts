@@ -537,6 +537,15 @@ const TEXT_AUDIT: Readonly<Record<string, AuditRow>> = {
 	'settings.update.unreachable': 'law',
 	'settings.update.refused': 'law',
 	'settings.update.error': 'law',
+	// The optional Signal gateway module (PLAN_MAS_FORK §1): describe +
+	// detect, nothing more. The heading names the product's own proper noun;
+	// the two posture sentences are verdicts; the hint carries the honest
+	// "separate module, nothing bundled" law in six words.
+	'settings.signal.heading': 'label',
+	'settings.signal.checking': 'verdict',
+	'settings.signal.detected': 'verdict',
+	'settings.signal.absent': 'verdict',
+	'settings.signal.hint': 'hint',
 	// The retrieval model's download surface (the S-4 onboarding round):
 	// heading + the three postures + the hint; the model NAME interpolates,
 	// so the loading/ready sentences are HINT-class (a name makes them
