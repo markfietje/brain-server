@@ -263,12 +263,26 @@ pub async fn ingest(
             .collect();
         let model = Arc::clone(&_state.model);
         let embs = tokio::task::spawn_blocking(move || {
-            crate::loom::fan_out(&contents, |(i, text)| (*i, model.encode_one(text)))
+            // The write law, not the read law: the fan-out rides
+            // `encode_one_for_write` so a batch meeting the bind-first load
+            // window waits (bounded) instead of precomputing a vector-less
+            // `Some(vec![])` — which `ingest_one` would refuse as a bare
+            // "produced no vector" instead of naming the posture.
+            crate::loom::fan_out(&contents, |(i, text)| {
+                (
+                    *i,
+                    crate::embed::encode_one_for_write(model.as_ref(), text).unwrap_or_default(),
+                )
+            })
         })
         .await;
         if let Ok(embs) = embs {
             for (i, emb) in embs {
-                precomputed[i] = Some(emb);
+                // EMPTY ⇒ `None`, never `Some(vec![])`: an empty precomputed
+                // value would pin the record to the skip shape; `None` sends
+                // it through `ingest_one`'s own write path, which waits and
+                // refuses BY NAME when the model never lands.
+                precomputed[i] = if emb.is_empty() { None } else { Some(emb) };
             }
         }
     }
@@ -640,9 +654,21 @@ pub(crate) async fn ingest_one(
         Some(v) => v,
         None => {
             let model = Arc::clone(&state.model);
-            tokio::task::spawn_blocking(move || model.encode_one(&content_for_embed))
-                .await
-                .map_err(|e| HandlerError::internal(format!("embedding task failed: {e}")))?
+            tokio::task::spawn_blocking(move || {
+                // The bind-first write law: meet the caller-skip shape → wait
+                // (bounded) → refuse BY NAME with the state, never a bare
+                // "produced no vector" over a model that is still loading.
+                crate::embed::encode_one_for_write(model.as_ref(), &content_for_embed).map_err(
+                    |state| {
+                        HandlerError::model_not_ready(format!(
+                            "retrieval model not ready ({}) — retry when /health/db reports ready",
+                            state.as_str()
+                        ))
+                    },
+                )
+            })
+            .await
+            .map_err(|e| HandlerError::internal(format!("embedding task failed: {e}")))??
         }
     };
     if embedding.is_empty() {

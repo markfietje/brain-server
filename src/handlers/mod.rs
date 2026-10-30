@@ -353,6 +353,19 @@ impl HandlerError {
             inner: ApiError::new("recall_unavailable", message.into()),
         }
     }
+    /// HTTP 503, code `model_not_ready` — the bind-first write posture. The
+    /// retrieval model loads on a background thread after the server binds,
+    /// so a write that meets the load window REFUSES by name (retryable,
+    /// state named in `/health/db`) rather than failing as a 500 or silently
+    /// storing a vector-less row. Distinct from [`Self::unavailable`]
+    /// (`recall_unavailable`, the read path's deterministic-fallback posture)
+    /// so a client can tell a retryable write from a served refusal.
+    pub fn model_not_ready(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            inner: ApiError::new("model_not_ready", message.into()),
+        }
+    }
     /// HTTP 507 — new ingests are refused because the server
     /// is over its capacity envelope. Read routes (`/search`, `/recall`, `/get`)
     /// never return this; an over-capacity brain still answers.

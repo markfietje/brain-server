@@ -274,8 +274,17 @@ async fn embed_procedure_chunks(
                 targets.push((*sid, c));
             }
         }
+        // ONE bounded wait for the whole batch (the loop below never waits:
+        // a target-by-target wait would cost N × the bound on a cold first
+        // run — measured as the difference between a slow path and a stuck
+        // one). The model either lands inside the window or it does not;
+        // every target then encodes (or skips) on the settled truth.
+        let _ = model.wait_until_ready(crate::embed::WRITE_READY_WAIT);
         for (chunk_id, text) in &targets {
-            // Same shape as add_chunk: encode one sentence; empty ⇒ skip.
+            // Best-effort arm of the bind-first write law: a model that never
+            // landed SKIPS the vector — the procedure row itself commits
+            // either way, and the vector is re-derivable, so skipping stays
+            // this path's designed degradation rather than a refusal.
             let emb = model.encode_one(text);
             if emb.is_empty() {
                 continue;

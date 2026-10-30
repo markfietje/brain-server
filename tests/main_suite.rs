@@ -16250,6 +16250,19 @@ Final paragraph after the rule.";
     /// Full AppState on a fresh temp DB — the drill harness shape (opaque
     /// auth, static embedder, no classifier artifact in the test env).
     fn graph_seam_state(dir: &tempfile::TempDir) -> Arc<AppState> {
+        let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+            brain_server::embed::StaticEmbedder::new(brain_server::config::MODEL_ID)
+                .expect("model"),
+        );
+        graph_seam_state_with_model(dir, model)
+    }
+
+    /// The model-injecting variant (the bind-first write pins build the
+    /// state around a `LazyEmbedder` whose loader the pin controls).
+    fn graph_seam_state_with_model(
+        dir: &tempfile::TempDir,
+        model: Arc<dyn brain_server::embed::Embedder>,
+    ) -> Arc<AppState> {
         register_sqlite_vec();
         let db_path = dir.path().join("brain.db");
         let mgr = SqliteConnectionManager::file(&db_path);
@@ -16266,10 +16279,7 @@ Final paragraph after the rule.";
             loom: Default::default(),
             pool: pool.clone(),
             registry: domain_registry::DomainRegistry::new(pool.clone(), dir.path(), false),
-            model: Arc::new(
-                brain_server::embed::StaticEmbedder::new(brain_server::config::MODEL_ID)
-                    .expect("model"),
-            ),
+            model,
             db_path,
             connection_tracker: Arc::new(ConnectionTracker::new()),
             rate_limiter: Arc::new(RateLimiter::new()),
@@ -16716,6 +16726,95 @@ Final paragraph after the rule.";
             ingests >= 2,
             "/add + /ingest/markdown each carry an audit row"
         );
+    }
+
+    /// BIND-FIRST WRITE LAW (the route-level pin): `/add` meeting a model
+    /// that cannot load REFUSES BY NAME — the posture rides the message
+    /// (`retrieval model not ready (failed)`), never the pre-bind-first bare
+    /// `Embedding generation failed`, which unnamed a state `/health/db`
+    /// answers. The loader fails immediately (the background thread lands
+    /// `Failed` in µs; the pin polls to that state so the request is
+    /// deterministic), so the pin is fast — the LOADING expiry shape is
+    /// pinned at the unit seam (`a_write_refuses_loading_at_the_bound`),
+    /// where the bound can be shortened.
+    #[tokio::test]
+    async fn add_refuses_by_name_when_the_model_cannot_load() {
+        use tower::ServiceExt;
+
+        let lazy: Arc<brain_server::embed::LazyEmbedder> =
+            Arc::new(brain_server::embed::LazyEmbedder::new_with_loader(
+                "edge-default",
+                "stub/route-pin",
+                512,
+                || {
+                    Err(brain_server::embed::EmbedError::Load(
+                        "route pin: immediate failure".to_string(),
+                    ))
+                },
+            ));
+        lazy.start_background_load();
+        let mut waited = 0;
+        while brain_server::embed::Embedder::model_state(
+            lazy.as_ref() as &dyn brain_server::embed::Embedder
+        ) == brain_server::embed::ModelState::Loading
+            && waited < 5_000
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            waited += 10;
+        }
+        assert_eq!(
+            brain_server::embed::Embedder::model_state(
+                lazy.as_ref() as &dyn brain_server::embed::Embedder
+            ),
+            brain_server::embed::ModelState::Failed,
+            "the pin's loader must have FAILED before the request is sent"
+        );
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = graph_seam_state_with_model(&dir, lazy);
+        let app = brain_server::server::router::memory::legacy_router()
+            .merge(brain_server::server::router::memory::router())
+            .with_state(state.clone());
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/add")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"text": "window write", "source": "manual"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body["success"],
+            serde_json::json!(false),
+            "the not-ready write refuses (the legacy envelope): {body}"
+        );
+        let error = body["error"].as_str().unwrap_or("");
+        assert!(
+            error.contains("retrieval model not ready (failed)"),
+            "the refusal must NAME the posture — got {error:?} \
+             (the pre-bind-first spelling was the unnamed 'Embedding generation failed')"
+        );
+        assert!(
+            !error.contains("Embedding generation failed"),
+            "the unnamed spelling must be gone from the not-ready refusal"
+        );
+        // The row did NOT land: a vector-less knowledge row is exactly what
+        // the write law exists to prevent.
+        let conn = state.pool.get().unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "a refused write must store nothing");
     }
     // ── R19 closeout: the overdue sweep + the operator decision surface ────
     //

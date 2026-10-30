@@ -346,10 +346,18 @@ fn the_embedder_is_chosen_at_boot_from_the_profile_alone() {
     );
 
     // The boot binding itself: the profile is read once, into AppState.
+    // BIND-FIRST (the S-4 clean-machine finding): boot binds the embedder
+    // from the profile alone and the WEIGHTS fetch on a background thread —
+    // the old synchronous `embedder_for_profile(profile)?` here spent 16.8 s
+    // on a clean machine against the app's bounded 10-second sidecar wait, so
+    // first launch died on every retry until the HF cache warmed. The law is
+    // unchanged (chosen once, at boot, from the profile); the spelling moved
+    // to LazyEmbedder.
     let bootstrap = strip_comments(&read_src("src/server/bootstrap.rs"));
     assert!(
-        bootstrap.contains("let model = crate::embed::embedder_for_profile(profile)?;"),
-        "the embedder must be bound once at boot from the profile"
+        bootstrap.contains("crate::embed::LazyEmbedder::new(profile, model_id, dim)"),
+        "the embedder must be bound once at boot from the profile — bind-first: \
+         LazyEmbedder from the profile, weights on the background thread"
     );
 }
 

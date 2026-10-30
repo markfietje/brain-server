@@ -98,6 +98,17 @@ pub trait Embedder: Send + Sync {
     fn model_error(&self) -> Option<String> {
         None
     }
+
+    /// Block until the model reaches a terminal state (`Ready`/`Failed`) or
+    /// `timeout` elapses, then report the state. WRITE paths call this
+    /// through [`encode_one_for_write`] when they meet the caller-skip
+    /// shape: a write is NOT the deterministic answer path — its row either
+    /// carries the vector at commit or refuses BY NAME. Eager backends are
+    /// `Ready` by construction, so the default never blocks.
+    fn wait_until_ready(&self, timeout: std::time::Duration) -> ModelState {
+        let _ = timeout;
+        self.model_state()
+    }
 }
 
 // ── Default backend: model2vec StaticModel (edge/Jetson, unchanged) ─────────
@@ -444,7 +455,8 @@ pub mod neural {
 /// means the fetch errored (named in `/health/db`'s `model_error`). Recall
 /// in the Loading/Failed states returns the documented caller-skip shape
 /// (missing embedding ⇒ empty vec ⇒ caller skips): the deterministic
-/// answer path works WITHOUT the model — the R142 fallback posture.
+/// answer path works WITHOUT the model — the fallback is a decision,
+/// never a failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelState {
     Loading,
@@ -461,6 +473,49 @@ impl ModelState {
             ModelState::Failed => "failed",
         }
     }
+}
+
+/// The bounded write-path wait through the bind-first load window. Measured:
+/// a WARM cache lands the model in 1–3 s, which this covers; a COLD first-run
+/// fetch (16.8 s measured) is deliberately NOT waited out — the app's
+/// Settings surface names the loading posture, and the write refuses BY NAME
+/// so the caller retries when `/health/db` reports `ready`. A const, not an
+/// env knob: the bound is part of the write contract, not an operator
+/// posture.
+pub const WRITE_READY_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The write-path encode: one text, embedding AT COMMIT or a refusal that
+/// NAMES the model posture.
+///
+/// Reads (recall, suggest) ride the caller-skip law — the deterministic
+/// answer path works without the model. Writes do not: a `knowledge` row
+/// whose vector silently missing degrades recall quality with no signal, so
+/// the write seams funnel through HERE. Meeting the caller-skip shape waits
+/// ONCE (bounded by [`WRITE_READY_WAIT`]) for the background load; a model
+/// that is `Failed` — or still `Loading` when the bound expires — refuses
+/// with its state, and the caller maps that to its own envelope. A `Ready`
+/// model that still yields an empty vector is NOT this function's business:
+/// that is a true encode failure, and the caller's existing error stands.
+pub fn encode_one_for_write(model: &dyn Embedder, text: &str) -> Result<Vec<f32>, ModelState> {
+    encode_one_for_write_within(model, text, WRITE_READY_WAIT)
+}
+
+/// The bound-taking core (the pins' seam: arm 3 drives a SHORT bound so the
+/// expiry shape is proven in milliseconds, not five seconds).
+pub(crate) fn encode_one_for_write_within(
+    model: &dyn Embedder,
+    text: &str,
+    bound: std::time::Duration,
+) -> Result<Vec<f32>, ModelState> {
+    let embedding = model.encode_one(text);
+    if !embedding.is_empty() {
+        return Ok(embedding);
+    }
+    let state = model.wait_until_ready(bound);
+    if state != ModelState::Ready {
+        return Err(state);
+    }
+    Ok(model.encode_one(text))
 }
 
 /// The store dimension per retrieval profile — WITHOUT loading the model.
@@ -600,6 +655,26 @@ impl Embedder for LazyEmbedder {
             Ok(Some(Ok(_))) => ModelState::Ready,
             Ok(Some(Err(_))) => ModelState::Failed,
             _ => ModelState::Loading,
+        }
+    }
+    /// WRITE paths' bounded wait through the load window: poll the slot until
+    /// it is terminal or the bound expires, then report the truth. `Failed`
+    /// short-circuits on the FIRST poll — a dead fetch must not cost the
+    /// caller five seconds to learn it. Polling (50 ms), not a condvar: the
+    /// slot is a plain `Mutex<Option<..>>` shared with `encode`, and a
+    /// 50 ms poll against a lock that is only ever held for microseconds is
+    /// invisible beside the fetch it is waiting on.
+    fn wait_until_ready(&self, timeout: std::time::Duration) -> ModelState {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let state = self.model_state();
+            if state != ModelState::Loading {
+                return state;
+            }
+            if std::time::Instant::now() >= deadline {
+                return ModelState::Loading;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
     fn model_error(&self) -> Option<String> {
@@ -797,6 +872,109 @@ mod tests {
         assert_eq!(lazy.model_state(), ModelState::Ready);
         assert_eq!(lazy.model_id(), "stub/bg");
         assert_eq!(lazy.store_dim(), 512);
+    }
+
+    /// The bind-first WRITE law, arm 1: a write that meets the load window
+    /// WAITS (bounded) and lands the vector when the slot fills — the warm-
+    /// cache window (1–3 s measured) is covered, so the common boot-window
+    /// write succeeds instead of refusing.
+    #[test]
+    fn a_write_waits_through_the_load_window_and_lands() {
+        struct Stub;
+        impl Embedder for Stub {
+            fn encode(&self, texts: &[&str]) -> Vec<Vec<f32>> {
+                texts.iter().map(|_| vec![7.0]).collect()
+            }
+            fn model_id(&self) -> &str {
+                "stub-write-wait"
+            }
+        }
+        let lazy = Arc::new(LazyEmbedder::new_with_loader(
+            "edge-default",
+            "stub/write-wait",
+            512,
+            move || {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                Ok(Arc::new(Stub) as Arc<dyn Embedder>)
+            },
+        ));
+        lazy.start_background_load();
+        // The write arrives INSIDE the window (the loader is still asleep).
+        assert_eq!(lazy.model_state(), ModelState::Loading);
+        let got = encode_one_for_write(lazy.as_ref(), "payload")
+            .expect("the write must land once the slot fills");
+        // Anti-vacuity: the landed vector is the stub's, not an empty skip.
+        assert_eq!(got, vec![7.0]);
+        assert_eq!(lazy.model_state(), ModelState::Ready);
+    }
+
+    /// Arm 2: a FAILED load refuses BY NAME and FAST — the refusal names
+    /// `Failed` (never a bare "generation failed") and does not burn the
+    /// whole bound learning it.
+    #[test]
+    fn a_write_refuses_by_name_when_the_model_failed() {
+        let lazy = Arc::new(LazyEmbedder::new_with_loader(
+            "edge-default",
+            "stub/write-fail",
+            512,
+            || Err(EmbedError::Load("hf unreachable".to_string())),
+        ));
+        lazy.start_background_load();
+        let mut waited = 0;
+        while lazy.model_state() == ModelState::Loading && waited < 5_000 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            waited += 10;
+        }
+        let t0 = std::time::Instant::now();
+        let refusal = encode_one_for_write(lazy.as_ref(), "payload")
+            .expect_err("a failed load must refuse the write");
+        assert_eq!(refusal, ModelState::Failed, "the refusal NAMES the state");
+        assert!(
+            t0.elapsed() < WRITE_READY_WAIT,
+            "Failed must short-circuit the wait, not burn the bound"
+        );
+    }
+
+    /// Arm 3: a model that NEVER lands refuses `Loading` at the bound — the
+    /// cold-first-run posture: named, bounded, retryable. The loader stalls
+    /// past every bound the pin uses; the expiry shape is proven through the
+    /// bound-taking seam in milliseconds (the production 5 s bound itself is
+    /// the const `WRITE_READY_WAIT`, pinned by arms 1–2).
+    #[test]
+    fn a_write_refuses_loading_at_the_bound() {
+        let lazy = Arc::new(LazyEmbedder::new_with_loader(
+            "edge-default",
+            "stub/write-stall",
+            512,
+            move || {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                Ok(Arc::new(StubNever) as Arc<dyn Embedder>)
+            },
+        ));
+        lazy.start_background_load();
+        let refusal = encode_one_for_write_within(
+            lazy.as_ref(),
+            "payload",
+            std::time::Duration::from_millis(200),
+        )
+        .expect_err("a stalling load must refuse at the bound");
+        assert_eq!(refusal, ModelState::Loading, "the bound expires as Loading");
+        // The stall in the loader is deliberately 30 s: the helper must NOT
+        // have waited for the slot — it must have refused at its own bound,
+        // which is far shorter than the stall.
+        assert_eq!(lazy.model_state(), ModelState::Loading);
+    }
+
+    /// Arm 3's stub: never actually reached (the loader sleeps past every
+    /// bound this test uses); exists only to typecheck the loader closure.
+    struct StubNever;
+    impl Embedder for StubNever {
+        fn encode(&self, _: &[&str]) -> Vec<Vec<f32>> {
+            vec![vec![1.0]]
+        }
+        fn model_id(&self) -> &str {
+            "stub-never"
+        }
     }
 
     #[test]

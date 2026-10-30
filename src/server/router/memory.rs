@@ -614,7 +614,22 @@ pub async fn add_chunk(
             screen::ScreenResult::Clean => false,
         };
 
-        let embedding = model.encode_one(&text);
+        // BIND-FIRST write law: boot binds before the model fetch lands, so a
+        // write in the load window meets the caller-skip shape. A write is
+        // NOT the deterministic path — the row either carries its vector at
+        // commit or refuses BY NAME (the posture, never a bare "generation
+        // failed": /health/db answers the state the message names). The
+        // bounded wait covers the warm-cache window; a cold first run is the
+        // app's named loading posture, not a hung request.
+        let embedding = match crate::embed::encode_one_for_write(model.as_ref(), &text) {
+            Ok(v) => v,
+            Err(state) => {
+                return AddResponse::error(format!(
+                    "retrieval model not ready ({}) — retry when /health/db reports ready",
+                    state.as_str()
+                ));
+            }
+        };
         if embedding.is_empty() {
             return AddResponse::error("Embedding generation failed");
         }
