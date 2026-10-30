@@ -196,11 +196,16 @@ test('the_frame_renders_one_nav_with_the_surface_list_in_order_one_main_and_a_he
 	expect(status.getAttribute('data-wire')).toBe('healthy');
 	expect(status.textContent).toContain(m['shell.status.healthy']());
 
-	// The brand and the ⌘K control are present. The brand is the RAIL'S
-	// S-MARK now (zero chrome text — the Codex shape): the mark's presence
-	// is the assertion, and the accessible brand name lives on the aside.
+	// The brand is the RAIL'S S-MARK now (zero chrome text — the Codex
+	// shape): the mark's presence is the assertion, and the accessible
+	// brand name lives on the aside. THE PALETTE IS KEYBOARD-ONLY (the
+	// operator's call: the ⌘K glyph read as text) — the button is GONE and
+	// the shortcut still opens it (asserted below in the palette pin).
 	expect(screen.getByTestId('shell-brand').textContent).toBe('S');
-	expect(screen.getByTestId('shell-palette').getAttribute('aria-label')).toBe(m['palette.open']());
+	expect(
+		screen.queryByTestId('shell-palette'),
+		'the palette button is gone — the ⌘K shortcut is the only door'
+	).toBeNull();
 	expect(
 		[...document.querySelectorAll('[aria-label="' + m['nav.settings']() + '"]')].length,
 		'exactly one control carries the Settings name'

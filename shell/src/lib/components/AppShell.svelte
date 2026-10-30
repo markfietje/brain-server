@@ -34,7 +34,6 @@
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
-	import CommandIcon from '@lucide/svelte/icons/command';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { CommandPalette } from '#lib/components/ui/command/index.js';
 	import { Dialog } from '#lib/components/ui/dialog/index.js';
@@ -586,15 +585,9 @@
 				<SettingsIcon aria-hidden="true" />
 			</Button>
 
-			<Button
-				variant="ghost"
-				size="icon-sm"
-				aria-label={m['palette.open']()}
-				data-testid="shell-palette"
-				onclick={() => (paletteOpen = true)}
-			>
-				<CommandIcon aria-hidden="true" />
-			</Button>
+			<!-- The ⌘K palette is KEYBOARD-ONLY (the operator's call: no visible
+			     chrome — the ⌘K glyph read as text). The onKeydown handler keeps
+						 the shortcut; there is no button. -->
 
 			<Button
 				variant="ghost"
