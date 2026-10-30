@@ -149,18 +149,20 @@ test('the_frame_renders_one_nav_with_the_surface_list_in_order_one_main_and_a_he
 	expect(navs.length, 'the frame carries exactly one <nav> landmark: the sidebar\'s surface list').toBe(1);
 	expect(navs[0]!.getAttribute('aria-label'), 'the nav is named for a screen reader').toBe(m['shell.nav']());
 
-	// The surface list, in order. The conversation is FIRST; Settings is a
-	// BUTTON (it opens the dialog), the rest are LINKS with hrefs.
+	// The surface list, in order. The conversation is FIRST; the rest are
+	// LINKS with hrefs. Settings LEFT the nav (the 2026-10-30 dsh-UX round:
+	// it is the app's preferences, not a surface) — it lives in the sidebar
+	// FOOT below the facts (still a button, same testid, asserted after the
+		// nav list) and in the native StewardMem → Settings… ⌘, item.
 	const entries = navEntries();
 	expect(entries.map((e) => e.testid)).toEqual([
 		'nav-chat',
 		'nav-memory',
 		'nav-review',
 		'nav-audit',
-		'nav-governance',
-		'nav-settings'
+		'nav-governance'
 	]);
-	expect(entries.map((e) => e.tag)).toEqual(['a', 'a', 'a', 'a', 'a', 'button']);
+	expect(entries.map((e) => e.tag)).toEqual(['a', 'a', 'a', 'a', 'a']);
 	for (const entry of entries) {
 		expect(entry.name.length, `${entry.testid} carries no accessible name`).toBeGreaterThan(0);
 	}

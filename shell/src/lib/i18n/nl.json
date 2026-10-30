@@ -438,5 +438,6 @@
   "settings.model.ready": "{model} — klaar.",
   "settings.model.failed": "Download mislukt. Herstart om opnieuw te proberen.",
   "settings.model.fallback_name": "het retrievmodel",
-  "settings.model.hint": "Alleen deze Mac. Recall werkt toch."
+  "settings.model.hint": "Alleen deze Mac. Recall werkt toch.",
+  "shell.sidebar.resize": "Zijbalk schalen"
 }

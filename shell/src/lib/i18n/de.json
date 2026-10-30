@@ -438,5 +438,6 @@
   "settings.model.ready": "{model} — bereit.",
   "settings.model.failed": "Laden fehlgeschlagen. Neustart versucht erneut.",
   "settings.model.fallback_name": "das Retrieval-Modell",
-  "settings.model.hint": "Nur dieser Mac. Recall läuft trotzdem."
+  "settings.model.hint": "Nur dieser Mac. Recall läuft trotzdem.",
+  "shell.sidebar.resize": "Leiste resizen"
 }

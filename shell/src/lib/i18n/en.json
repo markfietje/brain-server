@@ -438,5 +438,6 @@
   "settings.model.ready": "{model} — ready.",
   "settings.model.failed": "Download failed. Restart to retry.",
   "settings.model.fallback_name": "the retrieval model",
-  "settings.model.hint": "Stays on this Mac. Recall works."
+  "settings.model.hint": "Stays on this Mac. Recall works.",
+  "shell.sidebar.resize": "Resize sidebar"
 }

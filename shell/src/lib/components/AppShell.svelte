@@ -22,6 +22,7 @@
 	// the sidebar's integrity line says "not verified" until the chain read
 	// answered, and the status bar's model is the one the kernel reported.
 	import { m } from '$paraglide/messages.js';
+	import { sidebarLayout } from '#lib/shell/sidebar-layout.svelte.js';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
@@ -108,6 +109,13 @@
 	// the choice persists for the session only (sessionStorage, like the
 	// locale), so a fresh launch opens the sidebar the way the design does.
 	const SIDEBAR_KEY = 'shell.sidebar';
+
+	// The sidebar's layout (the dsh AppFrame pattern): the width preference
+	// persists, collapse keeps the preference, and the drag base freezes per
+	// gesture. The collapsed flag remains session-scoped here (sessionStorage)
+	// while the WIDTH is the persisted preference (localStorage) — collapse is
+	// a session posture, the width is a preference.
+	const layout = sidebarLayout;
 	let collapsed = $state(false);
 
 	$effect(() => {
@@ -120,6 +128,7 @@
 
 	function toggleSidebar(): void {
 		collapsed = !collapsed;
+		layout.toggle();
 		try {
 			sessionStorage.setItem(SIDEBAR_KEY, collapsed ? 'collapsed' : 'open');
 		} catch {
@@ -292,6 +301,25 @@
 		}
 	]);
 
+	// ── the native menu's Settings… ⌘, ────────────────────────────────
+	// The Rust menu emits `settings://open`; the frame owns the preferences
+	// surface, so the frame listens. Tauri-only (the menu exists only in the
+	// desktop shell); the listener is cleaned up on destroy.
+	$effect(() => {
+		if (!(typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window)) return;
+		let unlisten: (() => void) | undefined;
+		void (async () => {
+			const { listen } = await import('@tauri-apps/api/event');
+			const un = await listen('settings://open', () => {
+				settingsOpen = true;
+			});
+			unlisten = un;
+		})();
+		return () => {
+			unlisten?.();
+		};
+	});
+
 	function runItem(run: () => void): void {
 		paletteOpen = false;
 		run();
@@ -414,7 +442,8 @@
 	data-slot="app-shell"
 	data-sidebar={collapsed ? 'collapsed' : 'open'}
 	class="grid h-dvh w-full overflow-hidden"
-	style="grid-template-columns: {collapsed ? 60 : 272}px minmax(0, 1fr)"
+	class:data-dragging={layout.dragging}
+	style="grid-template-columns: {collapsed ? 60 : layout.width}px 5px minmax(0, 1fr)"
 >
 	<aside
 		data-slot="sidebar"
@@ -503,26 +532,11 @@
 						</a>
 					</li>
 				{/each}
-				<li>
-					<button
-						type="button"
-						data-testid="nav-settings"
-						class="flex h-9 w-full items-center gap-3 rounded-lg px-2.5 text-sm text-muted-foreground transition-colors hover:bg-sidebar-hover hover:text-foreground"
-						aria-haspopup="dialog"
-						aria-label={m['nav.settings']()}
-						onclick={() => {
-							settingsOpen = true;
-							// The update section asks the core once per opening — the
-							// dialog mounts its content only while open, so the
-							// section's mount IS this opening.
-						}}
-					>
-						<SettingsIcon class="size-4 shrink-0" aria-hidden="true" />
-						<span class={collapsed ? 'sr-only' : 'flex-1 truncate text-left'}>
-							{m['nav.settings']()}
-						</span>
-					</button>
-				</li>
+				<!-- The Settings entry is NOT a nav item (the operator's call:
+				     not under Governance; it is the app's preferences). It
+				     moved to the sidebar FOOT below — the dsh pattern's
+				     `sidebar.settings` seat — and the desktop adds the native
+				     StewardMem → Settings… ⌘, item (both open one surface). -->
 			</ul>
 		</nav>
 
@@ -643,6 +657,28 @@
 			</p>
 		</div>
 
+		<!-- The settings FOOT (the dsh `sidebar.settings` seat): bottom-pinned,
+		     separated from the nav list — Settings is the app's preferences,
+		     not a surface. The desktop ALSO carries the native StewardMem →
+		     Settings… ⌘, item; both open this one surface. -->
+		<div class="mt-auto border-t border-sidebar-border px-2 pt-2 {collapsed ? 'pb-2' : ''}">
+			<button
+				type="button"
+				data-testid="nav-settings"
+				class="flex h-9 w-full items-center gap-3 rounded-lg px-2.5 text-sm text-muted-foreground transition-colors hover:bg-sidebar-hover hover:text-foreground"
+				aria-haspopup="dialog"
+				aria-label={m['nav.settings']()}
+				onclick={() => {
+					settingsOpen = true;
+				}}
+			>
+				<SettingsIcon class="size-4 shrink-0" aria-hidden="true" />
+				<span class={collapsed ? 'sr-only' : 'flex-1 truncate text-left'}>
+					{m['nav.settings']()}
+				</span>
+			</button>
+		</div>
+
 		<div class="flex items-center gap-1 px-2 pb-2 {collapsed ? 'flex-col' : ''}">
 			<Button
 				variant="ghost"
@@ -665,6 +701,39 @@
 			</Button>
 		</div>
 	</aside>
+
+	<!-- The resize divider (the dsh AppFrame gesture): 5px hit strip, with
+	     a wider invisible hit area via ::before (the CSS keeps the visible
+	     edge hairline-thin). The drag base freezes at gesture start; the
+	     pointer is captured so leaving the strip mid-drag keeps the gesture
+	     alive; text selection is suppressed while dragging. Collapsed hides
+	     the divider (a 60px rail has nothing to resize). -->
+	{#if !collapsed}
+		<div
+			role="separator"
+			aria-orientation="vertical"
+			aria-label={m['shell.sidebar.resize']()}
+			data-testid="sidebar-resizer"
+			class="sidebar-resizer relative z-10 cursor-col-resize"
+			onpointerdown={(event) => {
+				(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+				layout.startDrag();
+			}}
+			onpointermove={(event) => {
+				if (layout.dragging) layout.dragBy(event.movementX);
+			}}
+			onpointerup={(event) => {
+				(event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+				layout.endDrag();
+			}}
+			onlostpointercapture={() => layout.endDrag()}
+			ondblclick={() => {
+				layout.startDrag();
+				layout.dragBy(layout.width - 260);
+				layout.endDrag();
+			}}
+		></div>
+	{/if}
 
 	<div class="flex min-h-0 min-w-0 flex-col">
 		<!-- The main column's own top strip: a drag region under the overlay

@@ -1028,7 +1028,11 @@ describe('the envelope law', () => {
 		// the Advanced fold, the drag-region fix, 30 message keys × five
 		// locales) → 215,696 gzipped (+1,786) — the same law: a named
 		// surface act moves the midpoint, the register row carries it.
-		const R0_BASELINE = 215_696;
+		// AND AGAIN (2026-10-30, the dsh-harness UX round): the resizable
+		// sidebar (the layout store, the divider gesture, the persisted
+		// width preference, the settings foot) → 216,921 gzipped (+1,225)
+		// — the same law: named act, midpoint moves, register carries it.
+		const R0_BASELINE = 216_921;
 		const BAND = 512;
 		expect(
 			Math.abs(total - R0_BASELINE),

@@ -539,6 +539,38 @@ textarea {
 	}
 }
 
+/* The sidebar resize divider (the dsh AppFrame gesture, 2026-10-30): the
+   grid track is 5px; the ::before widens the HIT area to 9px centered on
+   the edge so the grab is easy without drawing a fat bar. A 2px highlight
+   appears on hover/active — the affordance macOS divider idioms use. While
+   a drag is live ([data-dragging] on the frame), text selection is
+   suppressed frame-level (the pointer move must resize, not select). */
+.sidebar-resizer::before {
+	content: '';
+	position: absolute;
+	inset: 0 -2px;
+}
+.sidebar-resizer::after {
+	content: '';
+	position: absolute;
+	inset-block: 0;
+	left: -1px;
+	width: 2px;
+	background: transparent;
+	transition: background-color 150ms;
+}
+.sidebar-resizer:hover::after,
+.sidebar-resizer:active::after {
+	background: var(--color-ring, oklch(0.55 0.12 200));
+}
+[data-dragging] {
+	user-select: none;
+	cursor: col-resize;
+}
+[data-dragging] .sidebar-resizer::after {
+	background: var(--color-ring, oklch(0.55 0.12 200));
+}
+
 /* The macOS overlay titlebar has no visible bar — the user grabs whatever
    looks like the window's top (the sidebar header, the main column's top
    strip, a dialog's title row). Tauri's `data-tauri-drag-region` activates

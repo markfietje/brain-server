@@ -438,5 +438,6 @@
   "settings.model.ready": "{model} — prêt.",
   "settings.model.failed": "Échec du téléchargement. Relancez pour réessayer.",
   "settings.model.fallback_name": "le modèle de récupération",
-  "settings.model.hint": "Sur ce Mac seul. Recall marche."
+  "settings.model.hint": "Sur ce Mac seul. Recall marche.",
+  "shell.sidebar.resize": "Ajuster la barre"
 }

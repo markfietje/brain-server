@@ -527,6 +527,8 @@ const TEXT_AUDIT: Readonly<Record<string, AuditRow>> = {
 	'settings.model.failed': 'verdict',
 	'settings.model.fallback_name': 'label',
 	'settings.model.hint': 'hint',
+	// The resize divider's accessible name (the S-4 dsh-UX round): a label.
+	'shell.sidebar.resize': 'label',
 	// chat.empty.*
 	'chat.empty.greeting': { kind: 'hint', max: 8 },
 	'chat.empty.chip.ask': 'label',

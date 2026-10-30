@@ -438,5 +438,6 @@
   "settings.model.ready": "{model} — listo.",
   "settings.model.failed": "Descarga fallida. Reinicia para reintentar.",
   "settings.model.fallback_name": "el modelo de recuperación",
-  "settings.model.hint": "Solo este Mac. Recall funciona igual."
+  "settings.model.hint": "Solo este Mac. Recall funciona igual.",
+  "shell.sidebar.resize": "Ajustar barra"
 }
