@@ -695,8 +695,8 @@
 				data-testid="shell-facts-text"
 			>
 				<p class="flex items-center gap-2">
-					{#if facts?.version}<span data-testid="shell-kernel">{m['shell.kernel']({ version: facts.version })}</span>{' · '}{/if}
-					{#if rowsLabel !== null}{`${rowsLabel} · `}{/if}{integrityLabel}
+					{#if facts?.version}<span data-testid="shell-kernel">{m['shell.kernel']({ version: facts.version })}</span> · {/if}
+					{#if rowsLabel !== null}{rowsLabel} · {/if}{integrityLabel}
 				</p>
 			</div>
 		</div>
