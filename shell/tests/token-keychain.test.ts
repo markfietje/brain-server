@@ -58,6 +58,22 @@ vi.mock('@tauri-apps/api/core', () => ({
 		throw new Error(`unexpected command ${command}`);
 	})
 }));
+// The core mock above CANNOT reach the app/event modules: this file renders
+// the FRAME and the settings PAGE with the Tauri gate open (`setTauri`), and
+// both then dynamically import real `@tauri-apps/api` modules at mount —
+// AppShell listens for the native menu's settings://open, the page's About
+// pane reads getVersion. Those externalized packages import their own
+// `./core` natively, bypassing the mock registry, so their invoke/
+// transformCallback ran against the hollow `__TAURI_INTERNALS__` stub and
+// surfaced as UNHANDLED REJECTIONS that fail the run while every test
+// passes (the red CI of 2026-10-30). Both seams are mocked at the module
+// boundary, the same discipline as every seam above.
+vi.mock('@tauri-apps/api/event', () => ({
+	listen: vi.fn(async () => () => {})
+}));
+vi.mock('@tauri-apps/api/app', () => ({
+	getVersion: vi.fn(async () => '0.0.0-keychain-pin')
+}));
 
 import { invoke } from '@tauri-apps/api/core';
 import { authHeaders, hasBearer, setBearer } from '../src/lib/api/token';

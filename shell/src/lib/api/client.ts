@@ -125,6 +125,20 @@ const wireFaultMiddleware: Middleware = {
 	}
 };
 
+/** REQUEST/RESPONSE calls are BOUNDED (20 s) — a kernel that accepts the
+ * connection and then stalls must surface as a named abort, not an unbounded
+ * spinner. Local-only wire, so the bound is generous; nothing legitimate on
+ * this client approaches it (the SSE STREAM is deliberately NOT here: it
+ * rides `chat/spine.ts`, where keep-alives are liveness and Stop is the only
+ * abort — a named law this middleware must not quietly reach). */
+const REQUEST_TIMEOUT_MS = 20_000;
+
+const timeoutMiddleware: Middleware = {
+	async onRequest({ request }) {
+		return new Request(request, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+	}
+};
+
 /**
  * The R25 byte-parity capture (R25_PREREG §2): the trace export law binds
  * the downloaded evidence to the EXACT `GET /recall/{trace_id}/trace`
@@ -165,6 +179,7 @@ const rawCaptureMiddleware: Middleware = {
 export let client = createClient<paths>({ baseUrl: activeBase });
 // Middleware registers imperatively in this openapi-fetch line (0.17).
 client.use(bearerMiddleware);
+client.use(timeoutMiddleware);
 client.use(wireFaultMiddleware);
 client.use(rawCaptureMiddleware);
 
@@ -172,6 +187,7 @@ function rebuildClient(base: string): void {
 	activeBase = base;
 	client = createClient<paths>({ baseUrl: base });
 	client.use(bearerMiddleware);
+	client.use(timeoutMiddleware);
 	client.use(wireFaultMiddleware);
 	client.use(rawCaptureMiddleware);
 }

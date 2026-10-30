@@ -578,10 +578,21 @@ fn the_shell_has_no_shell_plugin() {
         .get("permissions")
         .and_then(|value| value.as_array())
         .expect("the capability declares permissions");
+    // The S-4 named act (2026-10-30): core:window:allow-start-dragging is
+    // granted EXPLICITLY — core:window:default does not carry it, and without
+    // it the overlay titlebar's drag regions are silently denied (measured on
+    // the clean VM: neither the window nor the dialog could move). The law is
+    // the EXACT two-permission set: a third permission — or a swap — is a new
+    // named act, never a drift.
+    let mut granted: Vec<&str> = permissions
+        .iter()
+        .map(|value| value.as_str().expect("a permission is a string"))
+        .collect();
+    granted.sort_unstable();
     assert_eq!(
-        permissions.len(),
-        1,
-        "the main capability stays core:default only"
+        granted,
+        vec!["core:default", "core:window:allow-start-dragging"],
+        "the main capability is EXACTLY core:default + the S-4 drag grant"
     );
     for permission in permissions {
         let name = permission.as_str().expect("a permission is a string");

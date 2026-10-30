@@ -300,6 +300,50 @@ test('the_env_api_base_override_falls_back_to_loopback_rather_than_being_honoure
 	).toEqual([]);
 });
 
+ test('typed_client_requests_are_bounded_and_the_stream_stays_unbounded', async () => {
+	// The request/response wire is BOUNDED: a kernel that accepts the
+	// connection and then stalls must surface as an abort the UI can name, not
+	// an unbounded spinner. The SSE STREAM is deliberately NOT bounded
+	// (keep-alives are liveness; Stop is the only abort — the spine's own named
+	// law), and the structural arm below holds that boundary: this middleware
+	// must never quietly reach `chat/spine.ts`.
+	let seen: Request | null = null;
+	vi.stubGlobal(
+		'fetch',
+		vi.fn(async (input: RequestInfo | URL) => {
+			seen = input instanceof Request ? input : new Request(input);
+			return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+		})
+	);
+	vi.resetModules();
+	const { client } = await import('../src/lib/api/client');
+	await client.GET('/health');
+	vi.unstubAllGlobals();
+	vi.resetModules();
+
+	const request = seen as Request | null;
+	// Anti-vacuity: the stub really fielded the typed client's call.
+	expect(request, 'the typed client must have crossed the stubbed fetch').not.toBeNull();
+	// The bound: the Request carries a REAL signal (an abort the runtime
+	// will honour), not a bare undialected fetch.
+	expect(
+			request!.signal,
+			'every typed request/response call must carry an abort signal (the 20 s bound)'
+		).not.toBeNull();
+	expect(request!.signal.aborted).toBe(false);
+
+	// The boundary: the spine stays unbounded BY NAME. A timeout added there
+	// would kill idle-but-live streams — the exact defect the no-timeout law
+	// recorded. The scan asserts its own population (the spine exists and
+	// fetches) so a deleted file cannot pass it vacuously.
+	const spine = readFileSync(join(here, '..', 'src', 'lib', 'chat', 'spine.ts'), 'utf8');
+	expect(spine, 'the spine module exists').toContain('fetch');
+	expect(
+			spine,
+			'the SSE spine must stay UNBOUNDED: keep-alives are liveness, Stop is the only abort'
+		).not.toMatch(/AbortSignal\.timeout|setTimeout\s*\(\s*[^)]*abort/s);
+});
+
 test('the_register_records_the_sidecar_transport_decision_and_what_it_ruled_out', () => {
 	// A decision the next reader cannot find will be re-proposed. The register
 	// row is where it lives, and "what it ruled out" is the half that matters:

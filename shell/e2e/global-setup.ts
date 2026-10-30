@@ -90,6 +90,52 @@ async function waitForHealth(timeoutMs: number): Promise<void> {
 	throw new Error(`the e2e kernel did not become healthy on ${KERNEL_URL} in time`);
 }
 
+/**
+ * BIND-FIRST: the kernel binds BEFORE the retrieval model finishes loading
+ * (the fetch runs on a background thread), so `/health` answering ok no
+ * longer implies the embedder is Ready — and every seeded WRITE embeds. The
+ * harness therefore waits for `/health/db`'s named posture (`model_state`:
+ * loading/ready/failed, with `model_error` on failure) before seeding, the
+ * same contract the app's own Settings surface follows. A Failed posture is
+ * a NAMED refusal, never a silent seed of vec-less rows.
+ */
+async function waitForModelReady(timeoutMs: number): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (kernel && kernel.exitCode !== null) {
+			throw new Error(`the e2e kernel exited early (code ${kernel.exitCode})`);
+		}
+		let posture: Record<string, unknown> | null = null;
+		try {
+			const response = await fetch(`${KERNEL_URL}/health/db`);
+			if (response.ok) {
+				const parsed: unknown = await response.json();
+				if (typeof parsed === 'object' && parsed !== null) {
+					posture = parsed as Record<string, unknown>;
+				}
+			}
+		} catch {
+			// The posture endpoint is not answering yet — keep polling.
+		}
+		if (posture) {
+			const state = posture['model_state'];
+			if (state === 'ready') return;
+			if (state === 'failed') {
+				const detail = posture['model_error'];
+				throw new Error(
+					`the e2e kernel's retrieval model failed to load${
+						detail ? `: ${String(detail)}` : ''
+				}`
+				);
+			}
+		}
+		await new Promise((resolve) => setTimeout(resolve, 500));
+	}
+	throw new Error(
+		`the e2e kernel's retrieval model did not become ready in time (bind-first: the fetch runs in the background)`
+	);
+}
+
 async function cleanup(): Promise<void> {
 	const child = kernel;
 	kernel = null;
@@ -287,6 +333,8 @@ export default async function (): Promise<() => Promise<void>> {
 		kernel.stderr?.on('data', (data) => process.stderr.write(`[kernel!] ${data}`));
 		await waitForHealth(120_000);
 		console.log('[e2e] e2e kernel healthy');
+		await waitForModelReady(120_000);
+		console.log('[e2e] retrieval model ready — the bind-first load window is closed');
 
 		await seedRecallFixture();
 		await seedDecisionFixture();

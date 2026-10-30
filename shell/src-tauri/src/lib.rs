@@ -70,9 +70,7 @@ use tauri::Manager;
 /// preferences accelerator) because Tauri's predefined roles have no
 /// settings entry; its selection arrives in the webview as `settings://open`
 /// and the frame opens its preferences surface.
-fn build_native_menu(
-    app: &tauri::AppHandle,
-) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+fn build_native_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::*;
 
     let settings = MenuItemBuilder::with_id("settings", "Settings…")
@@ -92,9 +90,7 @@ fn build_native_menu(
         .quit()
         .build()?;
 
-    let file_submenu = SubmenuBuilder::new(app, "File")
-        .close_window()
-        .build()?;
+    let file_submenu = SubmenuBuilder::new(app, "File").close_window().build()?;
 
     let edit_submenu = SubmenuBuilder::new(app, "Edit")
         .undo()
@@ -106,9 +102,7 @@ fn build_native_menu(
         .select_all()
         .build()?;
 
-    let view_submenu = SubmenuBuilder::new(app, "View")
-        .fullscreen()
-        .build()?;
+    let view_submenu = SubmenuBuilder::new(app, "View").fullscreen().build()?;
 
     let window_submenu = SubmenuBuilder::new(app, "Window")
         .minimize()
