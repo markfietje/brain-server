@@ -61,6 +61,22 @@ fn legal_refusal(e: LegalDbError) -> HandlerError {
             format!("unknown law_version: {v}"),
             StatusCode::NOT_FOUND,
         ),
+        // Driver strings (io/sqlite) embed filesystem paths and errno text —
+        // the diagnosis rides the operator's log, and the body carries only
+        // the named posture plus where the path is configured. The remaining
+        // variants render curated Displays that name a posture, not a file.
+        LegalDbError::Io(e) | LegalDbError::Sqlite(e) => {
+            tracing::error!(
+                code = "legal_db_unavailable",
+                error = %crate::server::router::memory::LogValue::new(&e),
+                "the curated legal DB could not be read"
+            );
+            HandlerError::internal_with(
+                "legal_db_unavailable",
+                "the curated legal DB could not be read (BRAIN_LEGAL_DB_PATH); the diagnosis is in the server log — see docs/legal-db-import.md",
+                StatusCode::SERVICE_UNAVAILABLE,
+            )
+        }
         other => HandlerError::internal_with(
             "legal_db_unavailable",
             other.to_string(),
