@@ -1,7 +1,10 @@
 {
 	"$schema": "../gen/schemas/desktop-schema.json",
 	"identifier": "main",
-	"description": "The one capability for the main window: the Tauri core defaults ONLY. No fs, no shell, no http, no process plugins are installed at all — the updater plugin IS installed, and it grants the webview NOTHING: the Rust core owns the check and the install, and the renderer only ever sees a DTO; the webview reaches the kernel over the pinned loopback origin through the page's own fetch, never through Tauri.",
+	"description": "The one capability for the main window. Core defaults only — no fs, no shell, no http, no process plugins are installed at all; the updater plugin IS installed and grants the webview NOTHING (the Rust core owns the check and the install; the renderer only ever sees a DTO; the webview reaches the kernel over the pinned loopback origin through the page's own fetch, never through Tauri). core:window:allow-start-dragging is granted EXPLICITLY because core:window:default does not include it (the docs' own permission table: the default carries only internal-toggle-maximize) — without it the injected drag-region script's startDragging() IPC is silently denied and nobody can move the window by its top; the macOS overlay titlebar is invisible, so this permission is what makes the window a window (the S-4 clean-machine finding, measured 2026-10-30).",
 	"windows": ["main"],
-	"permissions": ["core:default"]
+	"permissions": [
+		"core:default",
+		"core:window:allow-start-dragging"
+	]
 }
