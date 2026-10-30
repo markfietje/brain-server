@@ -9791,6 +9791,13 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            /** @description model_not_ready — the bind-first write posture: the retrieval model loads on a background thread after the server binds, so a write meeting the load window (bounded wait expired, model still loading or failed) refuses BY NAME instead of failing as a 500 or silently storing a vector-less row. Retry when /health/db reports model_state ready. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             507: components["responses"]["CapacityExceeded"];
         };
     };

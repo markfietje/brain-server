@@ -13,6 +13,75 @@ measured. Those records are kept as they were written (this file is
 append-only), and their heading says `Unreleased` because that is what they
 were when the round landed — not because the work is still unreleased.
 
+## [1.29.37] — 2026-10-30 — first launch that lives: the model downloads beside the app, and the window is a window
+
+The kernel used to load its retrieval model synchronously at boot — 16.8 s
+of HuggingFace fetch on a clean machine, inside the desktop app's bounded
+10-second wait, so a first launch died on every retry until the cache warmed.
+This release inverts that order (bind-first): the server binds immediately,
+the dimension the migration needs is a known constant of the profile, and the
+model fetch runs on a background thread. Recall serves its deterministic
+answers while the model loads; the Settings surface names the posture
+(loading / ready / failed, with the named error); and a WRITE that meets the
+load window now waits (bounded) and then refuses BY NAME — `model_not_ready`
+with the state — instead of failing as a generic 500 or silently storing a
+row whose vector is missing.
+
+The desktop app's chrome completed its macOS-native pass this release: the
+HIG application menu (Settings… ⌘,), a window you can actually drag (the
+overlay titlebar's drag regions were silently denied — the permission is now
+granted explicitly, confirmed on a clean machine), the settings PAGE with a
+category rail, a permanent icon rail with zero chrome text, the brand Dock
+icon, and a drag-to-install DMG.
+
+### Release notes
+
+**New**
+
+- **First launch survives a cold machine.** The retrieval model now downloads
+  on a background thread while the app is already usable: recall answers from
+  the deterministic path immediately, and Settings names the model's posture
+  (loading, ready, or failed with the error) instead of a dead port.
+- **The macOS-native chrome completes.** HIG application menu with
+  Settings… ⌘,, a settings page with a category rail, a permanent icon rail
+  with no chrome text, the brand Dock icon, and a drag-to-install DMG with an
+  /Applications symlink beside the app.
+
+**Improvements**
+
+- **Writes that meet the model's load window refuse BY NAME.** `/add` and the
+  structured ingest paths wait (bounded, five seconds) for the model to land
+  and then refuse with `model_not_ready` naming the state — never a generic
+  internal error, and never a knowledge row stored without its vector. The
+  legacy `/add` envelope is unchanged; the structured path's refusal is a
+  documented 503.
+- **Every typed request from the shell is bounded (20 s).** A kernel that
+  accepts a connection and then stalls now surfaces as a named abort instead
+  of an unbounded spinner. The chat stream is deliberately NOT bounded —
+  keep-alives are liveness there, and Stop is the only abort.
+- **The shell's Content-Security-Policy closes its last form hole.**
+  `form-action 'self'` (plus explicit worker/font sources) joins the existing
+  strict policy, in both the built artifact and the app configuration.
+- **The legal-DB refusal keeps its diagnosis in the log.** A missing or
+  unreadable legal-rules database no longer leaks filesystem paths or sqlite
+  driver text into the 503 body; the operator still sees the full diagnosis
+  in the log, and the body carries the curated posture with the env var and
+  doc that resolve it.
+
+**Bug fixes**
+
+- **The window is draggable.** The overlay titlebar made the window
+  immovable — the drag permission is granted explicitly and verified on a
+  clean machine (the window and the dialog both drag).
+- **The e2e harness seeds against a ready kernel.** The harness now waits for
+  the model posture it depends on, with named refusals when the model cannot
+  load — the same contract the app's own Settings surface follows.
+- **Seven stacked CI reds cleared.** The full local dry-run caught what the
+  lane never reached past its first failure: unhandled test rejections,
+  formatting drift, two stale pins, a comments-gate label, a badge drift, and
+  the harness seed race above — all fixed at their roots, all with their
+  gates re-run green.
+
 ## [1.29.36] — 2026-10-29 — the app is signed, notarized, and Gatekeeper-clean: the Developer ID round lands
 
 The desktop app has shipped under an ad-hoc signature since III-1 —
@@ -60,6 +129,101 @@ app, and the release page's download is a stapled DMG.
   bundler for the signature, then submits, staples, and gates on the
   staple as named steps — a rejection is a named failure with the Notary
   log, fixed and re-submitted, never skipped.
+
+## [Unreleased] — the GUI's macOS-native completion (2026-10-29 → 10-30, shipped in 1.29.37)
+
+Four operator walkthrough rounds, recorded together because they were one
+arc: the ChatGPT-minimal first GUI (proof surfaces hidden by default, revealed
+by the sidebar's NATIVE macOS context menu); the native HIG application menu
+(Settings… ⌘, — Tauri's predefined roles have no settings entry, so it is a
+named custom item whose selection arrives in the webview as `settings://open`);
+the settings PAGE (the ChatGPT-desktop shape — category rail left, content
+right, the sections own their state so adding a setting never edits the
+frame); and the Codex-shape completion (a permanent icon rail with zero
+chrome text, the threads column as its own zone, no search, the brand Dock
+icon drawn from the rail's exact navy, and the drag-to-install DMG with an
+/Applications symlink beside the app). The drag law rides here too:
+`core:window:allow-start-dragging` granted explicitly (the default permission
+set does NOT carry it — the overlay titlebar's drag regions were silently
+denied, confirmed live in the clean VM), with the capability pin re-lawed to
+the exact two-permission set so a third permission stays a red. The minimum-OS
+matrix was measured from the shipped bytes (brain-shell 15.0, kernel 11.0,
+brain-afm 15.0 with FoundationModels weak-linked) and the declared floor
+matches the binaries exactly.
+
+## [Unreleased] — the kernel's boot-window fixes (2026-10-30, shipped in 1.29.37)
+
+Two kernel fixes that rode the walkthrough's clean-machine witness: (1) the
+legal-DB refusal kept its diagnosis in the LOG — the io/sqlite Display text
+embedded filesystem paths that rode the 503 body verbatim (measured:
+`unable to open database file: /…/legal.db`); the driver text now rides the
+established LogValue log seam and the body carries the curated posture naming
+`BRAIN_LEGAL_DB_PATH` — red-proved by restoring the passthrough arm and
+reproducing the exact leak. (2) BIND-FIRST: the synchronous model load at
+boot spent 16.8 s on a clean machine inside the app's bounded 10-second
+sidecar wait, so first launch died on every retry; the dimension the
+migration needs is a static per-profile constant (`dim_for_profile`, pinned
+against the factory's cfg gates), the server binds first, and
+`LazyEmbedder` loads the model on a background thread — encode while
+not-ready serves the caller-skip law (one EMPTY vec per text, row alignment
+preserved; the first draft's whole-batch empty list desynced every zip and
+the pin caught it), `/health/db` gains additive `model_state` +
+`model_error`, and the app's Settings names the posture with a spinner that
+stops at terminal.
+
+## [Unreleased] — the dry-run round: seven stacked reds, and the write law named (2026-10-30, shipped in 1.29.37)
+
+The push after the settings-page move came back red in CI, and the FULL local
+dry-run found the vitest red was only the FIRST of seven stacked failures in
+the same lane — the lane stops at its first failing step, so nothing behind
+it had ever run: (1) six unhandled rejections in the keychain pins (the
+hollow `__TAURI_INTERNALS__` stub opened the runtime gate, and the REAL
+`@tauri-apps/api` app/event modules — whose internal `./core` import
+bypasses the mock registry — ran against it; both seams are now mocked at
+the module boundary); (2) rustfmt drift in the native-menu commit;
+(3) the capability pin still asserting one permission after the drag grant;
+(4) the boot-binding source pin still naming the eager factory call after
+bind-first moved it to LazyEmbedder; (5) a round label in a code comment
+(the comments gate — label dropped, invariant kept); (6) the README test
+count badge drifted from the build; (7) the e2e harness seeded `/add` 280 ms
+after boot, inside the load window, and met the unnamed refusal — the
+harness now waits for `/health/db`'s `model_state` with named refusals, the
+same contract the app's Settings follows.
+
+The same round closed the owed write-seam product question: `/add`, the
+structured ingest paths, and procedures now funnel through
+`encode_one_for_write` — one encode, a bounded (5 s, const — the warm-cache
+window measured 1–3 s) wait through the load window, then a refusal that
+NAMES the state. The structured path gains `model_not_ready` (a documented
+503, distinct from the read path's `recall_unavailable` so a retryable write
+cannot be confused with a served refusal); the legacy `/add` envelope is
+unchanged and its message names the posture; procedures keep their designed
+best-effort skip (ONE bounded wait for the whole batch — a per-target wait
+would cost N × the bound). The loom batch fan-out stores `None` on an empty
+precompute so a load-window record falls through to `ingest_one`'s own
+named path instead of pinning to the skip shape. Pins: three unit arms at
+the embed seam (lands-through-the-window with the stub's own vector as the
+anti-vacuity proof; failed refuses fast and named; a stalling load expires
+as Loading through the bound-taking seam, in milliseconds) plus the
+route-level pin (an immediately-failed loader; `/add` answers the legacy
+envelope with the named posture, stores nothing, and the pre-bind-first
+spelling is proven gone) — red-proved by planting the old unnamed refusal
+back and watching the pin fail with the defect's own name.
+
+The shell hardening that rode the same round, measured before touched: the
+security posture was already unusually strong (strict CSP with hashed
+inline scripts and no unsafe-inline anywhere, `{@html}` banned by lint and
+absent from the tree, zero message/postMessage/window.open listeners, zero
+service workers, the loopback-only apiBase law enforced fail-safe on every
+override path, `withGlobalTauri: false`, no shell/fs/http plugins, the
+updater's `requireSignedVersion` anti-downgrade control ON and pinned,
+permissive-surface audits green). Two hardening items landed: every typed
+request/response call now carries a 20 s abort signal (a stalled kernel
+surfaces as a named abort, not an unbounded spinner — pinned behaviorally
+with the stubbed fetch inspecting the Request's signal, plus a structural
+arm holding the boundary that the SSE spine stays unbounded by name), and
+the CSP closes its form hole (`form-action 'self'`, explicit worker/font
+sources) in both the built artifact and the app configuration.
 
 ## [1.29.35] — 2026-10-29 — the loop runs live: the on-device pilot, the scheduler's first flip
 
