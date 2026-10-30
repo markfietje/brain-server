@@ -61,6 +61,73 @@ pub use verify::{
 
 use tauri::Manager;
 
+/// Build the NATIVE macOS application menu (the operator's UX call, 2026-10-30:
+/// "make the settings as native macOS as possible"). The HIG structure, in
+/// order: the app submenu (About / Settings ⌘, / Services / Hide / Quit),
+/// File (Close Window), Edit (the standard clipboard roles — WKWebView does
+/// NOT wire copy/paste/select-all into the composer without them), View,
+/// Window, Help. `Settings…` is a CUSTOM item (⌘, — the canonical macOS
+/// preferences accelerator) because Tauri's predefined roles have no
+/// settings entry; its selection arrives in the webview as `settings://open`
+/// and the frame opens its preferences surface.
+fn build_native_menu(
+    app: &tauri::AppHandle,
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::*;
+
+    let settings = MenuItemBuilder::with_id("settings", "Settings…")
+        .accelerator("CmdOrCtrl+,")
+        .build(app)?;
+
+    let app_submenu = SubmenuBuilder::new(app, "StewardMem")
+        .about(None)
+        .item(&settings)
+        .separator()
+        .services()
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+
+    let file_submenu = SubmenuBuilder::new(app, "File")
+        .close_window()
+        .build()?;
+
+    let edit_submenu = SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+
+    let view_submenu = SubmenuBuilder::new(app, "View")
+        .fullscreen()
+        .build()?;
+
+    let window_submenu = SubmenuBuilder::new(app, "Window")
+        .minimize()
+        .separator()
+        .close_window()
+        .build()?;
+
+    let help_submenu = SubmenuBuilder::new(app, "Help").build()?;
+
+    MenuBuilder::new(app)
+        .item(&app_submenu)
+        .item(&file_submenu)
+        .item(&edit_submenu)
+        .item(&view_submenu)
+        .item(&window_submenu)
+        .item(&help_submenu)
+        .build()
+}
+
 /// D7 / III-2 — the bearer token's runtime injection point. Read order: the
 /// login keychain (service `com.stewardmem.shell/token`, account `default`), then
 /// the shell's own `BRAIN_SHELL_TOKEN`, absent last. Once handed over it is
@@ -182,6 +249,23 @@ async fn update_install(app: tauri::AppHandle) -> Result<updater::UpdateDto, Str
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(sidecar::KernelState::default())
+        .setup(|app| {
+            // The native menu (HIG structure above) + the settings event:
+            // the ⌘, selection crosses to the webview, where the frame owns
+            // the preferences surface.
+            let handle = app.handle().clone();
+            let menu = build_native_menu(&handle)?;
+            app.set_menu(menu)?;
+            app.on_menu_event(move |_app, event| {
+                if event.id().0 == "settings" {
+                    use tauri::Emitter;
+                    if let Err(error) = _app.emit("settings://open", ()) {
+                        eprintln!("settings menu event could not reach the webview: {error}");
+                    }
+                }
+            });
+            Ok(())
+        })
         // III-4 — the updater plugin, and NOTHING of it to the webview: the
         // capability grants no `updater:*` permission, so the renderer cannot
         // check or install anything. The Rust core owns both, and it reads

@@ -64,16 +64,26 @@
 		<div
 			{...api.getContentProps()}
 			class={cn(
-				"bg-popover text-popover-foreground ring-foreground/10 grid max-w-[calc(100%-2rem)] w-full gap-6 rounded-xl p-6 text-sm ring-1 outline-none sm:max-w-md",
+				"relative bg-popover text-popover-foreground ring-foreground/10 grid max-w-[calc(100%-2rem)] w-full gap-6 rounded-xl p-6 text-sm ring-1 outline-none sm:max-w-md",
 				className
 			)}
 		>
+			<!-- The close button lives OUTSIDE the drag strip, anchored to the
+			     dialog box (the content is the positioning context). Inside
+			     the strip, the drag machinery ate the click (the drag handler
+			     walks up from the target; a click on the ✕ started a window
+			     drag instead of closing) — the operator's S-4 finding. -->
+			{#if showCloseButton}
+				<Button {...closeProps} data-slot="dialog-close">
+					<XIcon />
+					<span class="sr-only">{closeLabel}</span>
+				</Button>
+			{/if}
 			<!-- The window moves from the dialog's top strip like any macOS
-			     window (the operator's S-4 finding: the overlay titlebar is
-			     invisible, so the user grabs the dialog's top and nothing
-			     happened). The attribute must be on the exact mousedown
-			     target — hence it rides BOTH the strip and the title, while
-			     the close button stays outside the strip and interactive. -->
+			     window (the overlay titlebar is invisible, so the user grabs
+			     the dialog's top). The attribute must be on the exact
+			     mousedown target — hence it rides BOTH the strip and the
+			     title; the strip holds NO interactive children. -->
 			<div
 				class="-mx-6 -mt-6 mb-4 flex items-center justify-between px-6 pb-2 pt-6"
 				data-tauri-drag-region
@@ -85,12 +95,6 @@
 				>
 					{title}
 				</h2>
-				{#if showCloseButton}
-					<Button {...closeProps} data-slot="dialog-close">
-						<XIcon />
-						<span class="sr-only">{closeLabel}</span>
-					</Button>
-				{/if}
 			</div>
 			{#if description}
 				<p {...api.getDescriptionProps()} class="text-muted-foreground text-sm">
