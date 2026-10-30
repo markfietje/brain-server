@@ -1036,8 +1036,11 @@ describe('the envelope law', () => {
 		// visibility store + the NATIVE context menu + the browser
 		// fallback — the nav markup got SMALLER (default-hidden surfaces)
 		// → 216,146 gzipped (−775): the band's shrink side is the same
-		// law (a shrink beyond the band is a surface change too).
-		const R0_BASELINE = 216_146;
+		// law (a shrink beyond the band is a surface change too). AND
+		// AGAIN (the settings PAGE round): /settings as a route — the
+		// category rail + the content panes + the About facts → 218,526
+		// gzipped (+2,380): named act, midpoint moves, register carries it.
+		const R0_BASELINE = 218_526;
 		const BAND = 512;
 		expect(
 			Math.abs(total - R0_BASELINE),
