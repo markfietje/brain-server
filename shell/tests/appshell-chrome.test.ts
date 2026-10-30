@@ -269,15 +269,17 @@ test('the_sidebar_facts_are_read_from_the_kernel_and_never_guessed', async () =>
 	await renderHost();
 	await waitFor(() => {
 		expect(screen.getByTestId('shell-facts').getAttribute('data-integrity')).toBe('verified');
-		expect(screen.getByTestId('shell-facts').textContent).toContain(
+		// The sentence survives as the DOT'S TOOLTIP (the no-text GUI:
+		// hover is the fact; the screen reader keeps the sr-only copy).
+		expect(screen.getByTestId('shell-facts').getAttribute('title')).toContain(
 			m['shell.facts.rows']({ count: 8745 })
 		);
+		expect(screen.getByTestId('shell-facts').getAttribute('title')).toContain(
+			m['shell.facts.integrity.verified']()
+		);
 	});
-	const facts = screen.getByTestId('shell-facts');
-	expect(facts.textContent).toContain(m['shell.facts.integrity.verified']());
-	expect(screen.getByTestId('shell-kernel').textContent).toContain(
-		m['shell.kernel']({ version: '1.29.32' })
-	);
+	// The kernel VERSION fact's home is the About settings page (asserted
+	// in the settings-page pin's own file); the rail carries the dot.
 	expect(screen.getByTestId('shell-status-model').textContent).toContain(
 		m['shell.status.model']({ model: 'test-model' })
 	);
@@ -324,15 +326,14 @@ test('the_sidebar_facts_are_read_from_the_kernel_and_never_guessed', async () =>
 	await renderHost();
 	await waitFor(() => {
 		expect(screen.getByTestId('shell-facts').getAttribute('data-integrity')).toBe('broken');
-		// The facts read landed too: the version is on screen.
-		expect(screen.getByTestId('shell-kernel').textContent).toContain('1.29.32');
+		// The tooltip names the true state — never a guessed label.
+		expect(screen.getByTestId('shell-facts').getAttribute('title')).toContain(
+			m['shell.facts.integrity.broken']()
+		);
 	});
-	expect(screen.getByTestId('shell-facts').textContent).toContain(
-		m['shell.facts.integrity.broken']()
-	);
-	// A refused /stats leaves the count OUT — never "0 rows" over a refusal —
-	// and the model line is absent, not blank.
-	expect(screen.getByTestId('shell-facts').textContent).not.toMatch(/\b0 rows\b/);
+	// A refused /stats leaves the count OUT of the tooltip — never "0 rows"
+	// over a refusal — and the sentence is absent, not blank.
+	expect(screen.getByTestId('shell-facts').getAttribute('title') ?? '').not.toMatch(/\b0 rows\b/);
 	expect(screen.queryByTestId('shell-status-model')).toBeNull();
 });
 

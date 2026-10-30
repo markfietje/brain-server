@@ -467,10 +467,12 @@
 			 (right-click). -->
 	<aside
 		data-slot="sidebar"
-		class="flex min-h-0 flex-col items-center border-r border-sidebar-border bg-sidebar py-2"
+		class="flex min-h-0 flex-col items-center border-r border-sidebar-border bg-sidebar pt-14 pb-2"
 		aria-label={m['shell.sidebar']()}
 	>
-		<!-- The top strip is the window's drag region (the overlay titlebar). -->
+		<!-- pt-14 clears the traffic lights (the overlay titlebar's buttons
+		     sit at the window's top-left — exactly this rail's x). The strip
+					 below stays the drag region. -->
 		<div
 			class="flex w-full shrink-0 items-center justify-center"
 			style="min-height: var(--titlebar-inset)"
@@ -690,15 +692,10 @@
 				{/if}
 			</div>
 
-			<div
-				class="border-t border-sidebar-border px-3 py-3 text-xs text-muted-foreground"
-				data-testid="shell-facts-text"
-			>
-				<p class="flex items-center gap-2">
-					{#if facts?.version}<span data-testid="shell-kernel">{m['shell.kernel']({ version: facts.version })}</span> · {/if}
-					{#if rowsLabel !== null}{rowsLabel} · {/if}{integrityLabel}
-				</p>
-			</div>
+			<!-- The rows/integrity sentence rode here and is GONE (the
+			     operator's call: NO text in the GUI). The fact lives on the
+						 rail's integrity-dot TOOLTIP (hover) + the wire — the dot
+						 IS the fact, the hover is the sentence. -->
 		</div>
 	{/if}
 

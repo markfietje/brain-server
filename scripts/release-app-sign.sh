@@ -88,17 +88,14 @@ RELEASE_CONFIG="$SHELL_DIR/src-tauri/tauri.release.conf.json"
 DEFAULT_SECRET_KEY="$HOME/.config/brain-server/updater.key"
 DEFAULT_PUBLIC_KEY="$HOME/.config/brain-server/updater.key.pub"
 
-# The PUBLIC repository. The public Actions must never hold the key, and
-# this is where that law is enforced rather than merely intended.
-PUBLIC_REPO="stewardmem/stewardmem"
-
 # ── THE APPLE IDENTITY (III-5) ─────────────────────────────────────────────
 #
-# Pinned BY NAME + Team ID. The old self-signed identity stays in the
-# keychain for legacy verification and is refused BY the checks below —
-# `--red-proof` witnesses that refusal with the real toolchain.
+# Pinned BY NAME + Team ID (the Team ID rides INSIDE the identity string —
+# a separate TEAM_ID variable had no reader). The old self-signed identity
+# stays in the keychain for legacy verification and is refused BY the
+# checks below — `--red-proof` witnesses that refusal with the real
+# toolchain.
 SIGNING_IDENTITY="Developer ID Application: Mark Fietje (JHB4UNPL3G)"
-TEAM_ID="JHB4UNPL3G"
 
 # ── THE NOTARY CREDENTIAL (III-5 · S-2) ────────────────────────────────────
 #
@@ -754,6 +751,10 @@ DMG_STAGING="$DMG_DIR/$(basename "$BUNDLE")"
 DMG="$(dirname "$ARTIFACT")/StewardMem.dmg"
 mkdir -p "$DMG_DIR"
 cp -R "$BUNDLE" "$DMG_STAGING"
+# THE DRAG-TO-INSTALL LAYOUT (the S-4 witness finding: the volume opened
+# with the app ALONE — no Applications shortcut, so the drag had no target):
+# the standard macOS DMG carries a symlink to /Applications beside the app.
+ln -sfn /Applications "$DMG_DIR/Applications"
 echo ">> building the DMG around the stapled app…"
 rm -f "$DMG"
 hdiutil create -volname "StewardMem" -srcfolder "$DMG_DIR" -ov -format UDZO "$DMG" > /dev/null ||
