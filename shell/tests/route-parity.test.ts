@@ -14,7 +14,12 @@ import { navEntries } from '../src/lib/extensions/registry.js';
 const DECISION_AND_DETAIL_ROUTES = [
 	'/decisions',
 	'/decisions/[id]',
-	'/recall/[trace_id]/trace'
+	'/recall/[trace_id]/trace',
+	// The settings PAGE (2026-10-30, the dsh-UX round): opened from the
+	// sidebar FOOT and the native StewardMem → Settings… ⌘, item — a
+	// preferences surface, not a panel-list entry (the operator's call:
+	// it must not sit under Governance).
+	'/settings'
 ] as const;
 
 /**
@@ -310,6 +315,28 @@ const ROUTE_PARITY: readonly RouteParity[] = [
 		}
 	},
 	{
+		route: '/settings',
+		verdict: 'no_counterpart',
+		because:
+			'the app preferences as a full PAGE (the 2026-10-30 dsh-UX round, the ChatGPT-desktop shape): ' +
+			'no Dioxus route serves preferences — the Dioxus shell had none. The page reads the kernel ' +
+			'through `#lib/api/kernel-facts` (fetchKernelFacts → /health + /stats, and the model posture ' +
+			'via /health/db) for the model + About panes; the token and origin panes are TAURI-ONLY ' +
+			'(keychain + rotation through the shell commands, no kernel wire), and the locale pane is ' +
+			'browser-local. Opened from the sidebar FOOT and the native ⌘, item — never a panel-list entry.',
+		authz: {
+			// The PAGE's own wire reach (the derivation reads the page's
+			// imports): fetchKernelFacts reads /health (public — the version
+			// fact) and /stats (Read — the About pane's corpus fact). The
+			// MODEL pane's /health/db Admin read is carried by the model
+			// SECTION (a frame-consumed component; its call attributes
+			// through the frame walk). The token and origin panes are
+			// TAURI-ONLY — no kernel wire.
+			kernel: { '/health': 'public', '/stats': 'Read' },
+			mutates: null
+		}
+	},
+	{
 		route: '/recall/[trace_id]/trace',
 		verdict: 'renamed',
 		dioxus: '/recall/:trace_id',
@@ -581,11 +608,20 @@ test('every_user_reachable_shell_route_carries_a_parity_verdict', () => {
 		(acc, row) => ({ ...acc, [row.verdict]: (acc[row.verdict] ?? 0) + 1 }),
 		{} as Record<ParityVerdict, number>
 	);
-	expect(mix).toEqual({ exact: 2, renamed: 4, no_counterpart: 2 });
+	// 2026-10-30: /settings joins as no_counterpart (a shell-only
+	// preferences page — the Dioxus shell had none) → 3. The gate moves as
+	// a NAMED ACT: /settings is not unreconciled debt the way the first
+	// two were — the Dioxus shell genuinely had NO preferences surface
+	// (its settings were a native-menu concern the Dioxus shell never
+	// had), so there is nothing to reconcile against; the row is the
+	// record, and the count is the census's truth, not a debt to burn
+	// down. GATE 1: 2 → 3 (the operator's UX round, recorded here and in
+		// the register).
+	expect(mix).toEqual({ exact: 2, renamed: 4, no_counterpart: 3 });
 	expect(
 		mix.no_counterpart,
-		'gate 1 cannot go green while any route has no counterpart — recorded, not reconciled'
-	).toBe(2);
+		'gate 1 cannot go green while a route has a counterpart left unreconciled — /settings has NONE to reconcile against (recorded, the honest shape)'
+	).toBe(3);
 });
 
 test('this_census_reads_the_SHELL_not_the_kernel_route_tables', () => {

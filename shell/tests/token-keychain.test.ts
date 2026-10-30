@@ -63,7 +63,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { authHeaders, hasBearer, setBearer } from '../src/lib/api/token';
 import { bootstrapToken } from '../src/lib/api/bootstrap';
 import { shellRoot } from './fixtures';
-import AppShellHost from './AppShellHost.svelte';
+import SettingsPageHost from './SettingsPageHost.svelte';
+import SettingsInFrameHost from './SettingsInFrameHost.svelte';
 
 const SENTINEL = 'brain-shell-keychain-sentinel-DO-NOT-LEAK-5a7e';
 
@@ -151,10 +152,12 @@ test('the_bootstrap_reads_the_keychain_command_and_never_stores_it', async () =>
  */
 test('the_settings_saves_to_the_keychain_and_clears_it', async () => {
 	const user = userEvent.setup();
-	render(AppShellHost);
-
-	await user.click(screen.getByRole('button', { name: 'Settings' }));
-	await screen.findByRole('dialog');
+	// The settings is a PAGE now (2026-10-30), and the R129 re-read law
+	// needs the FRAME (the credential epoch's glance-read effects live in
+	// AppShell) — so this pin renders the page INSIDE the frame: the real
+	// integration shape.
+	render(SettingsInFrameHost);
+	await user.click(screen.getByRole('button', { name: 'Advanced' }));
 	const input = (await screen.findByLabelText('Kernel token')) as HTMLInputElement;
 	expect(screen.getByText(/No token configured/)).toBeTruthy();
 
@@ -198,10 +201,10 @@ test('the_settings_saves_to_the_keychain_and_clears_it', async () => {
 test('the_settings_reports_that_the_running_kernel_took_the_token', async () => {
 	keychain.rotation = { kernelSynced: true, dataRootMissing: false, error: null };
 	const user = userEvent.setup();
-	render(AppShellHost);
-
-	await user.click(screen.getByRole('button', { name: 'Settings' }));
-	await screen.findByRole('dialog');
+	// The settings is a PAGE now (2026-10-30): the pins render the page —
+	// the section behavior is what's under test, and the page is its host.
+	render(SettingsPageHost);
+	await user.click(screen.getByRole('button', { name: 'Advanced' }));
 	const input = (await screen.findByLabelText('Kernel token')) as HTMLInputElement;
 	await user.type(input, SENTINEL);
 	await user.click(screen.getByRole('button', { name: 'Save token' }));
@@ -218,10 +221,10 @@ test('the_settings_reports_that_the_running_kernel_took_the_token', async () => 
 test('a_rotation_that_failed_is_not_reported_as_saved', async () => {
 	keychain.rotation = { kernelSynced: false, dataRootMissing: false, error: 'insecureAuthFile' };
 	const user = userEvent.setup();
-	render(AppShellHost);
-
-	await user.click(screen.getByRole('button', { name: 'Settings' }));
-	await screen.findByRole('dialog');
+	// The settings is a PAGE now (2026-10-30): the pins render the page —
+	// the section behavior is what's under test, and the page is its host.
+	render(SettingsPageHost);
+	await user.click(screen.getByRole('button', { name: 'Advanced' }));
 	const input = (await screen.findByLabelText('Kernel token')) as HTMLInputElement;
 	await user.type(input, SENTINEL);
 	await user.click(screen.getByRole('button', { name: 'Save token' }));
@@ -239,20 +242,19 @@ test('a_rotation_that_failed_is_not_reported_as_saved', async () => {
 test('the_token_entry_is_hidden_outside_tauri', async () => {
 	clearTauri();
 	const user = userEvent.setup();
-	render(AppShellHost);
-
-	await user.click(screen.getByRole('button', { name: 'Settings' }));
-	await screen.findByRole('dialog');
+	// The settings is a PAGE now (2026-10-30): the pins render the page —
+	// the section behavior is what's under test, and the page is its host.
+	render(SettingsPageHost);
+	await user.click(screen.getByRole('button', { name: 'Advanced' }));
 	expect(screen.queryByLabelText('Kernel token')).toBeNull();
 	expect(screen.queryByRole('button', { name: 'Save token' })).toBeNull();
 });
 
-/** The section joins the Settings dialog, so the dialog's AA profile covers it. */
+/** The section joins the settings PAGE (2026-10-30), so the page's AA profile covers it. */
 test('the_settings_surface_is_axe_clean', async () => {
 	const user = userEvent.setup();
-	render(AppShellHost);
-	await user.click(screen.getByRole('button', { name: 'Settings' }));
-	await screen.findByRole('dialog');
+	render(SettingsPageHost);
+	await user.click(screen.getByRole('button', { name: 'Advanced' }));
 	await screen.findByLabelText('Kernel token');
 
 	const { default: axe } = await import('axe-core');
@@ -272,9 +274,8 @@ test('the_token_never_reaches_storage_logs_or_markup', async () => {
 	const storage = vi.spyOn(Storage.prototype, 'setItem');
 	const consoleSpy = consoleSink();
 	try {
-		render(AppShellHost);
-		await user.click(screen.getByRole('button', { name: 'Settings' }));
-		await screen.findByRole('dialog');
+		render(SettingsPageHost);
+	await user.click(screen.getByRole('button', { name: 'Advanced' }));
 		const input = (await screen.findByLabelText('Kernel token')) as HTMLInputElement;
 		await user.type(input, SENTINEL);
 		await user.click(screen.getByRole('button', { name: 'Save token' }));

@@ -439,5 +439,12 @@
   "settings.model.failed": "Download failed. Restart to retry.",
   "settings.model.fallback_name": "the retrieval model",
   "settings.model.hint": "Stays on this Mac. Recall works.",
-  "shell.sidebar.resize": "Resize sidebar"
+  "shell.sidebar.resize": "Resize sidebar",
+  "settings.cats.general": "General",
+  "settings.cats.model": "Model",
+  "settings.cats.updates": "Updates",
+  "settings.cats.advanced": "Advanced",
+  "settings.cats.about": "About",
+  "settings.about.kernel": "Kernel",
+  "settings.empty": "Nothing to configure here yet."
 }

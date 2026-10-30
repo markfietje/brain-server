@@ -439,5 +439,12 @@
   "settings.model.failed": "Descarga fallida. Reinicia para reintentar.",
   "settings.model.fallback_name": "el modelo de recuperación",
   "settings.model.hint": "Solo este Mac. Recall funciona igual.",
-  "shell.sidebar.resize": "Ajustar barra"
+  "shell.sidebar.resize": "Ajustar barra",
+  "settings.cats.general": "General",
+  "settings.cats.model": "Modelo",
+  "settings.cats.updates": "Actualizaciones",
+  "settings.cats.advanced": "Avanzado",
+  "settings.cats.about": "Acerca de",
+  "settings.about.kernel": "Kernel",
+  "settings.empty": "Nada que configurar aquí todavía."
 }

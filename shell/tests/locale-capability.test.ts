@@ -44,6 +44,8 @@ function catalog(locale: string): Record<string, string> {
  * drifts quietly as the catalog grows.
  */
 const GERMAN_LOANWORDS = new Set([
+	'settings.about.kernel',
+	'settings.cats.model',
 	'nav.chat',
 	'decisions.list.pipeline',
 	'decisions.detail.model_version',
@@ -72,6 +74,8 @@ const GERMAN_LOANWORDS = new Set([
  * untranslated string wearing a locale label.
  */
 const FRENCH_LOANWORDS = new Set([
+	'settings.about.kernel',
+	'settings.cats.model',
 	// "Pipeline"/"Mode"/"Version"/"RRF k" are the same technical terms in
 	// French; "Leg" is the retrieval leg, a term of art kept verbatim;
 	// "Conversation"/"Scores"/"Salience" are French words of identical
@@ -106,6 +110,10 @@ const SPANISH_LOANWORDS = new Set([
 	'decisions.list.pipeline',
 	'decisions.detail.rrf_k',
 	'decisions.detail.kernel',
+	// The settings page (2026-10-30): "General" is a same-spelling Spanish
+	// word; "Kernel" is an established Spanish loanword.
+	'settings.cats.general',
+	'settings.about.kernel',
 	// The sidebar frame (2026-10-25): "Actor" and "Roles" are Spanish words
 	// of identical spelling; "Steward" is the product name.
 	'shell.brand',
@@ -116,7 +124,12 @@ const SPANISH_LOANWORDS = new Set([
 const DUTCH_LOANWORDS = new Set([
 	// "Chat", "Pipeline" and "Kernel" are established Dutch loanwords;
 	// "Actor", "Model" and "Scores" are same-spelling cognates; "conflict"
-	// and "Conflict" are Dutch words in their own right.
+	// and "Conflict" are Dutch words in their own right. The settings
+	// page's cats (2026-10-30): "Model" and "Updates" are same-spelling
+	// Dutch cognates; "Kernel" is the established loanword.
+	'settings.cats.model',
+	'settings.cats.updates',
+	'settings.about.kernel',
 	'nav.chat',
 	'recall.conflict',
 	'recall.trace.fields.actor',

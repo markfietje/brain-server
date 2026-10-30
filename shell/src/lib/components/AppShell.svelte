@@ -63,10 +63,12 @@
 		recordKernelFacts,
 		startNewConversation
 	} from '#lib/shell/frame.svelte.js';
-	import { navEntries, resolveStatusContext, settingsSections } from '#lib/extensions/registry.js';
+	import { navEntries, resolveStatusContext } from '#lib/extensions/registry.js';
 
 	let paletteOpen = $state(false);
-	let settingsOpen = $state(false);
+	// The settings is a PAGE (/settings — the ChatGPT-desktop shape); the
+	// frame has no settings state at all: the foot, the native ⌘,/menu
+	// event, and the palette all NAVIGATE.
 
 	let { children } = $props();
 
@@ -295,28 +297,27 @@
 			heading: m['palette.more'](),
 			items: [
 				{
-					// `more` keeps settings: the entry opens FRAME state (the
-					// dialog), which is the frame's own act, not a route.
+					// `more` keeps settings: the entry NAVIGATES (the settings
+					// is a page — the ChatGPT-desktop shape).
 					value: 'settings',
 					label: m['nav.settings'](),
 					Icon: SettingsIcon,
-					onSelect: () => runItem(() => (settingsOpen = true))
+					onSelect: () => runItem(() => goto(resolve('/settings')))
 				}
 			]
 		}
 	]);
 
-	// ── the native menu's Settings… ⌘, ────────────────────────────────
-	// The Rust menu emits `settings://open`; the frame owns the preferences
-	// surface, so the frame listens. Tauri-only (the menu exists only in the
-	// desktop shell); the listener is cleaned up on destroy.
+	// Reached from the foot, the native ⌘,/menu event, and the palette —
+	// all three NAVIGATE (the settings is a PAGE now, the ChatGPT-desktop
+	// shape; the operator's call, 2026-10-30).
 	$effect(() => {
 		if (!(typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window)) return;
 		let unlisten: (() => void) | undefined;
 		void (async () => {
 			const { listen } = await import('@tauri-apps/api/event');
 			const un = await listen('settings://open', () => {
-				settingsOpen = true;
+				goto(resolve('/settings'));
 			});
 			unlisten = un;
 		})();
@@ -690,11 +691,8 @@
 				type="button"
 				data-testid="nav-settings"
 				class="flex h-9 w-full items-center gap-3 rounded-lg px-2.5 text-sm text-muted-foreground transition-colors hover:bg-sidebar-hover hover:text-foreground"
-				aria-haspopup="dialog"
 				aria-label={m['nav.settings']()}
-				onclick={() => {
-					settingsOpen = true;
-				}}
+				onclick={() => goto(resolve('/settings'))}
 			>
 				<SettingsIcon class="size-4 shrink-0" aria-hidden="true" />
 				<span class={collapsed ? 'sr-only' : 'flex-1 truncate text-left'}>
@@ -809,28 +807,11 @@
 	bind:open={paletteOpen}
 	title={m["palette.title"]()}
 	placeholder={m["palette.placeholder"]()}
-	emptyText={m["palette.empty"]()}
-	groups={PALETTE_GROUPS}
-/>
+		emptyText={m["palette.empty"]()}
+		groups={PALETTE_GROUPS}
+	/>
 
-<Dialog
-	bind:open={settingsOpen}
-	title={m["settings.title"]()}
-	description={m["settings.description"]()}
-	closeLabel={m["palette.open"]()}
->
-	<!-- The registry's sections, in contribution order (coreSettings):
-	     the kernel-origin override, the session locale, the kernel token and
-	     the software update — the dialog owns none of their state. -->
-	<div class="grid gap-5 py-2">
-		{#each settingsSections as section (section.id)}
-			{@const Section = section.component}
-			<Section />
-		{/each}
-	</div>
-</Dialog>
-
-<!-- The delete confirmation: erasure is DESTRUCTIVE (the kernel hard-deletes
+	<!-- The delete confirmation: erasure is DESTRUCTIVE (the kernel hard-deletes
 	 the turns and the row in one transaction), so the act is named twice —
 	 the dialog says what will be lost and the buttons carry their verbs. -->
 <Dialog

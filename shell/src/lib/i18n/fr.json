@@ -439,5 +439,12 @@
   "settings.model.failed": "Échec du téléchargement. Relancez pour réessayer.",
   "settings.model.fallback_name": "le modèle de récupération",
   "settings.model.hint": "Sur ce Mac seul. Recall marche.",
-  "shell.sidebar.resize": "Ajuster la barre"
+  "shell.sidebar.resize": "Ajuster la barre",
+  "settings.cats.general": "Général",
+  "settings.cats.model": "Modèle",
+  "settings.cats.updates": "Mises à jour",
+  "settings.cats.advanced": "Avancé",
+  "settings.cats.about": "À propos",
+  "settings.about.kernel": "Kernel",
+  "settings.empty": "Rien à configurer ici pour l'instant."
 }

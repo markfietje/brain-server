@@ -439,5 +439,12 @@
   "settings.model.failed": "Laden fehlgeschlagen. Neustart versucht erneut.",
   "settings.model.fallback_name": "das Retrieval-Modell",
   "settings.model.hint": "Nur dieser Mac. Recall läuft trotzdem.",
-  "shell.sidebar.resize": "Leiste resizen"
+  "shell.sidebar.resize": "Leiste resizen",
+  "settings.cats.general": "Allgemein",
+  "settings.cats.model": "Modell",
+  "settings.cats.updates": "Aktualisierungen",
+  "settings.cats.advanced": "Erweitert",
+  "settings.cats.about": "Über",
+  "settings.about.kernel": "Kernel",
+  "settings.empty": "Hier gibt es noch nichts einzustellen."
 }

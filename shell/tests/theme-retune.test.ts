@@ -332,23 +332,37 @@ test('the_composer_and_every_text_control_compute_at_least_16px_whatever_surroun
 
 	await renderHome();
 	await renderFrame();
-	// Open the settings dialog so its input and native select are in the tree.
-	screen.getByTestId('nav-settings').click();
-	await waitFor(() => expect(document.getElementById('setting-origin')).toBeTruthy());
+	// The settings PAGE renders inside the frame (2026-10-30: the page is
+	// the ChatGPT-desktop shape — ONE category pane at a time). The law is
+	// per-pane: the home's composer + the General pane's locale select in
+	// the first pass; the Advanced pane's origin input after clicking the
+	// Advanced category. One combined host, two phases, one 16px law.
+	const { default: CombinedHost } = await import('./AppShellWithSettingsHost.svelte');
+	render(CombinedHost);
+	await waitFor(() => expect(document.getElementById('setting-locale')).toBeTruthy());
 
-	const controls = [...document.querySelectorAll<HTMLElement>('input, select, textarea')].filter(
-		(el) => !(el instanceof HTMLInputElement && ['hidden', 'submit', 'reset', 'button', 'image'].includes(el.type))
-	);
-	const names = controls.map((el) => `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ''}`);
-	expect(names, 'the composer, the origin input and the locale select must all be in the tree').toEqual(
-		expect.arrayContaining(['textarea#chat-composer', 'input#setting-origin', 'select#setting-locale'])
-	);
-
-	const small = controls
+	const phase1 = [...document.querySelectorAll<HTMLElement>('input, select, textarea')]
+		.filter((el) => !(el instanceof HTMLInputElement && ['hidden', 'submit', 'reset', 'button', 'image'].includes(el.type)));
+	expect(
+		phase1.map((el) => `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ''}`),
+		'the composer and the locale select must both be in the tree (General phase)'
+	).toEqual(expect.arrayContaining(['textarea#chat-composer', 'select#setting-locale']));
+	const small1 = phase1
 		.map((el) => ({ el, px: fontPx(el) }))
 		.filter(({ px }) => px < 16)
 		.map(({ el, px }) => `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ''} computes ${px}px`);
-	expect(small, 'text controls below 16px — the no-zoom-on-focus law').toEqual([]);
+	expect(small1, 'text controls below 16px — the no-zoom-on-focus law (General phase)').toEqual([]);
+
+	const advancedTab = await screen.findByRole('button', { name: 'Advanced' });
+	advancedTab.click();
+	await waitFor(() => expect(document.getElementById('setting-origin')).toBeTruthy());
+	const phase2 = [...document.querySelectorAll<HTMLElement>('input, select, textarea')]
+		.filter((el) => !(el instanceof HTMLInputElement && ['hidden', 'submit', 'reset', 'button', 'image'].includes(el.type)));
+	const small2 = phase2
+		.map((el) => ({ el, px: fontPx(el) }))
+		.filter(({ px }) => px < 16)
+		.map(({ el, px }) => `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ''} computes ${px}px`);
+	expect(small2, 'text controls below 16px — the no-zoom-on-focus law (Advanced phase)').toEqual([]);
 });
 
 // ── E-3 · D4: quiet scrollbars on exactly the two measured scroll columns ──
@@ -528,6 +542,17 @@ const TEXT_AUDIT: Readonly<Record<string, AuditRow>> = {
 	// so the loading/ready sentences are HINT-class (a name makes them
 		// open-ended) — the bounds law applies to the FIXED prose only.
 	'settings.model.heading': 'label',
+	// The settings PAGE (2026-10-30): the category rail's labels (one word
+	// each × five locales) + the About pane's facts + the empty-category
+	// placeholder. The Kernel label is a declared loanword in de/fr (the
+		// locale-capability pin's own list).
+	'settings.cats.general': 'label',
+	'settings.cats.model': 'label',
+	'settings.cats.updates': 'label',
+	'settings.cats.advanced': 'label',
+	'settings.cats.about': 'label',
+	'settings.about.kernel': 'label',
+	'settings.empty': 'hint',
 	'settings.model.loading': 'hint',
 	'settings.model.ready': 'hint',
 	'settings.model.failed': 'verdict',

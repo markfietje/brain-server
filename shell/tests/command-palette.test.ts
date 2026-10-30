@@ -70,14 +70,14 @@ test('command_palette_opens_and_navigates', async () => {
 		expect(screen.queryByPlaceholderText(PALETTE_PLACEHOLDER)).toBeNull()
 	);
 
-	// ⌘K reopens the palette; the Settings entry opens the settings panel
-	// (no navigation). The sidebar's settings BUTTON shares the accessible
-	// name — the palette item is the one inside the dialog.
+	// ⌘K reopens the palette; the Settings entry NAVIGATES (2026-10-30:
+	// the settings is a PAGE — the ChatGPT-desktop shape). The sidebar's
+	// settings BUTTON shares the accessible name — the palette item is the
+	// one inside the dialog.
 	await user.keyboard('{Meta>}{k}{/Meta}');
 	const reopened = await screen.findByRole('dialog');
 	await user.click(within(reopened as HTMLElement).getByText('Settings'));
-	await waitFor(() => expect(screen.getByText('Kernel origin')).toBeTruthy());
-	await user.keyboard('{Escape}');
-	await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-	expect(vi.mocked(goto)).toHaveBeenCalledTimes(1);
+	await waitFor(() => expect(vi.mocked(goto)).toHaveBeenCalledWith('/settings'));
+	await waitFor(() => expect(screen.queryByPlaceholderText(PALETTE_PLACEHOLDER)).toBeNull());
+	expect(vi.mocked(goto)).toHaveBeenCalledTimes(2);
 });

@@ -18,7 +18,7 @@
  * exact-set assertion and the sweep's coverage assertion until both artifacts
  * are given the route — growth is fail-closed on both.
  */
-export const ROUTE_FLOOR = 8;
+export const ROUTE_FLOOR = 9;
 
 /**
  * The measured census. M3-a (2026-10-22, plan `21_CHAT_FIRST_IA`) made the
@@ -33,6 +33,9 @@ export const ROUTE_FLOOR = 8;
  * frame's "Memory" entry; the route name stayed because the Dioxus
  * counterpart carries the same path and the trace detail nests under it.
  * Eight routes: the conversation and the surfaces a conversation cites.
+ * Nine (2026-10-30, the dsh-UX round): `/settings` — the app's preferences
+ * as a full PAGE (the ChatGPT-desktop shape; the operator's call), reached
+ * from the sidebar foot and the native StewardMem → Settings… ⌘, item.
  */
 export const CENSUS_ROUTES = [
 	'/',
@@ -42,7 +45,8 @@ export const CENSUS_ROUTES = [
 	'/governance',
 	'/recall',
 	'/recall/[trace_id]/trace',
-	'/review'
+	'/review',
+	'/settings'
 ] as const;
 
 export type CensusRoute = (typeof CENSUS_ROUTES)[number];

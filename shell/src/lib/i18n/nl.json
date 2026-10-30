@@ -439,5 +439,12 @@
   "settings.model.failed": "Download mislukt. Herstart om opnieuw te proberen.",
   "settings.model.fallback_name": "het retrievmodel",
   "settings.model.hint": "Alleen deze Mac. Recall werkt toch.",
-  "shell.sidebar.resize": "Zijbalk schalen"
+  "shell.sidebar.resize": "Zijbalk schalen",
+  "settings.cats.general": "Algemeen",
+  "settings.cats.model": "Model",
+  "settings.cats.updates": "Updates",
+  "settings.cats.advanced": "Geavanceerd",
+  "settings.cats.about": "Over",
+  "settings.about.kernel": "Kernel",
+  "settings.empty": "Nog niets in te stellen hier."
 }

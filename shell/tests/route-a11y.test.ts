@@ -319,6 +319,27 @@ const RECIPES: Partial<Record<CensusRoute, RouteRecipe>> = {
 		},
 		load: () => import('../src/routes/governance/+page.svelte'),
 		proof: { kind: 'testid', value: 'governance-domain-row' }
+	},
+	// The settings PAGE (2026-10-30, the dsh-UX round): the category rail +
+	// the content pane. The recipe serves the page's reads (/health, /stats
+	// for the About pane's facts) and proves the RAIL rendered — the
+	// category buttons are the page's landmark population (the General
+	// category is the default-active content pane).
+	'/settings': {
+		prepare: () => {
+			serveJsonByPath({
+				'/health': { status: 'ok', version: '1.29.36' },
+				'/stats': { count: 0, model: 'minishlab/potion-retrieval-32M' },
+				'/health/db': {
+					status: 'ok',
+					version: '1.29.36',
+					model: 'minishlab/potion-retrieval-32M',
+					model_state: 'ready'
+				}
+			});
+		},
+		load: () => import('../src/routes/settings/+page.svelte'),
+		proof: { kind: 'testid', value: 'settings-rail' }
 	}
 };
 
