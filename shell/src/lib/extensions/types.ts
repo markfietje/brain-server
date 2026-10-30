@@ -100,6 +100,11 @@ export interface EmptyChip {
 export interface SettingsSection {
 	readonly id: string;
 	readonly component: Component;
+	/** The settings PAGE's category rail groups sections by this id (the
+	 * ChatGPT/macOS System-Settings shape: categories left, content right;
+	 * the operator's 2026-10-30 call). The ids are stable i18n-backed keys:
+	 * general | model | updates | advanced | about. */
+	readonly category: 'general' | 'model' | 'updates' | 'advanced' | 'about';
 }
 
 /**

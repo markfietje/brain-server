@@ -289,6 +289,12 @@ test('every_text_and_ui_pair_holds_aa_in_both_schemes', () => {
  * state and cannot be sprinkled per element.
  */
 test('the_active_sidebar_row_computes_the_emphasis_weight_and_the_rest_do_not', async () => {
+	// The proof surfaces REVEALED for this pin (the ChatGPT-minimal default
+	// hides them; the emphasis law needs an idle row to compare against).
+	window.localStorage.setItem(
+		'stewardmem.sidebar.surfaces',
+		JSON.stringify({ memory: true, review: true, audit: true, governance: true })
+	);
 	attachAppCss();
 	await renderFrame();
 	const active = screen.getByTestId('nav-chat');

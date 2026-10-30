@@ -23,6 +23,8 @@
 	// answered, and the status bar's model is the one the kernel reported.
 	import { m } from '$paraglide/messages.js';
 	import { sidebarLayout } from '#lib/shell/sidebar-layout.svelte.js';
+	import { sidebarVisibility, type SurfaceVisibility } from '#lib/shell/sidebar-visibility.svelte.js';
+	import { nativeMenusAvailable, popupNativeContextMenu, SURFACES } from '#lib/shell/sidebar-context-menu.js';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
@@ -117,6 +119,9 @@
 	// a session posture, the width is a preference.
 	const layout = sidebarLayout;
 	let collapsed = $state(false);
+	// The browser fallback's context-menu position (Tauri uses the NATIVE
+	// menu instead; this is only for the no-menu runtime).
+	let browserMenu = $state<{ x: number; y: number } | null>(null);
 
 	$effect(() => {
 		try {
@@ -498,39 +503,58 @@
 			</Button>
 		</div>
 
-		<nav aria-label={m['shell.nav']()} class="px-2">
+		<nav
+			aria-label={m['shell.nav']()}
+			class="px-2"
+			oncontextmenu={(event) => {
+				// THE PROOF SURFACES' REVEAL (the operator's ask): right-click
+				// the sidebar → the NATIVE macOS context menu (Tauri
+				// CheckMenuItems) toggles Memory/Review/Audit/Governance;
+				// the first GUI shows only the conversation. The browser
+				// build gets the same menu as a minimal custom popup.
+				event.preventDefault();
+				if (nativeMenusAvailable()) {
+					void popupNativeContextMenu(event.clientX, event.clientY);
+				} else {
+					browserMenu = { x: event.clientX, y: event.clientY };
+				}
+			}}
+		>
 			<ul class="grid gap-0.5">
 				{#each navEntries as item (item.id)}
 					{@const active = isActive(item.route)}
-					<li>
-						<a
-							href={resolve(item.route)}
-							data-testid="nav-{item.id}"
-							aria-current={active ? 'page' : undefined}
-							class="relative flex h-9 items-center gap-3 rounded-lg px-2.5 text-sm transition-colors
-								{active
-								? 'bg-sidebar-active text-foreground'
-								: 'text-muted-foreground hover:bg-sidebar-hover hover:text-foreground'}"
-						>
-							<item.Icon class="size-4 shrink-0" aria-hidden="true" />
-							<span class={collapsed ? 'sr-only' : 'flex-1 truncate'}>{m[item.labelKey]()}</span>
-							{#if item.id === 'review' && queueCount !== null && queueCount > 0}
-								<!-- The count rides the entry only while the queue holds
-								     rows: an empty queue costs the UI nothing. The state
-								     token is the stable hook; the count joins the
-								     accessible name. -->
-								<span
-									data-testid="review-badge"
-									data-queue="nonempty"
-									class="grid min-w-5 place-items-center rounded-full bg-primary px-1.5 text-xs font-medium text-primary-foreground tabular-nums
-										{collapsed ? 'absolute translate-x-3 -translate-y-3' : ''}"
-									aria-label={m['review.badge']({ count: queueCount })}
-								>
-									<span aria-hidden="true">{queueCount}</span>
-								</span>
-							{/if}
-						</a>
-					</li>
+					{@const surface = item.id as keyof SurfaceVisibility}
+					{#if item.id === 'chat' || sidebarVisibility[surface]}
+						<li>
+							<a
+								href={resolve(item.route)}
+								data-testid="nav-{item.id}"
+								aria-current={active ? 'page' : undefined}
+								class="relative flex h-9 items-center gap-3 rounded-lg px-2.5 text-sm transition-colors
+									{active
+									? 'bg-sidebar-active text-foreground'
+									: 'text-muted-foreground hover:bg-sidebar-hover hover:text-foreground'}"
+							>
+								<item.Icon class="size-4 shrink-0" aria-hidden="true" />
+								<span class={collapsed ? 'sr-only' : 'flex-1 truncate'}>{m[item.labelKey]()}</span>
+								{#if item.id === 'review' && queueCount !== null && queueCount > 0}
+									<!-- The count rides the entry only while the queue holds
+									     rows: an empty queue costs the UI nothing. The state
+										   token is the stable hook; the count joins the
+										   accessible name. -->
+									<span
+										data-testid="review-badge"
+										data-queue="nonempty"
+										class="grid min-w-5 place-items-center rounded-full bg-primary px-1.5 text-xs font-medium text-primary-foreground tabular-nums
+											{collapsed ? 'absolute translate-x-3 -translate-y-3' : ''}"
+										aria-label={m['review.badge']({ count: queueCount })}
+									>
+										<span aria-hidden="true">{queueCount}</span>
+									</span>
+								{/if}
+							</a>
+						</li>
+					{/if}
 				{/each}
 				<!-- The Settings entry is NOT a nav item (the operator's call:
 				     not under Governance; it is the app's preferences). It
@@ -628,11 +652,11 @@
 										onclick={() => askDelete(row.session_key)}
 									>
 										<Trash2Icon class="size-3.5" aria-hidden="true" />
-									</button>
-								</span>
-							{/if}
-						</li>
-					{/each}
+										</button>
+									</span>
+									{/if}
+								</li>
+							{/each}
 				</ul>
 			{/if}
 		</div>
@@ -837,3 +861,37 @@
 		</Button>
 	</div>
 </Dialog>
+
+<!-- The browser fallback for the sidebar's right-click (Tauri uses the
+     NATIVE macOS context menu instead). Same items, same store; dismissed
+     by any click or Escape. Rendered through a fixed mask so the dismissal
+     needs no per-item wiring. -->
+{#if browserMenu !== null}
+	<div
+		class="fixed inset-0 z-50"
+		role="presentation"
+		onclick={() => (browserMenu = null)}
+		onkeydown={(e) => {
+			if (e.key === 'Escape') browserMenu = null;
+		}}
+	>
+		<div
+			class="absolute rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+			style="left: {browserMenu.x}px; top: {browserMenu.y}px"
+		>
+			{#each SURFACES as surface (surface.key)}
+				<button
+					type="button"
+					class="flex w-full items-center justify-between gap-6 rounded-md px-2 py-1.5 text-left text-sm hover:bg-sidebar-hover"
+					onclick={() => {
+						sidebarVisibility.toggle(surface.key);
+						browserMenu = null;
+					}}
+				>
+					{m[surface.labelKey as 'nav.memory']()}
+					{#if sidebarVisibility[surface.key]}<span aria-hidden="true">✓</span>{/if}
+				</button>
+			{/each}
+		</div>
+	</div>
+{/if}

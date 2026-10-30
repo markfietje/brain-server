@@ -142,6 +142,17 @@ function navEntries(): Array<{ testid: string; name: string; tag: string }> {
 
 test('the_frame_renders_one_nav_with_the_surface_list_in_order_one_main_and_a_healthy_status_bar', async () => {
 	responder = quiet;
+	// THE PROOF SURFACES REVEALED (the operator's ask, 2026-10-30): the
+	// first GUI shows ONLY the conversation; Memory/Review/Audit/Governance
+	// are the proof surfaces (proof of memory, of retrieval, of deletion),
+	// revealed via the sidebar's right-click (the NATIVE context menu on
+	// desktop) and persisted. This pin witnesses the FULL revealed order —
+	// the persisted posture the store restores — and the default-hidden
+	// posture has its own arm below.
+	window.localStorage.setItem(
+		'stewardmem.sidebar.surfaces',
+		JSON.stringify({ memory: true, review: true, audit: true, governance: true })
+	);
 	await renderHost();
 
 	// EXACTLY ONE nav landmark — not zero (the old law), not two.
@@ -193,6 +204,10 @@ test('the_frame_renders_one_nav_with_the_surface_list_in_order_one_main_and_a_he
 		[...document.querySelectorAll('[aria-label="' + m['nav.settings']() + '"]')].length,
 		'exactly one control carries the Settings name'
 	).toBe(1);
+	// The DEFAULT posture (ChatGPT-minimal first GUI) has its own FILE-level
+	// pin: appshell-default-nav.test.ts — a fresh module registry is needed
+	// (the visibility store reads localStorage at construction), and a
+	// same-file re-render cannot give one.
 });
 
 test('the_review_count_rides_the_entry_only_while_the_queue_is_nonempty', async () => {

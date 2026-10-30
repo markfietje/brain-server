@@ -1032,7 +1032,12 @@ describe('the envelope law', () => {
 		// sidebar (the layout store, the divider gesture, the persisted
 		// width preference, the settings foot) → 216,921 gzipped (+1,225)
 		// — the same law: named act, midpoint moves, register carries it.
-		const R0_BASELINE = 216_921;
+		// AND AGAIN (the proof-surface reveal round): the right-click
+		// visibility store + the NATIVE context menu + the browser
+		// fallback — the nav markup got SMALLER (default-hidden surfaces)
+		// → 216,146 gzipped (−775): the band's shrink side is the same
+		// law (a shrink beyond the band is a surface change too).
+		const R0_BASELINE = 216_146;
 		const BAND = 512;
 		expect(
 			Math.abs(total - R0_BASELINE),

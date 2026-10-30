@@ -18,14 +18,14 @@ export const coreSettings: ExtensionManifest = {
 	version: '0.1.1',
 	contributes: {
 		settingsSections: [
-			{ id: 'model', component: ModelSection },
-			{ id: 'locale', component: LocaleSection },
-			{ id: 'update', component: UpdateSection },
+			{ id: 'model', component: ModelSection, category: 'model' },
+			{ id: 'locale', component: LocaleSection, category: 'general' },
+			{ id: 'update', component: UpdateSection, category: 'updates' },
 			// The operator affordances FOLDED (the operator's UX call,
 			// 2026-10-30): origin + token are rotation/override acts — the
 			// credential bootstraps automatically, so they are not onboarding
 			// steps. One collapsed disclosure instead of two top sections.
-			{ id: 'advanced', component: AdvancedSection }
+			{ id: 'advanced', component: AdvancedSection, category: 'advanced' }
 		]
 	}
 };
