@@ -481,5 +481,13 @@
   "settings.runmode.removeFailed": "The data could not be deleted. The path above still stands.",
   "settings.runmode.offeredData": "Your service data is still at {path}.",
   "settings.runmode.removeData": "Delete it",
-  "settings.runmode.serviceError": "Refused: {error}"
+  "settings.runmode.serviceError": "Refused: {error}",
+  "posture.card.existing": "An existing service manages brain-server {version} at {path}",
+  "posture.card.openclaw": "OpenClaw is connected — its config carries the integration.",
+  "posture.card.workspace": "{count} workspace databases ({size}) — the contents are never opened here.",
+  "posture.card.workspace.later": "You can import them later from Settings.",
+  "posture.card.kernel": "A kernel is already running on 127.0.0.1:8765 (v{version}).",
+  "posture.card.update": "{binary}: installed {installed} → this release offers {offered}.",
+  "posture.card.nothingFound": "Nothing else was found on this machine — nothing was touched.",
+  "posture.card.evidence": "Found via: {path}"
 }

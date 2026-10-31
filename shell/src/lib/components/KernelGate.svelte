@@ -11,6 +11,8 @@
 	import { m } from '$paraglide/messages.js';
 	import { refreshBearer } from '#lib/api/bootstrap.js';
 	import { apiBase, SESSION_BASE_KEY } from '#lib/api/client.js';
+	import { LOOPBACK_KERNEL_URL, type DetectDto } from '#lib/detection.js';
+	import DetectionCards from '#lib/components/settings/detection-cards.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
 
 	interface KernelStatus {
@@ -69,6 +71,7 @@
 	let externalUrl = $state('');
 	let externalInvalid = $state(false);
 	let posturePanel = $state<HTMLDivElement | null>(null);
+	let detectReport = $state<DetectDto | null>(null);
 
 	let { children } = $props();
 
@@ -155,8 +158,13 @@
 					if (!marker.chosen) {
 						// The ONE decision, offered once. Everything else deferred
 						// (the HIG's postpone law); A is pre-selected and the
-						// primary button.
+						// primary button — unless the machine itself proposes
+						// otherwise: W-T2's detections load beside the screen and
+						// a kernel already running on 8765 pre-selects C (attach
+						// is the honest default; the cards are if-branches over
+						// the detection core's DTO — no model, no guess).
 						gate = { phase: 'posture', outcome: null, working: false };
+						detectReport = await loadDetections(invoke);
 						return;
 					}
 					if (marker.posture === 'service') {
@@ -178,6 +186,22 @@
 	}
 
 	type Invoker = typeof import('@tauri-apps/api/core').invoke;
+
+	// W-T2 — the machine's report beside the ONE choice. An older core
+	// without the command is no cards and A stands (today's behavior); the
+	// store build never reaches this path (the direct-channel bypass above).
+	async function loadDetections(invoke: Invoker): Promise<DetectDto | null> {
+		try {
+			const report = (await invoke('detect_cards')) as DetectDto;
+			if (report.kernelOnPort.running) {
+				postureChoice = 'external';
+				externalUrl = LOOPBACK_KERNEL_URL;
+			}
+			return report;
+		} catch {
+			return null;
+		}
+	}
 
 	async function directChannel(invoke: Invoker): Promise<boolean> {
 		try {
@@ -410,6 +434,7 @@
 			data-testid="posture-screen"
 		>
 			<h1 id="posture-heading" class="text-lg font-semibold">{m['posture.heading']()}</h1>
+			<DetectionCards report={detectReport} />
 			<fieldset class="mt-4 grid gap-2" data-testid="posture-choices">
 				<legend class="sr-only">{m['posture.heading']()}</legend>
 				<label

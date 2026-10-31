@@ -24,8 +24,24 @@ const bridge = vi.hoisted(() => ({
 	channel: 'direct' as string,
 	posture: { posture: 'app', url: null, chosen: true } as unknown,
 	install: null as unknown,
+	detect: null as unknown,
 	calls: [] as Array<{ command: string; args?: unknown }>
 }));
+
+/** The empty machine: every card absent, the port free — the report the
+ * detection core returns over a bare home. */
+const emptyReport = () => ({
+	existing: null,
+	openclaw: null,
+	workspace: null,
+	kernelOnPort: {
+		running: false,
+		version: null,
+		holder: null,
+		evidence: "GET /health on 127.0.0.1:8765 — the app's own probe"
+	},
+	updates: []
+});
 
 vi.mock('@tauri-apps/api/core', () => ({
 	invoke: vi.fn(async (command: string, args?: unknown) => {
@@ -36,6 +52,10 @@ vi.mock('@tauri-apps/api/core', () => ({
 		if (command === 'build_channel') return bridge.channel;
 		if (command === 'service_posture') return bridge.posture;
 		if (command === 'store_service_posture') return bridge.posture;
+		if (command === 'detect_cards') {
+			if (bridge.detect === null) throw new Error('unexpected command detect_cards');
+			return bridge.detect;
+		}
 		if (command === 'service_install') {
 			return (
 				bridge.install ?? {
@@ -96,6 +116,7 @@ beforeEach(() => {
 	bridge.channel = 'direct';
 	bridge.posture = { posture: 'app', url: null, chosen: true };
 	bridge.install = null;
+	bridge.detect = emptyReport();
 	bridge.calls = [];
 	vi.clearAllMocks();
 });
@@ -237,6 +258,183 @@ test('the_first_run_offers_the_posture_once_with_app_preselected', async () => {
 	expect((screen.getByTestId('posture-external') as HTMLInputElement).checked).toBe(false);
 	// The decision is the only blocker: nothing started behind it.
 	expect(bridge.calls.filter((call) => call.command === 'kernel_start')).toHaveLength(0);
+	expect(await axeViolations()).toEqual([]);
+});
+
+// ── W-T2 — the proposal cards: the machine's report beside the ONE choice ──
+
+/**
+ * D4 — a kernel already runs on 8765: the card names it with its version
+ * and its evidence, and C arrives PRE-SELECTED with the loopback URL
+ * prefilled — attach is the honest default when a kernel already runs.
+ */
+test('a_running_kernel_preselects_attach_and_the_card_names_it', async () => {
+	bridge.status = status({ consentGranted: true });
+	bridge.posture = { posture: 'app', url: null, chosen: false };
+	bridge.detect = {
+		...emptyReport(),
+		kernelOnPort: {
+			running: true,
+			version: '1.29.38',
+			holder: 'a kernel that answers as a Brain kernel, not started by this app',
+			evidence: "GET /health on 127.0.0.1:8765 — the app's own probe"
+		}
+	};
+	render(KernelGateHost);
+
+	await screen.findByTestId('posture-screen');
+	await screen.findByTestId('detection-card-kernel');
+	expect((screen.getByTestId('posture-external') as HTMLInputElement).checked).toBe(true);
+	expect((screen.getByTestId('posture-app') as HTMLInputElement).checked).toBe(false);
+	expect(
+		(screen.getByTestId('posture-url') as HTMLInputElement).value
+	).toBe('http://127.0.0.1:8765');
+	expect(screen.getByTestId('detection-card-kernel').textContent).toContain('1.29.38');
+	expect(screen.getByTestId('detection-evidence-kernel').textContent).toContain(
+		'GET /health on 127.0.0.1:8765'
+	);
+});
+
+/**
+ * D1 — an existing install: the card names the service's version, its path,
+ * and the plist it was read from. A claim without a path is a lie.
+ */
+test('the_existing_service_card_names_the_version_the_path_and_the_evidence', async () => {
+	bridge.status = status({ consentGranted: true });
+	bridge.posture = { posture: 'app', url: null, chosen: false };
+	bridge.detect = {
+		...emptyReport(),
+		existing: {
+			binaryPath: '/Users/mark/.local/bin/brain-server',
+			version: '1.29.37',
+			running: false,
+			evidence:
+				'/Users/mark/Library/LaunchAgents/com.brain.server.plist → ProgramArguments[0] = /Users/mark/.local/bin/brain-server'
+		}
+	};
+	render(KernelGateHost);
+
+	await screen.findByTestId('posture-screen');
+	await screen.findByTestId('detection-card-existing');
+	// The existing service does NOT pre-select anything — the machine's fact
+	// is named; the choice stays the user's (A keeps the HIG default).
+	expect((screen.getByTestId('posture-app') as HTMLInputElement).checked).toBe(true);
+	const card = screen.getByTestId('detection-card-existing');
+	expect(card.textContent).toContain('1.29.37');
+	expect(card.textContent).toContain('/Users/mark/.local/bin/brain-server');
+	expect(screen.getByTestId('detection-evidence-existing').textContent).toContain(
+		'Library/LaunchAgents/com.brain.server.plist'
+	);
+});
+
+/**
+ * D3 — the workspace memory: counted and sized, NEVER opened, and the
+ * import is explicitly deferred to Settings (the installer never migrates
+ * data).
+ */
+test('the_workspace_card_counts_and_defers_the_import', async () => {
+	bridge.status = status({ consentGranted: true });
+	bridge.posture = { posture: 'app', url: null, chosen: false };
+	bridge.detect = {
+		...emptyReport(),
+		workspace: {
+			databases: [
+				{ name: 'brain-global.db', sizeBytes: 0, modifiedEpoch: 1 },
+				{ name: 'brain-import-dom-10345000.db', sizeBytes: 8192, modifiedEpoch: 2 }
+			],
+			totalBytes: 8192,
+			evidence: '/Users/mark/.openclaw/workspace — names, sizes, mtimes'
+		}
+	};
+	render(KernelGateHost);
+
+	await screen.findByTestId('posture-screen');
+	const card = await screen.findByTestId('detection-card-workspace');
+	expect(card.textContent).toContain('2');
+	expect(card.textContent).toContain('8 KB');
+	expect(card.textContent).toContain('import them later from Settings');
+	expect(screen.getByTestId('detection-evidence-workspace').textContent).toContain(
+		'/Users/mark/.openclaw/workspace'
+	);
+});
+
+/**
+ * D5 — the update card names BOTH versions: installed X, offered Y.
+ */
+test('the_update_card_names_both_versions', async () => {
+	bridge.status = status({ consentGranted: true });
+	bridge.posture = { posture: 'app', url: null, chosen: false };
+	bridge.detect = {
+		...emptyReport(),
+		updates: [
+			{
+				binary: 'brain-server',
+				installedVersion: '1.29.37',
+				offeredVersion: '1.29.38',
+				evidence:
+					'/Users/mark/.local/bin/brain-server (--version) vs /offer/brain-server (--version)'
+			}
+		]
+	};
+	render(KernelGateHost);
+
+	await screen.findByTestId('posture-screen');
+	const card = await screen.findByTestId('detection-card-update');
+	expect(card.textContent).toContain('brain-server');
+	expect(card.textContent).toContain('1.29.37');
+	expect(card.textContent).toContain('1.29.38');
+	expect(screen.getByTestId('detection-evidence-update').textContent).toContain('--version');
+});
+
+/**
+ * D2 — the OpenClaw integration is named with the config that carries it.
+ */
+test('the_openclaw_card_names_its_config', async () => {
+	bridge.status = status({ consentGranted: true });
+	bridge.posture = { posture: 'app', url: null, chosen: false };
+	bridge.detect = {
+		...emptyReport(),
+		openclaw: { pluginEnabled: true, evidence: '/Users/mark/.openclaw/openclaw.json' }
+	};
+	render(KernelGateHost);
+
+	await screen.findByTestId('posture-screen');
+	expect(await screen.findByTestId('detection-card-openclaw').then((el) => el.textContent)).toContain('OpenClaw');
+	expect(screen.getByTestId('detection-evidence-openclaw').textContent).toContain(
+		'openclaw.json'
+	);
+});
+
+/**
+ * An EMPTY machine: A keeps the HIG default, and the absence is NAMED —
+ * "nothing was touched", never a silent blank.
+ */
+test('an_empty_machine_leaves_app_preselected_and_names_the_nothing_found_law', async () => {
+	bridge.status = status({ consentGranted: true });
+	bridge.posture = { posture: 'app', url: null, chosen: false };
+	render(KernelGateHost);
+
+	await screen.findByTestId('posture-screen');
+	expect((screen.getByTestId('posture-app') as HTMLInputElement).checked).toBe(true);
+	expect((await screen.findByTestId('detection-nothing-found')).textContent).toContain(
+		'nothing was touched'
+	);
+	expect(screen.queryByTestId('detection-card-existing')).toBeNull();
+});
+
+/**
+ * An older core without the detector: no cards, the gate stands as it was —
+ * a missing detection is never a crash and never a guess.
+ */
+test('an_older_core_without_the_detector_leaves_a_standing_gate', async () => {
+	bridge.status = status({ consentGranted: true });
+	bridge.posture = { posture: 'app', url: null, chosen: false };
+	bridge.detect = null; // the handler throws — the command does not exist
+	render(KernelGateHost);
+
+	await screen.findByTestId('posture-screen');
+	expect((screen.getByTestId('posture-app') as HTMLInputElement).checked).toBe(true);
+	expect(screen.queryByTestId('detection-cards')).toBeNull();
 	expect(await axeViolations()).toEqual([]);
 });
 

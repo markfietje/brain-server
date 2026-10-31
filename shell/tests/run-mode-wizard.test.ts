@@ -15,9 +15,25 @@ const bridge = vi.hoisted(() => ({
 	posture: { posture: 'app', url: null, chosen: true } as unknown,
 	install: null as unknown,
 	uninstall: null as unknown,
+	detect: null as unknown,
 	removed: false as boolean,
 	calls: [] as Array<{ command: string; args?: unknown }>
 }));
+
+/** The report the Change panel loads — the same DTO the gate's screen
+ * shows (one implementation, two surfaces). */
+const emptyReport = () => ({
+	existing: null,
+	openclaw: null,
+	workspace: null,
+	kernelOnPort: {
+		running: false,
+		version: null,
+		holder: null,
+		evidence: "GET /health on 127.0.0.1:8765 — the app's own probe"
+	},
+	updates: []
+});
 
 vi.mock('@tauri-apps/api/core', () => ({
 	invoke: vi.fn(async (command: string, args?: unknown) => {
@@ -37,6 +53,10 @@ vi.mock('@tauri-apps/api/core', () => ({
 					residue: []
 				}
 			);
+		}
+		if (command === 'detect_cards') {
+			if (bridge.detect === null) throw new Error('unexpected command detect_cards');
+			return bridge.detect;
 		}
 		if (command === 'service_remove_data') {
 			bridge.removed = true;
@@ -64,6 +84,7 @@ beforeEach(() => {
 	bridge.uninstall = null;
 	bridge.removed = false;
 	bridge.calls = [];
+	bridge.detect = emptyReport();
 	vi.clearAllMocks();
 });
 
@@ -150,4 +171,22 @@ test('a_ghost_uninstall_is_named_not_installed_without_an_error', async () => {
 
 	const outcome = await screen.findByTestId('settings-runmode-outcome');
 	expect(outcome.textContent).toContain('Nothing was installed.');
+});
+
+/**
+ * W-T2 — Change unrolls the SAME report the gate's ONE screen shows: the
+ * cards render beside the choice, loaded when the panel opens (never on
+ * mount — the posture read stays the only mount-time probe).
+ */
+test('change_unrolls_the_detection_report_beside_the_choice', async () => {
+	const user = userEvent.setup();
+	render(RunModeSection);
+
+	await screen.findByTestId('settings-runmode');
+	await user.click(screen.getByText('Change'));
+
+	const cards = await screen.findByTestId('detection-cards');
+	expect(cards).toBeTruthy();
+	const loads = bridge.calls.filter((call) => call.command === 'detect_cards');
+	expect(loads).toHaveLength(1);
 });

@@ -481,5 +481,13 @@
   "settings.runmode.removeFailed": "Les données n’ont pas pu être effacées. Le chemin ci-dessus reste.",
   "settings.runmode.offeredData": "Vos données de service sont toujours dans {path}.",
   "settings.runmode.removeData": "Les effacer",
-  "settings.runmode.serviceError": "Refusé : {error}"
+  "settings.runmode.serviceError": "Refusé : {error}",
+  "posture.card.existing": "Un service existant gère brain-server {version} sur {path}",
+  "posture.card.openclaw": "OpenClaw est connecté — sa configuration porte l'intégration.",
+  "posture.card.workspace": "{count} bases de données de workspace ({size}) — leur contenu n'est jamais ouvert ici.",
+  "posture.card.workspace.later": "Tu pourras les importer plus tard depuis les réglages.",
+  "posture.card.kernel": "Un kernel tourne déjà sur 127.0.0.1:8765 (v{version}).",
+  "posture.card.update": "{binary} : installé {installed} → cette version propose {offered}.",
+  "posture.card.nothingFound": "Rien d'autre trouvé sur cette machine — rien n'a été touché.",
+  "posture.card.evidence": "Trouvé via : {path}"
 }

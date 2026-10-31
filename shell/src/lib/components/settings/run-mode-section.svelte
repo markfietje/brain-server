@@ -10,6 +10,8 @@
 	import { m } from '$paraglide/messages.js';
 	import { onMount } from 'svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
+	import DetectionCards from '#lib/components/settings/detection-cards.svelte';
+	import type { DetectDto } from '#lib/detection.js';
 
 	interface PostureDto {
 		posture: 'app' | 'service' | 'external';
@@ -42,6 +44,20 @@
 	let externalUrl = $state('');
 	let externalInvalid = $state(false);
 	let outcome = $state<{ kind: 'ok' | 'refused'; sentence: string } | null>(null);
+	let detectReport = $state<DetectDto | null>(null);
+
+	// W-T2 — the same report the gate's ONE screen shows, re-run beside the
+	// same choice here. Loaded when Change unrolls (never on mount — the
+	// section's posture read stays the only mount-time probe).
+	async function loadDetections(): Promise<void> {
+		if (!inTauri() || detectReport !== null) return;
+		try {
+			const { invoke } = await import('@tauri-apps/api/core');
+			detectReport = (await invoke('detect_cards')) as DetectDto;
+		} catch {
+			detectReport = null; // an older core: no cards, the choice stands
+		}
+	}
 	let offeredPaths = $state<string[]>([]);
 	let removedSummary = $state('');
 
@@ -210,9 +226,15 @@
 			{currentSentence(posture)}
 		</p>
 
-		<details class="mt-1">
+		<details
+			class="mt-1"
+			ontoggle={(event) => {
+				if (event.currentTarget.open) void loadDetections();
+			}}
+		>
 			<summary class="cursor-pointer text-sm">{m['settings.runmode.choose']()}</summary>
 			<div class="mt-2 grid gap-2">
+				<DetectionCards report={detectReport} />
 				<label class="flex items-start gap-3 rounded-md border border-border p-3">
 					<input
 						type="radio"

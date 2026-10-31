@@ -481,5 +481,13 @@
   "settings.runmode.removeFailed": "Die Daten konnten nicht gelöscht werden. Der obige Pfad besteht weiterhin.",
   "settings.runmode.offeredData": "Deine Dienstdaten liegen weiterhin unter {path}.",
   "settings.runmode.removeData": "Löschen",
-  "settings.runmode.serviceError": "Abgelehnt: {error}"
+  "settings.runmode.serviceError": "Abgelehnt: {error}",
+  "posture.card.existing": "Ein vorhandener Dienst verwaltet brain-server {version} unter {path}",
+  "posture.card.openclaw": "OpenClaw ist verbunden — seine Konfiguration trägt die Integration.",
+  "posture.card.workspace": "{count} Workspace-Datenbanken ({size}) — ihre Inhalte werden hier nie geöffnet.",
+  "posture.card.workspace.later": "Du kannst sie später in den Einstellungen importieren.",
+  "posture.card.kernel": "Ein Kernel läuft bereits auf 127.0.0.1:8765 (v{version}).",
+  "posture.card.update": "{binary}: installiert {installed} → dieses Release bietet {offered}.",
+  "posture.card.nothingFound": "Nichts Weiteres auf diesem Rechner gefunden — nichts wurde berührt.",
+  "posture.card.evidence": "Gefunden über: {path}"
 }

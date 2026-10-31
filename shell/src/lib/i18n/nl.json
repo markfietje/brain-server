@@ -481,5 +481,13 @@
   "settings.runmode.removeFailed": "De gegevens konden niet worden verwijderd. Het pad hierboven bestaat nog.",
   "settings.runmode.offeredData": "Je servicedata staat nog op {path}.",
   "settings.runmode.removeData": "Verwijderen",
-  "settings.runmode.serviceError": "Geweigerd: {error}"
+  "settings.runmode.serviceError": "Geweigerd: {error}",
+  "posture.card.existing": "Een bestaande service beheert brain-server {version} op {path}",
+  "posture.card.openclaw": "OpenClaw is verbonden — de configuratie draagt de integratie.",
+  "posture.card.workspace": "{count} workspace-databases ({size}) — de inhoud wordt hier nooit geopend.",
+  "posture.card.workspace.later": "Je kunt ze later importeren via Instellingen.",
+  "posture.card.kernel": "Er draait al een kernel op 127.0.0.1:8765 (v{version}).",
+  "posture.card.update": "{binary}: geïnstalleerd {installed} → deze release biedt {offered}.",
+  "posture.card.nothingFound": "Niets anders gevonden op deze machine — niets is aangeraakt.",
+  "posture.card.evidence": "Gevonden via: {path}"
 }

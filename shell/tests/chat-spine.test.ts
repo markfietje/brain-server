@@ -1045,7 +1045,13 @@ describe('the envelope law', () => {
 		// disclosure) + the "How StewardMem runs" Settings section + 30
 		// message keys × five locales → 225,336 gzipped (+6,810): named act,
 		// midpoint moves, register carries it.
-		const R0_BASELINE = 225_336;
+		// AND AGAIN (2026-10-31, the W-T2 detections round): the proposal
+		// cards (the detection report beside the ONE choice — the shared
+		// component the gate and the run-mode section both render) + the
+		// shared wire types + 8 message keys × five locales → 227,450
+		// gzipped (+2,114, two-build measured): named act, midpoint moves,
+		// register carries it.
+		const R0_BASELINE = 227_450;
 		const BAND = 512;
 		expect(
 			Math.abs(total - R0_BASELINE),
