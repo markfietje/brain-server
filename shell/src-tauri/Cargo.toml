@@ -1,6 +1,6 @@
 [package]
 name = "brain-shell"
-version = "0.1.1"
+version = "1.0.0"
 description = "The SvelteTauri shell's Rust core: system integration only — zero business logic (the kernel owns every rule)."
 edition = "2024"
 # Tauri 2.12 states its MSRV policy as `stable - 3` (Context7, tauri-docs
