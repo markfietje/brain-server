@@ -509,15 +509,41 @@ jobs:
           name: dist-linux-aarch64
           path: dist
           merge-multiple: true
+
+      - name: The Linux set ships as ONE tarball (the trim's shape)
+        # Both arches, one artifact, no signing concept (no Gatekeeper on
+        # Linux). The names INSIDE are exactly the historical asset names —
+        # a script that curled them can untar and keep working untouched.
+        run: |
+          set -euo pipefail
+          cd dist
+          tar -czf StewardMem-CLI-linux.tar.gz \
+            brain-server-linux-x86_64 brain-linux-x86_64 mcp-linux-x86_64 \
+            bench-linux-x86_64 brain-migrate-rehearse-linux-x86_64 \
+            brain-connector-stub-linux-x86_64 brain-connector-gh-linux-x86_64 \
+            brain-connector-crm-linux-x86_64 \
+            brain-server-linux-aarch64 brain-linux-aarch64 mcp-linux-aarch64 \
+            bench-linux-aarch64 brain-migrate-rehearse-linux-aarch64 \
+            brain-connector-stub-linux-aarch64 brain-connector-gh-linux-aarch64 \
+            brain-connector-crm-linux-aarch64
+          rm -f brain-server-linux-* brain-linux-* mcp-linux-* bench-linux-* \
+            brain-migrate-rehearse-linux-* brain-connector-*-linux-*
+          echo "dist now stages:"; ls
+      # THE TRIM (the Tools round, W-T3): the darwin binaries LEAVE the page
+      # — they ship inside the stapled StewardMem-Tools.dmg, signed and
+      # notarized by the operator lane (D6: public CI never signs). The
+      # artifacts are staged BESIDE dist/ — never on the page — where the
+      # integrity gate proves the builds succeeded and the operator's Tools
+      # pass downloads them from the run.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist-darwin-arm64
-          path: dist
+          path: dist-darwin-staging
           merge-multiple: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist-darwin-x86_64
-          path: dist
+          path: dist-darwin-staging
           merge-multiple: true
 
       - name: Publish SHA256SUMS for every staged artifact
@@ -765,18 +791,19 @@ jobs:
         run: |
           set -e
           : > dist/PLATFORMS.txt
-          printf '%s\n' "Each asset's platform (by name suffix):" "---" >> dist/PLATFORMS.txt
+          printf '%s\n' "Each asset's platform (by name):" "---" >> dist/PLATFORMS.txt
           for f in dist/*; do
             case "${f##*/}" in
-              *-linux-x86_64)  p="Linux x86_64 (amd64)";;
-              *-linux-aarch64) p="Linux arm64 (aarch64, e.g. Jetson)";;
-              *-darwin-arm64)  p="macOS arm64 (Apple Silicon)";;
-              *-darwin-x86_64) p="macOS x86_64 (Intel)";;
+              StewardMem-CLI-linux.tar.gz) p="Linux x86_64 + arm64 — the CLI set; untar it (the names inside are the historical asset names)";;
               *.cdx.json)      p="CycloneDX SBOM (package manifest, any platform)";;
               *) continue;;
             esac
             printf '  %-34s %s\n' "${f##*/}" "$p" >> dist/PLATFORMS.txt
           done
+          printf '%s\n' "  macOS: the stapled StewardMem-Tools.dmg (the kernel, the CLI, the MCP" \
+            "  server, bench, the connectors + the selective installer) and the app's" \
+            "  update chain land on this page right after publish, via the operator's" \
+            "  signing lane — public CI never signs (D6)." >> dist/PLATFORMS.txt
           echo "manifest:"; cat dist/PLATFORMS.txt
 
       - name: Verify required assets
@@ -805,10 +832,17 @@ jobs:
           for f in \
             brain-server brain mcp bench brain-migrate-rehearse \
             brain-connector-stub brain-connector-gh brain-connector-crm; do
-            for plat in linux-x86_64 linux-aarch64 darwin-arm64 darwin-x86_64; do
-              [ -f "dist/$f-$plat" ] || {
-                echo "::error::required asset missing: dist/$f-$plat"; exit 1; }
+            for plat in linux-x86_64 linux-aarch64; do
+              tar -tzf "dist/StewardMem-CLI-linux.tar.gz" | grep -qx "$f-$plat" || {
+                echo "::error::required binary missing from the Linux tarball: $f-$plat"; exit 1; }
             done
+          done
+          # The darwin builds must have SUCCEEDED — the stapled Tools DMG is
+          # cut from exactly these bytes — even though the binaries no
+          # longer ride the page.
+          for plat in arm64 x86_64; do
+            ls "dist-darwin-staging"/*-darwin-$plat >/dev/null 2>&1 || {
+              echo "::error::the darwin $plat build produced nothing — the Tools DMG cannot be cut"; exit 1; }
           done
           # The SBOM integrity gate: the merged multi-platform dist carries
           # EXACTLY the release-matched manifest — a missing, mismatched, or
@@ -866,12 +900,14 @@ jobs:
           fi
           # Only publish a draft that is actually COMPLETE. A partial draft is
           # a real failure and must stay red.
-          for f in brain-server-linux-x86_64 brain-server-linux-aarch64 \
-                   brain-server-darwin-arm64 brain-server-darwin-x86_64; do
+          for f in StewardMem-CLI-linux.tar.gz SHA256SUMS PLATFORMS.txt; do
             gh api "repos/${{ github.repository }}/releases/$rel/assets" --paginate \
               --jq '.[].name' | grep -qx "$f" \
               || { echo "::error::draft $TAG is missing $f — refusing to publish a partial release"; exit 1; }
           done
+          gh api "repos/${{ github.repository }}/releases/$rel/assets" --paginate \
+            --jq '.[].name' | grep -qx "brain-server-$version.cdx.json" \
+            || { echo "::error::draft $TAG is missing the SBOM — refusing to publish a partial release"; exit 1; }
           echo "draft $TAG carries every required asset; publishing it"
           gh api -X PATCH "repos/${{ github.repository }}/releases/$rel" -f draft=false >/dev/null
           echo "published $TAG"
@@ -893,8 +929,10 @@ jobs:
           draft="$(gh api "repos/${{ github.repository }}/releases/$rel" --jq .draft)"
           [ "$draft" = "false" ] || { echo "::error::release $TAG is still a DRAFT"; exit 1; }
           names="$(gh api "repos/${{ github.repository }}/releases/$rel/assets" --paginate --jq '.[].name')"
-          for f in brain-server-linux-x86_64 brain-server-linux-aarch64 \
-                   brain-server-darwin-arm64 brain-server-darwin-x86_64; do
+          for f in StewardMem-CLI-linux.tar.gz SHA256SUMS PLATFORMS.txt; do
             grep -qx "$f" <<<"$names" || { echo "::error::published $TAG is missing $f"; exit 1; }
           done
-          echo "OK  $TAG is published and carries every required asset"
+          grep -qx "brain-server-$version.cdx.json" <<<"$names" \
+            || { echo "::error::published $TAG is missing the SBOM"; exit 1; }
+          echo "OK  $TAG is published and carries the trimmed core set; the macOS set"
+          echo "    (StewardMem-Tools.dmg + the app + its chain) lands via the signing lane."
