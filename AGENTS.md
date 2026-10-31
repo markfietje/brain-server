@@ -1,5 +1,99 @@
 # Agent Execution Log — StewardMem
 
+> **R144 "Distributed" (the Tools round lands, 2026-10-31): the 35-asset
+> release wall is superseded by one stapled Tools DMG, a selective pkg that
+> PROPOSES instead of asking blind, and a deterministic detection core both
+> surfaces consume. THE MECHANISM DECISIONS, all measured on this machine
+> before the code: (1) the pkg installs through a RELATIVE install-location
+> under `installer -target CurrentUserHomeDirectory` — the payload lands
+> under the user's home with scripts running as the USER (uid 501, no root;
+> the install.log receipt), a relative path with a leading dot DOUBLE-NESTS
+> (measured twice — the anchor is the non-dot form), and the sandboxed
+> postinstall CAN write ~/.local/bin; (2) a product archive REFUSES the
+> Developer ID Application identity — the pkg needed the separate Developer
+> ID INSTALLER certificate (the operator first created the Mac App Store
+> installer cert — useful for the MAS lane later, wrong for this); (3) the
+> DMG signs with the APPLICATION identity, notarizes, staples.**
+>
+> **W-T0, the signing pass (operator lane, delegated):** 16 darwin v1.29.38
+> binaries hash-verified against the release's own SHA256SUMS (two
+> brain-server assets RE-DOWNLOADED via curl after `gh release download`
+> truncated them — the sums were RIGHT, the downloader was wrong; the hash
+> check is what caught it), signed + hardened runtime (every CodeDirectory
+> `flags=0x10000(runtime)`), one zip notarized (Accepted
+> `1ac5f1b6…`), quarantine-exec **16/16** (never spctl), sums regenerated
+> over the SIGNED bytes. **W-T1, the D-core (`detect.rs`, D1–D5): ZERO
+> writes** (source-scanned — `fs::write`/`OpenOptions`/`File::create`/
+> remove/rename/set_permissions/create_dir may not even be NAMED in the
+> module), the documented D1 plist path constructed exactly once in code,
+> D3 metadata-only (the DTO has NO contents field — the installer could not
+> carry the user's memory out even by accident), D4 the sidecar's own probe
+> (no second transport), D5 NUMERIC version order (1.29.9 < 1.29.10;
+> pre-release loses to release). `plist` joined the manifest as a DIRECT
+> dependency — already in the graph via tauri, zero new transitive weight.
+>
+> **W-T1's selective pkg — the preserve law as an installer, then
+> MACHINE-WITNESSED LIVE:** the pkg scripts are LABEL-BLIND (not one names
+> `com.brain.server` — the D1 facts arrive as `--fields` lines from
+> `stewardmem-detect`, the D-core's own binary; a script that cannot name a
+> thing cannot clobber it); the referenced path is NEVER touched even when
+> ABSENT (creating it would change what the service execs on its next
+> spawn); an occupied path is never replaced (`<name>-<version>` beside it,
+> named in the hand-off); the escape-hatch uninstaller is FAIL-CLOSED — a
+> service that migrated onto our anchor REFUSES the uninstall (a half-
+> removal would leave a dangling link and a broken service). **THE LIVE
+> DRILL (operator-approved):** the signed pkg installed FOR REAL — the
+> hand-off printed to the installer log verbatim, ALL operator binaries +
+> the plist byte-identical (`9ff0064c…` — the W-5 witness's own baseline),
+> versioned links beside, the CLI `installer` run honored the
+> distribution's defaults (Core only — the selective behavior works
+> headless), and the escape hatch reversed everything with every operator
+> byte still identical. The pkg is Developer ID Installer-signed,
+> notarized, stapled ("The validate action worked!").
+>
+> **W-T1's stapled Tools DMG — the offline verdict for everything inside:**
+> signed (Application identity) → notarized (Accepted `473452e7…`) →
+> stapled → validated. **A measurement note: the first notarytool submit
+> WEDGED** — 1h38m, zero established TCP connections, no history entry;
+> killed and resubmitted, the retry completed in minutes. **THE MOUNT
+> TEST:** the image attached read-only — 10/10 sums verify inside,
+> brain-server and brain answer 1.29.38 straight from the mounted volume,
+> and a Safari-quarantined binary FROM THE STAPLED IMAGE executed clean.
+>
+> **W-T2, the proposal cards — deterministic end to end:** the D-core's DTO
+> rendered beside the ONE posture choice (and the run-mode section's Change
+> panel — one component, two surfaces); D4 firing PRE-SELECTS C (attach is
+> the honest default when a kernel already runs); every claim carries its
+> evidence path; nothing-found renders "nothing was touched", never a
+> silent absence; an older core is no cards and A stands. NO MODEL — the
+> cards are if-branches over local reads with pre-written copy in five
+> catalogs. **The named band move: 225,336 → 227,450 gzipped (+2,114,
+> two-build measured)** — the shared component + the wire types + 8 keys ×
+> 5 locales.
+>
+> **W-T3, the release trim:** the page becomes EXACTLY the app DMG + the
+> updater chain + StewardMem-Tools.dmg (all three via the signing lane) +
+> StewardMem-CLI-linux.tar.gz (ONE tarball, both arches, the names INSIDE
+> the historical asset names so no script breaks) + SHA256SUMS +
+> PLATFORMS.txt + the SBOM. The darwin binaries stage BESIDE the page
+> (dist-darwin-staging — they still build and upload as workflow artifacts;
+> the operator's Tools pass downloads them from the run; D6); the
+> integrity gate looks INSIDE the tarball and refuses a release the Tools
+> DMG cannot be cut from. `tests/release_asset_trim.rs` holds the shape,
+> drill included (the bloat planted back reads as a leak through the pin's
+> own law). **The chain endpoint re-verified LIVE** against the real
+> release.
+>
+> **OWED, named:** the workspace-import UX (reading the D3 databases'
+> CONTENT is a product round — migration, not detection); Windows presence
+> (not a platform today); the x86_64 Tools variant (the pkg + DMG builders
+> take `--arch`; mechanical); the ASC record's remaining fields + the
+> stewardmem.com privacy-policy URL (operator, the return checklist); the
+> S-4 tail (user-path negative controls 2.1/2.2, the offline spctl toggle
+> — SSH-driveable 2.3/2.4); THE ONE RELEASE still to cut (the next tag
+> publishes the trimmed core set; the operator's signing pass adds the
+> macOS set and regenerates the page's SHA256SUMS over the final page).
+
 > **R143 "Installed" (the install-wizard round lands, 2026-10-31): the
 > shell's SERVICE posture exists — the gate's ONE posture screen, the
 > generated per-user LaunchAgent, and the machine witness that proves the
