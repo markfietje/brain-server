@@ -13,7 +13,111 @@ measured. Those records are kept as they were written (this file is
 append-only), and their heading says `Unreleased` because that is what they
 were when the round landed — not because the work is still unreleased.
 
-## [1.29.37] — 2026-10-30 — first launch that lives: the model downloads beside the app, and the window is a window
+## [1.29.38] — 2026-10-31 — the App Store edition exists: sandboxed, updater-free, Signal-free, and the CI disk law
+
+The Mac App Store fork's build side lands (the operator-approved plan's
+implementation half), the shell's first-run version line matches its first
+store record, and the CI runners' disk migration is answered before it
+could block a release.
+
+### Release notes
+
+**New**
+
+- **The App Store edition builds and verifies end to end.** A dedicated
+  build (feature-gated) produces a sandboxed app with a distinct bundle
+  identifier, the privacy manifest in place, and the export-compliance keys
+  set — verified on the built bytes, not assumed. The lane refuses by name
+  at every missing precondition.
+- **The privacy manifest ships.** Tracking: none. Data collected: none —
+  the truthful local-first posture, with the required-reason declarations
+  for the file-timestamp and disk-space APIs the app measurably uses.
+- **A detect-only Signal gateway surface joins Settings.** The gateway
+  remains a separate, separately-installed module: the app reports whether a
+  locally running gateway answers and nothing more — no install, download,
+  or configure affordance exists, and the app is fully functional without
+  it.
+
+**Improvements**
+
+- **Every typed request from the shell is bounded (20 s).** A stalled
+  kernel surfaces as a named abort instead of an unbounded spinner; the
+  chat stream stays deliberately unbounded (keep-alives are liveness there).
+- **The Content-Security-Policy closes its form hole** (form-action self,
+  explicit worker/font sources) in both the built artifact and the app
+  configuration.
+- **The CI disk law.** The October runner-image migration shrank the root
+  disk and full-debuginfo test builds outgrew it; test builds now carry
+  line-tables (panic evidence intact — the deps footprint dropped from
+  gigabytes to a fraction), and the space-hungry jobs free the runner's
+  preinstalled bloat first.
+
+**Bug fixes**
+
+- **The shell's version line matches its store record** (1.0.0), and the
+  app-version line stays independent of the kernel's.
+- **Seven stacked CI reds from the previous push are cleared at their
+  roots** — unhandled test rejections, formatting drift, two stale pins, a
+  comments-gate label, a badge drift, and the e2e harness seed race.
+
+## [Unreleased] — the MAS fork round: the store edition's build side, the detecting onboarding designed, and the CI disk law (2026-10-31, shipped in 1.29.38)
+
+The App Store fork's IMPLEMENTATION half (the plan was approved the day
+before): a `mas` cargo feature compiles the updater OUT — plugin, commands,
+module, pins (guideline 2.5.2; the store owns updates) — and the discovery
+that drove the shape: Tauri config merging is additive per key, so an
+overlay could never remove the base's plugins.updater; the excision had to
+be the feature gate, proven on the bytes (mas binary: zero updater strings;
+direct binary: six). The overlay carries the DISTINCT bundle id
+`com.stewardmem.shell.mas` (the `.app`-suffixed candidate was rejected by
+the Tauri CLI's own warning — it collides with the bundle-extension
+convention; the plan's §6 question closed early with a measured reason),
+the sandbox entitlements (the plan's sanctioned set, nothing beyond), and
+the privacy manifest — tracking false, nothing collected, required-reason
+rows only for the file-timestamp (DDA9.1 container files, 3B52.1 bundle
+files) and disk-space (E174.1 capacity envelope, 85F4.1 health report) APIs
+the binaries measurably touch; boot-time, keyboard, and defaults are
+measured ABSENT and deliberately undeclared. The channel-neutral
+compliance keys (export-compliance answer, ASC category) ride the merged
+Info.plist for both channels. The Signal gateway's surface is DESCRIBE +
+DETECT only: a bounded TCP probe of the gateway's documented loopback
+address, no install/download/configure affordance in the markup (pinned),
+the app fully functional without it — the AGPL boundary re-verified clean
+in both lockfiles, pinned with an anti-vacuity population arm. Five
+sidecar pins and four renderer arms, red-proved; the registry census,
+text audit, and i18n parity re-lawed.
+
+The first full lane drill found THREE findings, all fixed same-session:
+the lane verified the WRONG bundle (the build path moved when the target
+was unpinned — the direct channel's old app was inspected and refused
+instead of the MAS build; `--target` is now pinned so the output path is
+the verified path); the `grep -q` + pipefail trap (grep closes stdin on
+first match, codesign takes SIGPIPE, exit 141 reads as failure on a
+SUCCESSFUL match — the two runs failed on whichever arm matched first;
+verification greps now read the whole stream); and the installer-identity
+policy filter (`-p codesigning` excludes installer certs by design — the
+preflight reads the unfiltered valid list). The portal acts were completed
+live during the drill (both certificates, the App ID, the profile — with
+the WWDR intermediate install and the profile's dot-key extraction
+finding recorded in the evidence file).
+
+The CI disk law: the main-push CI died at `No space left on device` in the
+compliance-pack lane — the October runner-image migration shrank the root
+disk and full-debuginfo test builds outgrew it (measured locally: the
+lib-test deps alone were 57 GB). Test builds now carry line-tables-only
+depinfo (panic file+line evidence intact; 57 GB → 1.4 GB measured, 2,582
+tests green) and thirteen kernel-compiling jobs free the runner's
+preinstalled bloat with before/after df in the log. The canceled run's
+failure was an INFRASTRUCTURE drift finding, not a code regression — the
+diff it failed on touched no kernel code.
+
+The full dry-run behind the round: every kernel lane (default/bench/otel,
+six feature lanes, crates, harness, the gateway tool), the shell lane
+(lint/vitest/svelte-check/build+CSP/byte-stability), the tauri trio in
+BOTH feature postures, the MAS bundle built end-to-end and verified on the
+bytes, and the e2e (7 passed, real kernel).
+
+## [1.29.37] — 2026-10-31 — first launch that lives: the model downloads beside the app, and the window is a window
 
 The kernel used to load its retrieval model synchronously at boot — 16.8 s
 of HuggingFace fetch on a clean machine, inside the desktop app's bounded
