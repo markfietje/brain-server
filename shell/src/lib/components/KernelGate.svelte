@@ -10,6 +10,7 @@
 	import { onMount } from 'svelte';
 	import { m } from '$paraglide/messages.js';
 	import { refreshBearer } from '#lib/api/bootstrap.js';
+	import { apiBase, SESSION_BASE_KEY } from '#lib/api/client.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 
 	interface KernelStatus {
@@ -29,6 +30,7 @@
 	type GateState =
 		| { phase: 'checking' }
 		| { phase: 'consent'; dataRoot: string }
+		| { phase: 'posture'; outcome: InstallDto | null; working: boolean }
 		| { phase: 'starting' }
 		| { phase: 'blocked'; reason: string }
 		| { phase: 'ready' }
@@ -42,6 +44,31 @@
 				waitedMs?: number;
 				lastError?: string;
 		  };
+
+	// W-2 — the service posture's wire shapes (the Rust core owns every law;
+	// this is what the DTOs look like over the IPC seam).
+	interface PostureDto {
+		posture: 'app' | 'service' | 'external';
+		url?: string | null;
+		chosen: boolean;
+	}
+
+	interface InstallDto {
+		outcome: string;
+		serviceLabel?: string | null;
+		plistPath?: string | null;
+		stoppedAppKernel?: boolean;
+		holder?: string | null;
+		expected?: string | null;
+		observed?: string | null;
+		kind?: string | null;
+		error?: string | null;
+	}
+
+	let postureChoice = $state<'app' | 'service' | 'external'>('app');
+	let externalUrl = $state('');
+	let externalInvalid = $state(false);
+	let posturePanel = $state<HTMLDivElement | null>(null);
 
 	let { children } = $props();
 
@@ -105,17 +132,39 @@
 		gate = { phase: 'checking' };
 		try {
 			const { invoke } = await import('@tauri-apps/api/core');
+			// W-2 — posture C adopts its kernel BEFORE the local probe: the wire
+			// base must point at the chosen kernel before the app can render.
+			// (Direct channel only; the store edition never asks and never has
+			// these commands — build_channel is the runtime half of the same
+			// config boundary that compiles the module out of the mas build.)
+			if ((await directChannel(invoke)) && (await adoptExternalIfChosen(invoke))) {
+				return;
+			}
 			const status = (await invoke('kernel_status')) as KernelStatus;
 			if (status.state === 'ready') {
 				gate = { phase: 'ready' };
 				return;
 			}
 			if (status.state === 'notRunning') {
-				if (status.consentGranted) {
-					await start(true);
-				} else {
+				if (!status.consentGranted) {
 					gate = { phase: 'consent', dataRoot: status.dataRoot ?? '' };
+					return;
 				}
+				if (await directChannel(invoke)) {
+					const marker = (await invoke('service_posture')) as PostureDto;
+					if (!marker.chosen) {
+						// The ONE decision, offered once. Everything else deferred
+						// (the HIG's postpone law); A is pre-selected and the
+						// primary button.
+						gate = { phase: 'posture', outcome: null, working: false };
+						return;
+					}
+					if (marker.posture === 'service') {
+						await startService(invoke);
+						return;
+					}
+				}
+				await start(true);
 				return;
 			}
 			gate = refusedFrom(status);
@@ -125,6 +174,101 @@
 				kind: 'statusFailed',
 				lastError: error instanceof Error ? error.message : String(error)
 			};
+		}
+	}
+
+	type Invoker = typeof import('@tauri-apps/api/core').invoke;
+
+	async function directChannel(invoke: Invoker): Promise<boolean> {
+		try {
+			return (await invoke('build_channel')) === 'direct';
+		} catch {
+			// An older core without the marker: today's behavior stands.
+			return false;
+		}
+	}
+
+	/** Posture C, already chosen: point the wire at the chosen kernel. The
+	 * base only ever changes ONCE (a reload re-enters with the marker and
+	 * the base already agrees). Local kernels only, this release — the
+	 * loopback law is the wire's own, named in the refusal below. */
+	async function adoptExternalIfChosen(invoke: Invoker): Promise<boolean> {
+		const marker = (await invoke('service_posture')) as PostureDto;
+		if (!marker.chosen || marker.posture !== 'external' || !marker.url) return false;
+		const normalized = marker.url.replace(/\/$/, '');
+		if (apiBase() === normalized) {
+			// The wire points at the chosen kernel; the local probe is not the
+			// gate for this posture — the wire's own named faults diagnose it.
+			gate = { phase: 'ready' };
+			return true;
+		}
+		sessionStorage.setItem(SESSION_BASE_KEY, normalized);
+		location.reload();
+		return true;
+	}
+
+	/** Posture B's start: install is IDEMPOTENT (an already-bootstrapped
+	 * agent comes back named as such), and the app then ATTACHES — it never
+	 * spawns a kernel of its own while the service owns the port. */
+	async function startService(invoke: Invoker): Promise<void> {
+		gate = { phase: 'posture', outcome: null, working: true };
+		const install = (await invoke('service_install')) as InstallDto;
+		if (install.outcome === 'installed' || install.outcome === 'alreadyInstalled') {
+			const status = (await invoke('kernel_status')) as KernelStatus;
+			if (
+				status.state === 'ready' ||
+				status.state === 'started' ||
+				status.state === 'alreadyRunning'
+			) {
+				gate = { phase: 'ready' };
+				return;
+			}
+			gate = refusedFrom(status);
+			return;
+		}
+		// The named refusal renders ON the decision screen — A and C are
+		// still right there, and a held port names its holder.
+		gate = { phase: 'posture', outcome: install, working: false };
+	}
+
+	/** The decision screen's Continue: every branch stores the choice FIRST
+	 * (it is durable), then acts, and every ending is named. */
+	async function choosePosture(): Promise<void> {
+		if (!inTauri()) {
+			gate = { phase: 'ready' };
+			return;
+		}
+		const { invoke } = await import('@tauri-apps/api/core');
+		if (postureChoice === 'app') {
+			await invoke('store_service_posture', { posture: 'app' });
+			await start(true);
+			return;
+		}
+		if (postureChoice === 'service') {
+			await invoke('store_service_posture', { posture: 'service' });
+			await startService(invoke);
+			return;
+		}
+		const url = externalUrl.trim();
+		if (!isLoopbackUrl(url)) {
+			externalInvalid = true;
+			return;
+		}
+		await invoke('store_service_posture', { posture: 'external', url });
+		gate = { phase: 'posture', outcome: null, working: false };
+		await adoptExternalIfChosen(invoke);
+	}
+
+	/** The wire's standing local-only law (client.ts's isLoopbackUrl, mirrored
+	 * here for the choice's door — the full check lives with the wire). */
+	function isLoopbackUrl(raw: string): boolean {
+		try {
+			const parsed = new URL(raw);
+			if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+			const host = parsed.hostname;
+			return host === '127.0.0.1' || host === 'localhost' || host === '[::1]' || host === '::1';
+		} catch {
+			return false;
 		}
 	}
 
@@ -170,14 +314,22 @@
 	}
 
 	function onDialogKeydown(event: KeyboardEvent): void {
+		trapFocus(event, panel);
+	}
+
+	function onPostureKeydown(event: KeyboardEvent): void {
+		trapFocus(event, posturePanel);
+	}
+
+	function trapFocus(event: KeyboardEvent, host: HTMLDivElement | null): void {
 		if (event.key === 'Escape') {
 			event.preventDefault();
 			cancel();
 			return;
 		}
-		if (event.key !== 'Tab' || panel === null) return;
+		if (event.key !== 'Tab' || host === null) return;
 		const focusable = Array.from(
-			panel.querySelectorAll<HTMLElement>(
+			host.querySelectorAll<HTMLElement>(
 				'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
 			)
 		).filter((element) => !element.hasAttribute('disabled'));
@@ -195,10 +347,16 @@
 	}
 
 	// Focus enters the dialog on open (and only then), so a keyboard user is
-	// never left behind the gate.
+	// never left behind the gate. The posture screen's focus lands on the
+	// PRIMARY choice — the pre-selected A (the HIG's default-first law).
 	$effect(() => {
 		if (gate.phase === 'consent' && panel !== null) {
 			panel.querySelector<HTMLElement>('button:not([disabled])')?.focus();
+		}
+	});
+	$effect(() => {
+		if (gate.phase === 'posture' && posturePanel !== null) {
+			posturePanel.querySelector<HTMLElement>('input:checked')?.focus();
 		}
 	});
 
@@ -236,6 +394,123 @@
 			<div class="mt-6 flex justify-end gap-2">
 				<Button onclick={() => void start(true)}>{m['gate.consent.continue']()}</Button>
 				<Button variant="outline" onclick={cancel}>{m['gate.consent.cancel']()}</Button>
+			</div>
+		</div>
+	</div>
+{:else if gate.phase === 'posture'}
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-background p-6">
+		<div
+			bind:this={posturePanel}
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="posture-heading"
+			tabindex="-1"
+			class="w-full max-w-lg rounded-lg border border-border bg-card p-6 text-card-foreground shadow-lg"
+			onkeydown={onPostureKeydown}
+			data-testid="posture-screen"
+		>
+			<h1 id="posture-heading" class="text-lg font-semibold">{m['posture.heading']()}</h1>
+			<fieldset class="mt-4 grid gap-2" data-testid="posture-choices">
+				<legend class="sr-only">{m['posture.heading']()}</legend>
+				<label
+					class="flex items-start gap-3 rounded-md border border-border p-3 has-[:checked]:border-brand"
+				>
+					<input
+						type="radio"
+						name="posture"
+						value="app"
+						bind:group={postureChoice}
+						class="mt-1"
+						data-testid="posture-app"
+					/>
+					<span>
+						<span class="block text-sm font-medium">{m['posture.a.title']()}</span>
+						<span class="block text-sm text-muted-foreground">{m['posture.a.detail']()}</span>
+					</span>
+				</label>
+				<label
+					class="flex items-start gap-3 rounded-md border border-border p-3 has-[:checked]:border-brand"
+				>
+					<input
+						type="radio"
+						name="posture"
+						value="service"
+						bind:group={postureChoice}
+						class="mt-1"
+						data-testid="posture-service"
+					/>
+					<span>
+						<span class="block text-sm font-medium">{m['posture.b.title']()}</span>
+						<span class="block text-sm text-muted-foreground">{m['posture.b.detail']()}</span>
+					</span>
+				</label>
+				<label
+					class="flex items-start gap-3 rounded-md border border-border p-3 has-[:checked]:border-brand"
+				>
+					<input
+						type="radio"
+						name="posture"
+						value="external"
+						bind:group={postureChoice}
+						class="mt-1"
+						data-testid="posture-external"
+					/>
+					<span>
+						<span class="block text-sm font-medium">{m['posture.c.title']()}</span>
+						<span class="block text-sm text-muted-foreground">{m['posture.c.detail']()}</span>
+					</span>
+				</label>
+			</fieldset>
+			{#if postureChoice === 'external'}
+				<div class="mt-3 grid gap-1">
+					<label for="posture-url" class="text-sm font-medium">
+						{m['posture.c.urlLabel']()}
+					</label>
+					<input
+						id="posture-url"
+						data-testid="posture-url"
+						bind:value={externalUrl}
+						placeholder="http://127.0.0.1:8765"
+						class="rounded-md border border-border bg-background px-3 py-2 text-sm"
+					/>
+					{#if externalInvalid}
+						<p class="text-sm text-destructive" role="alert" data-testid="posture-url-invalid">
+							{m['posture.c.urlInvalid']()}
+						</p>
+					{/if}
+				</div>
+			{/if}
+			{#if postureChoice === 'service'}
+				<p class="mt-3 text-xs text-muted-foreground" data-testid="posture-signal">
+					{m['posture.signal']()}
+				</p>
+			{/if}
+			{#if gate.working}
+				<p class="mt-4 text-sm text-muted-foreground" aria-live="polite" data-testid="posture-working">
+					{m['posture.installing']()}
+				</p>
+			{/if}
+			{#if gate.outcome !== null}
+				<div class="mt-4" data-testid="posture-outcome">
+					{#if gate.outcome.outcome === 'portHeld'}
+						<p class="text-sm" role="alert">
+							{m['posture.outcome.portHeld']({ holder: gate.outcome.holder ?? '' })}
+						</p>
+					{:else}
+						<p class="text-sm" role="alert">
+							{m['posture.outcome.refused']({ error: gate.outcome.error ?? (gate.outcome.kind ?? '') })}
+						</p>
+					{/if}
+				</div>
+			{/if}
+			<div class="mt-6 flex justify-end gap-2">
+				<Button
+					onclick={() => void choosePosture()}
+					disabled={gate.working}
+					data-testid="posture-continue"
+				>
+					{m['posture.continue']()}
+				</Button>
 			</div>
 		</div>
 	</div>

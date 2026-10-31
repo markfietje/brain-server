@@ -567,6 +567,23 @@ const TEXT_AUDIT: Readonly<Record<string, AuditRow>> = {
 	'settings.model.failed': 'verdict',
 	'settings.model.fallback_name': 'label',
 	'settings.model.hint': 'hint',
+	// The wizard's Settings surface (the W-2 round): every transition's
+	// outcome sentence is a verdict, the actions are labels, and the
+	// uninstall's removal list + offered data path ride params.
+	'settings.runmode.heading': { kind: 'label', max: 3 },
+	'settings.runmode.current.service': { kind: 'hint', max: 6 },
+	'settings.runmode.current.external': { kind: 'label', max: 4 },
+	'settings.runmode.current.app': { kind: 'hint', max: 6 },
+	'settings.runmode.choose': 'label',
+	'settings.runmode.apply': 'label',
+	'settings.runmode.uninstall': { kind: 'label', max: 5 },
+	'settings.runmode.notInstalled': { kind: 'verdict', max: 3 },
+	'settings.runmode.uninstalled': { kind: 'label', max: 2 },
+	'settings.runmode.removed': 'label',
+	'settings.runmode.removeFailed': 'verdict',
+	'settings.runmode.offeredData': 'verdict',
+	'settings.runmode.removeData': 'label',
+	'settings.runmode.serviceError': { kind: 'label', max: 2 },
 	// The resize divider's accessible name (the S-4 dsh-UX round): a label.
 	'shell.sidebar.resize': 'label',
 	// chat.empty.*

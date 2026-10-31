@@ -218,9 +218,12 @@ test('the_settings_dialog_renders_the_registry_s_sections_in_contribution_order'
 	// 2026-10-31 (the MAS fork round): the Signal gateway's DESCRIBE + DETECT
 	// surface joins the Advanced category — an optional connect-your-own
 	// module, so it lives with the operator acts, never the onboarding steps.
+	// 2026-10-31 (the W-2 wizard round): "How StewardMem runs" joins General —
+	// the gate's one-time decision, re-runnable as a SECTION, not a dialog.
 	expect(settingsSections.map((section) => section.id)).toEqual([
 		'model',
 		'locale',
+		'runmode',
 		'update',
 		'signal',
 		'advanced'

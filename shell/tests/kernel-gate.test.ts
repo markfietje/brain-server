@@ -21,6 +21,9 @@ const bridge = vi.hoisted(() => ({
 	status: null as unknown,
 	start: null as unknown,
 	token: 'test-token' as string | null,
+	channel: 'direct' as string,
+	posture: { posture: 'app', url: null, chosen: true } as unknown,
+	install: null as unknown,
 	calls: [] as Array<{ command: string; args?: unknown }>
 }));
 
@@ -30,6 +33,17 @@ vi.mock('@tauri-apps/api/core', () => ({
 		if (command === 'kernel_status') return bridge.status;
 		if (command === 'kernel_start') return bridge.start;
 		if (command === 'kernel_token') return bridge.token;
+		if (command === 'build_channel') return bridge.channel;
+		if (command === 'service_posture') return bridge.posture;
+		if (command === 'store_service_posture') return bridge.posture;
+		if (command === 'service_install') {
+			return (
+				bridge.install ?? {
+					outcome: 'installed',
+					serviceLabel: 'com.stewardmem.shell.service'
+				}
+			);
+		}
 		throw new Error(`unexpected command ${command}`);
 	})
 }));
@@ -79,6 +93,9 @@ beforeEach(() => {
 	bridge.status = status();
 	bridge.start = status({ state: 'started', version: '1.29.23', pid: 4242, consentGranted: true });
 	bridge.token = 'test-token';
+	bridge.channel = 'direct';
+	bridge.posture = { posture: 'app', url: null, chosen: true };
+	bridge.install = null;
 	bridge.calls = [];
 	vi.clearAllMocks();
 });
@@ -199,4 +216,152 @@ test('the_pwa_bypasses_the_gate_and_invokes_nothing', async () => {
 
 	expect(await screen.findByTestId('host-content')).toBeTruthy();
 	expect(bridge.calls).toHaveLength(0);
+});
+
+// ── W-2 — the posture decision (the ONE screen, offered once) ──────────────
+
+/**
+ * First run, consent recorded, NO posture marker: the ONE screen renders
+ * with the three choices, A pre-selected, and NO start call yet — the
+ * decision is the gate's only blocker, and B/C never block it.
+ */
+test('the_first_run_offers_the_posture_once_with_app_preselected', async () => {
+	bridge.status = status({ consentGranted: true });
+	bridge.posture = { posture: 'app', url: null, chosen: false };
+	render(KernelGateHost);
+
+	const screen_ = await screen.findByTestId('posture-screen');
+	expect(screen_.getAttribute('aria-modal')).toBe('true');
+	expect((screen.getByTestId('posture-app') as HTMLInputElement).checked).toBe(true);
+	expect((screen.getByTestId('posture-service') as HTMLInputElement).checked).toBe(false);
+	expect((screen.getByTestId('posture-external') as HTMLInputElement).checked).toBe(false);
+	// The decision is the only blocker: nothing started behind it.
+	expect(bridge.calls.filter((call) => call.command === 'kernel_start')).toHaveLength(0);
+	expect(await axeViolations()).toEqual([]);
+});
+
+/**
+ * Continue with A: the choice is STORED first, then the kernel starts —
+ * the same start-once contract as the consent screen.
+ */
+test('choosing_app_stores_the_marker_and_starts_once', async () => {
+	const user = userEvent.setup();
+	bridge.status = status({ consentGranted: true });
+	bridge.posture = { posture: 'app', url: null, chosen: false };
+	render(KernelGateHost);
+
+	await screen.findByTestId('posture-screen');
+	await user.click(screen.getByTestId('posture-continue'));
+
+	expect(await screen.findByTestId('host-content')).toBeTruthy();
+	const stores = bridge.calls.filter((call) => call.command === 'store_service_posture');
+	expect(stores).toHaveLength(1);
+	expect(stores[0]?.args).toEqual({ posture: 'app' });
+	const starts = bridge.calls.filter((call) => call.command === 'kernel_start');
+	expect(starts).toHaveLength(1);
+	expect(starts[0]?.args).toEqual({ consent: true });
+});
+
+/**
+ * A held port REFUSES posture B naming its holder, ON the decision screen —
+ * A and C remain right there. No children render over a refusal.
+ */
+test('a_held_port_refuses_posture_b_naming_the_holder', async () => {
+	const user = userEvent.setup();
+	bridge.status = status({ consentGranted: true });
+	bridge.posture = { posture: 'app', url: null, chosen: false };
+	bridge.install = {
+		outcome: 'portHeld',
+		kind: 'portHeld',
+		holder: 'a kernel that answers as a Brain kernel, not started by this app'
+	};
+	render(KernelGateHost);
+
+	await screen.findByTestId('posture-screen');
+	await user.click(screen.getByTestId('posture-service'));
+	await user.click(screen.getByTestId('posture-continue'));
+
+	const outcome = await screen.findByTestId('posture-outcome');
+	expect(outcome.textContent).toContain('not started by this app');
+	// No start was attempted over the refused install: the app never spawns
+	// a kernel of its own while the service owns the port.
+	expect(bridge.calls.filter((call) => call.command === 'kernel_start')).toHaveLength(0);
+	expect(screen.queryByTestId('host-content')).toBeNull();
+});
+
+/**
+ * The Signal sentence renders in B's confirmation — the factual sentence,
+ * with NO install affordance for the gateway (the MAS law: describe only).
+ */
+test('the_signal_sentence_renders_in_the_b_confirmation', async () => {
+	bridge.status = status({ consentGranted: true });
+	bridge.posture = { posture: 'app', url: null, chosen: false };
+	render(KernelGateHost);
+
+	await screen.findByTestId('posture-screen');
+	expect(screen.queryByTestId('posture-signal')).toBeNull();
+	const user = userEvent.setup();
+	await user.click(screen.getByTestId('posture-service'));
+	expect(screen.getByTestId('posture-signal').textContent).toContain('Signal gateway');
+	// Describe only: nothing on this screen installs, downloads, or executes
+	// a gateway — the invoke stub refuses any command beyond the posture's own.
+});
+
+/**
+ * Posture C with a non-loopback URL is refused at the door and stores
+ * NOTHING — the wire's local-only law, named.
+ */
+test('a_non_loopback_url_is_refused_and_stores_nothing', async () => {
+	const user = userEvent.setup();
+	bridge.status = status({ consentGranted: true });
+	bridge.posture = { posture: 'app', url: null, chosen: false };
+	render(KernelGateHost);
+
+	await screen.findByTestId('posture-screen');
+	await user.click(screen.getByTestId('posture-external'));
+	await user.type(screen.getByTestId('posture-url'), 'https://kernel.example.com:8765');
+	await user.click(screen.getByTestId('posture-continue'));
+
+	expect(await screen.findByTestId('posture-url-invalid')).toBeTruthy();
+	expect(
+		bridge.calls.filter((call) => call.command === 'store_service_posture')
+	).toHaveLength(0);
+});
+
+/**
+ * The store edition NEVER shows the posture screen: build_channel 'mas'
+ * goes straight to today's behavior (the runtime half of the config
+ * boundary that compiles the commands out of the mas build).
+ */
+test('the_mas_channel_never_shows_the_posture_screen', async () => {
+	bridge.channel = 'mas';
+	bridge.status = status({ consentGranted: true });
+	bridge.posture = { posture: 'app', url: null, chosen: false };
+	render(KernelGateHost);
+
+	expect(await screen.findByTestId('host-content')).toBeTruthy();
+	expect(screen.queryByTestId('posture-screen')).toBeNull();
+	expect(bridge.calls.some((call) => call.command === 'service_posture')).toBe(false);
+	expect(bridge.calls.filter((call) => call.command === 'kernel_start')).toHaveLength(1);
+});
+
+/**
+ * The wizard makes NO network call anywhere in the posture flow: the only
+ * transport is the IPC seam (source-scan over the two surfaces the wizard
+ * owns).
+ */
+test('the_wizard_surfaces_hold_no_wire_transport', async () => {
+	const { readFileSync } = await import('node:fs');
+	for (const file of [
+		'../src/lib/components/KernelGate.svelte',
+		'../src/lib/components/settings/run-mode-section.svelte'
+	]) {
+		const source = readFileSync(new URL(file, import.meta.url), 'utf8');
+		// fetch( appears ONLY in comments if at all; no XHR, no EventSource,
+		// no import of the wire modules beyond the base accessor the gate
+		// already owned (the posture phase itself never sends).
+		expect(source).not.toMatch(/(?<!\/\/.*)\bfetch\s*\(/);
+		expect(source).not.toContain('XMLHttpRequest');
+		expect(source).not.toContain('new EventSource');
+	}
 });

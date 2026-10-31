@@ -1040,7 +1040,12 @@ describe('the envelope law', () => {
 		// AGAIN (the settings PAGE round): /settings as a route — the
 		// category rail + the content panes + the About facts → 218,526
 		// gzipped (+2,380): named act, midpoint moves, register carries it.
-		const R0_BASELINE = 218_526;
+		// AND AGAIN (2026-10-31, the W-2 wizard round): the posture decision
+		// screen (the one-time gate surface, three postures + progressive
+		// disclosure) + the "How StewardMem runs" Settings section + 30
+		// message keys × five locales → 225,336 gzipped (+6,810): named act,
+		// midpoint moves, register carries it.
+		const R0_BASELINE = 225_336;
 		const BAND = 512;
 		expect(
 			Math.abs(total - R0_BASELINE),

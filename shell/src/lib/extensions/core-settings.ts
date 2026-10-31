@@ -12,6 +12,7 @@ import UpdateSection from '#lib/components/settings/update-section.svelte';
 import AdvancedSection from '#lib/components/settings/advanced-section.svelte';
 import ModelSection from '#lib/components/settings/model-section.svelte';
 import SignalSection from '#lib/components/settings/signal-section.svelte';
+import RunModeSection from '#lib/components/settings/run-mode-section.svelte';
 import type { ExtensionManifest } from './types.js';
 
 export const coreSettings: ExtensionManifest = {
@@ -21,6 +22,11 @@ export const coreSettings: ExtensionManifest = {
 		settingsSections: [
 			{ id: 'model', component: ModelSection, category: 'model' },
 			{ id: 'locale', component: LocaleSection, category: 'general' },
+			// W-2 (the wizard round): "How StewardMem runs" joins General — the
+			// gate's one-time decision, re-runnable as a SECTION, not a dialog.
+			// Direct channel only: the component renders nothing in the mas
+			// build (its commands are compiled out there).
+			{ id: 'runmode', component: RunModeSection, category: 'general' },
 			{ id: 'update', component: UpdateSection, category: 'updates' },
 			// The optional Signal gateway module (PLAN_MAS_FORK §1): an optional
 			// connect-your-own-gateway surface — describe + detect, nothing more —
