@@ -41,6 +41,7 @@ tauri-plugin-updater = { version = "2.14", features = [] }
 # added: the core holds no transport (see capabilities/main.json).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+plist = "1"
 # III-2: the keychain logic and its mock-store pins are platform-independent.
 # `keyring-core` is pure Rust; the APPLE store is the only macOS-gated edge.
 # The v1 `keyring` meta-crate is declined by name: it hard-wires the platform

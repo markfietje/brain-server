@@ -36,9 +36,19 @@ pub mod updater;
 // compiled out of the `mas` build — an excision, not a runtime flag.
 #[cfg(not(feature = "mas"))]
 pub mod service;
+// W-T1 — the detection core (D1–D5): the installer's REPORT of what the
+// machine already has. Same config boundary: the wizard's proposal cards
+// are DIRECT-CHANNEL ONLY, so the module, its pins and its command are
+// compiled out of the `mas` build. The ONE production module whose source
+// legally names the operator's label — reading the D1 plist to PROPOSE is
+// the design; ZERO writes, pinned.
+#[cfg(not(feature = "mas"))]
+pub mod detect;
 
 mod token;
 
+#[cfg(all(test, not(feature = "mas")))]
+mod detect_pins;
 #[cfg(test)]
 mod forget_pins;
 #[cfg(test)]
@@ -302,6 +312,27 @@ async fn store_service_posture(
     .map_err(|error| error.kind().to_string())
 }
 
+/// W-T1 — the detection report the wizard's proposal cards consume. Every
+/// card carries its evidence path; the offered sidecar for D5 is the app's
+/// own sealed kernel (what posture B would serve). Read-only by law.
+#[cfg(not(feature = "mas"))]
+#[tauri::command]
+async fn detect_cards(app: tauri::AppHandle) -> Result<detect::DetectDto, String> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || {
+        let home = app
+            .path()
+            .home_dir()
+            .map_err(|error| format!("home_dir: {error}"))?;
+        let offered = std::env::current_exe()
+            .ok()
+            .map(|exe| sidecar::resolve_sidecar_path(&exe));
+        Ok(detect::detect_all(&home, offered.as_deref()))
+    })
+    .await
+    .map_err(|error| format!("detect_cards task failed: {error}"))?
+}
+
 /// III-4 — the update CHECK. Read-only: it never installs and never writes.
 /// The answer is a DTO, never a thrown error, and `unreachable` is its own
 /// state — an endpoint that cannot be reached is never "you are up to date".
@@ -414,6 +445,8 @@ pub fn run() {
             service_posture,
             #[cfg(not(feature = "mas"))]
             store_service_posture,
+            #[cfg(not(feature = "mas"))]
+            detect_cards,
             #[cfg(not(feature = "mas"))]
             update_check,
             #[cfg(not(feature = "mas"))]

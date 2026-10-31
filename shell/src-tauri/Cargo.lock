@@ -165,6 +165,7 @@ version = "1.0.0"
 dependencies = [
  "apple-native-keyring-store",
  "keyring-core",
+ "plist",
  "serde",
  "serde_json",
  "tauri",
