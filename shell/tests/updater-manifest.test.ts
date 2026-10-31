@@ -1222,3 +1222,85 @@ test('the_private_updater_key_is_in_no_tracked_file_and_the_public_lane_never_si
 			'the DMG is signed BEFORE it is notarized — the notarization must cover the signed bytes'
 		).toBe(true);
 	});
+
+	/**
+	 * THE LANE'S OWN TRIM (the first trimmed release, 2026-11-01).
+	 *
+	 * The Tools round took the darwin binaries OFF the release page — they
+	 * ship inside the stapled StewardMem-Tools.dmg — and the workflow's half
+	 * of that trim is pinned (`tests/release_asset_trim.rs`). But the signing
+	 * lane still re-uploaded the bare darwin binaries and refreshed
+	 * SHA256SUMS over them: the bloat's last road back onto the page was the
+	 * LANE itself. The lane now grows the Tools step instead — it downloads
+	 * the run's `dist-darwin-*` artifacts (the workflow stages them beside
+	 * the page for exactly this), runs the §7 signing pass over the 16, cuts
+	 * the selective pkg and the stapled DMG through the builders
+	 * (notarize + staple are IN the builders — the lane never hand-assembles
+	 * either artefact), uploads `StewardMem-Tools.dmg` beside the chain, and
+	 * regenerates the page's SHA256SUMS over the FINAL set — and the
+	 * bare-darwin re-upload is GONE.
+	 *
+	 * STRUCTURAL (the class above): the Tools step runs operator-side with
+	 * the real keychain, the real identity, and the Notary service — CI
+	 * cannot drive it. The scan proves the LANE carries the law; the
+	 * behavioural proof is the release itself.
+	 */
+	test('the_signing_lane_publishes_the_tools_dmg_and_never_reuploads_bare_darwin_binaries', () => {
+		const lane = readFileSync(signScriptPath, 'utf8');
+
+		// The lane downloads the run's dist-darwin artifacts — the trimmed
+		// workflow stages them beside the page for exactly this.
+		for (const marker of ['dist-darwin-arm64', 'dist-darwin-x86_64']) {
+			expect(
+				lane.includes(marker),
+				`the lane must download the run's ${marker} artifact — the signed Tools set is cut from exactly those bytes`
+			).toBe(true);
+		}
+
+		// The Tools step runs through the BUILDERS: the pkg and the DMG are
+		// never assembled by hand in the lane.
+		expect(
+			lane.includes('build-tools-pkg.sh'),
+			'the lane must cut the selective pkg through scripts/tools-pkg/build-tools-pkg.sh (notarize + staple are in the builder)'
+		).toBe(true);
+		expect(
+			lane.includes('build-tools-dmg.sh'),
+			'the lane must cut the stapled image through scripts/tools-pkg/build-tools-dmg.sh'
+		).toBe(true);
+		expect(
+			lane.includes('StewardMem-Tools.dmg'),
+			'the lane must upload StewardMem-Tools.dmg — the page carries the darwin binaries only inside it'
+		).toBe(true);
+
+		// The page's SHA256SUMS is REGENERATED over the FINAL set — the sums
+		// must describe the page as published (the III-5 pattern).
+		expect(
+			lane.includes('SHA256SUMS'),
+			'the lane must regenerate the page SHA256SUMS over the final set'
+		).toBe(true);
+
+		// And the bare-darwin re-upload is GONE. The names may appear (they
+		// are the artifact names the lane stages and signs) — but no
+		// `gh release upload` may carry a bare darwin binary as its payload.
+		// Continuation lines are joined first, so a backslash-split upload
+		// is judged as the one command it is.
+		const logical: string[] = [];
+		for (const line of lane.split('\n')) {
+			if (/\\\s*$/.test(line) && logical.length > 0) {
+				logical[logical.length - 1] += ' ' + line.replace(/\\\s*$/, '');
+			} else {
+				logical.push(line);
+			}
+		}
+		const uploads = logical.filter((l) => l.includes('gh release upload'));
+		expect(
+			uploads.length,
+			'the lane must upload to the release (the chain, the DMGs, the sums)'
+		).toBeGreaterThan(0);
+		for (const upload of uploads) {
+			expect(
+				/[\w-]+-darwin-(arm64|x86_64)\b/.test(upload),
+				`a bare darwin binary must never be an upload payload — it lives inside the stapled Tools DMG (the bloat cannot return through the lane): ${upload.trim()}`
+			).toBe(false);
+		}
+	});

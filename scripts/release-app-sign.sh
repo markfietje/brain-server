@@ -67,6 +67,14 @@
 #   6. THE PUBLICATION. One `gh release upload` with the chain's three files
 #      plus the stapled first-install DMG (`StewardMem.dmg`).
 #
+#   7. THE TOOLS STEP (2026-11-01). The trimmed page carries the darwin
+#      binaries ONLY inside the stapled `StewardMem-Tools.dmg`: the lane
+#      downloads the run's `dist-darwin-*` artifacts, signs the 16 (the §7
+#      recipe — never `spctl`), cuts the selective pkg and the stapled DMG
+#      through the builders, uploads the DMG, and REGENERATES the page's
+#      SHA256SUMS over the FINAL set. The bare-darwin re-upload this step
+#      replaced was the bloat's last road back onto the page.
+#
 # ── THE PASSPHRASE ─────────────────────────────────────────────────────────
 #
 # It is read from a FILE (mode 0600, outside this repository), from an
@@ -140,19 +148,6 @@ notary_submit() {
 		die "the Notary service REJECTED the submission — a named failure with its log above; fix and re-submit, never skip"
 	fi
 	cat "$submit_log"
-}
-
-notary_submit_darwin_artifacts() {
-	# The darwin kernel pair, notarized in one zip (the prompt's S-2
-	# posture for the kernel artifacts). A bare Mach-O cannot be stapled
-	# (stapler takes .app/.dmg/.pkg): the ticket lives server-side against
-	# the signature's CDHash, which is what Gatekeeper's online check reads.
-	local dir="$1"
-	shift
-	local zip_path="$dir/darwin-notary.zip"
-	( cd "$dir" && zip -q darwin-notary.zip "$@" )
-	notary_submit "$zip_path"
-	rm -f "$zip_path"
 }
 
 TAG=""
@@ -918,81 +913,229 @@ gh release upload "$TAG" "$ARTIFACT" "$SIGNATURE" "$MANIFEST" --repo "$REPO_SLUG
 gh release upload "$TAG" "$DMG" --repo "$REPO_SLUG" --clobber
 echo ">> published. The updater's endpoint now resolves to this release's latest.json."
 
-# ── THE DARWIN KERNEL ARTIFACTS (III-5 · the shipped-binary story) ─────────
+# ── THE TOOLS STEP (the first trimmed release, 2026-11-01) ─────────────────
 #
-# P5 (OpenClaw against the SHIPPED binary) needs Gatekeeper-clean darwin
-# artifacts: the public CI built them UNSIGNED (D6 — the public Actions never
-# sign), and the signing lane signs them HERE with the same identity as the
-# bundle, `--timestamp` explicit on every signature. The PIN names the pair
-# the shipped-binary story exercises — the kernel and the MCP surface
-# (brain-server-darwin-*, mcp-darwin-*); bench and the connectors stay
-# CI-built (they are developer tools, not the shipped surface).
+# The trimmed page carries the darwin binaries ONLY inside the stapled
+# `StewardMem-Tools.dmg` (the Tools round's trim; the workflow's half is
+# pinned in `tests/release_asset_trim.rs`). The lane's old act here —
+# re-uploading the bare binaries and refreshing SHA256SUMS over them — was
+# the bloat's last road back onto the page, and it is GONE. In its place the
+# lane grows the Tools step, and the §7 signing recipe (measured twice,
+# 2026-10-31) is the lane's own: download the run's darwin artifacts, sign
+# the 16 (Developer ID Application + hardened runtime + timestamp), notarize
+# in one zip, quarantine-exec 16/16 (never `spctl` — the measured
+# wrong-verifier for bare Mach-O), then cut the selective pkg and the
+# stapled DMG through the builders (notarize + staple are IN the builders —
+# the lane never hand-assembles either artefact), upload the DMG, and
+# REGENERATE the page's SHA256SUMS over the FINAL set — the sums must
+# describe the page as published.
 #
-# Re-signing changes the bytes, so the release's SHA256SUMS lines for the
-# signed names are REFRESHED in the same act — a release whose checksum
-# file lies about its own binaries is the failure the checksum exists to
-# prevent. The lane refuses a release that does not carry the four assets
-# and the checksum file, naming what is missing (the three-asset rule's
-# shape: the pieces travel together).
-sign_darwin_release_artifacts() {
+# THE NOTARY WEDGE (measured 2026-10-31): a submit that hangs is not a
+# submit that waits — a submission with no history entry and no established
+# TCP after ~2 minutes is WEDGED; kill it and resubmit, never wait it out.
+# This step's submits go through `notary_submit` and the builders; a wedged
+# one is the operator's kill-and-resubmit, and the step is idempotent to a
+# lane re-run.
+publish_tools_dmg() {
 	command -v gh >/dev/null 2>&1 || die "gh is not on PATH"
 	command -v codesign >/dev/null 2>&1 || die "codesign is not on PATH"
 	command -v shasum >/dev/null 2>&1 || die "shasum is not on PATH"
+	command -v xattr >/dev/null 2>&1 || die "xattr is not on PATH"
+	command -v unzip >/dev/null 2>&1 || die "unzip is not on PATH"
+	command -v timeout >/dev/null 2>&1 || die "timeout is not on PATH (brew install coreutils) — the quarantine-exec probes must be bounded"
 
-	local dir="$TMPDIR_SIGN/darwin"
-	mkdir -p "$dir"
-	local assets=(brain-server-darwin-arm64 brain-server-darwin-x86_64 mcp-darwin-arm64 mcp-darwin-x86_64)
+	local dir="$TMPDIR_SIGN/tools"
+	rm -rf "$dir"
+	mkdir -p "$dir/download" "$dir/Binaries-Signed"
+	local assets=(brain-server-darwin-arm64 brain-server-darwin-x86_64
+		brain-darwin-arm64 brain-darwin-x86_64
+		mcp-darwin-arm64 mcp-darwin-x86_64
+		bench-darwin-arm64 bench-darwin-x86_64
+		brain-migrate-rehearse-darwin-arm64 brain-migrate-rehearse-darwin-x86_64
+		brain-connector-stub-darwin-arm64 brain-connector-stub-darwin-x86_64
+		brain-connector-gh-darwin-arm64 brain-connector-gh-darwin-x86_64
+		brain-connector-crm-darwin-arm64 brain-connector-crm-darwin-x86_64)
 
-	echo ">> downloading the darwin kernel artifacts from $REPO_SLUG $TAG…"
-	local name missing=()
-	for name in "${assets[@]}"; do
-		gh release download "$TAG" --repo "$REPO_SLUG" --pattern "$name" --dir "$dir" --clobber >/dev/null 2>&1 || true
-		[[ -f "$dir/$name" ]] || missing+=("$name")
+	# ── 1 · THE RUN ────────────────────────────────────────────────────────
+	# The artifacts stage beside the page on the tag's own workflow run — the
+	# workflow holds them there for exactly this. The run is resolved the
+	# witness's way: scoped to THIS tag (a re-cut tag, a manual dispatch, or
+	# an older run on the same commit is never mistaken for this release's
+	# builds).
+	local sha run_id
+	sha="$(git -C "$REPO_ROOT" rev-parse "$TAG^{commit}")"
+	run_id="$(gh run list --repo "$REPO_SLUG" --commit "$sha" --workflow release.yml \
+		--json databaseId,headBranch \
+		--jq "[.[] | select(.headBranch == \"$TAG\")][0].databaseId" 2>/dev/null || true)"
+	[[ -n "$run_id" ]] || die "refusing: no release.yml run registered for $TAG — the Tools set is cut from the run's artifacts, and there is no run to download"
+
+	# ── 2 · THE DOWNLOAD, VERIFIED TWO WAYS ────────────────────────────────
+	# `gh` truncated release binaries once (measured 2026-10-31: 18,499,942
+	# of 19,874,800 bytes — the hash check is what caught it, and the clean
+	# re-download hashed to exactly the published sums). The run's darwin
+	# artifacts carry no sums file of their own (the page's SHA256SUMS
+	# describes the page, not the staging), so the download leg verifies with
+	# two independent arms:
+	#   (a) a SECOND transport — the artifact ZIP fetched through the API and
+	#       unzip-verified against its own CRC — whose per-file digests must
+	#       equal leg one's;
+	#   (b) `codesign --verify --strict` on the CI's ad-hoc signature — a
+	#       truncated or altered binary cannot carry a valid signature over
+	#       its pages.
+	# Any disagreement is fatal BEFORE anything signs.
+	local name art_id f leg2="$dir/leg2"
+	mkdir -p "$leg2"
+	for name in dist-darwin-arm64 dist-darwin-x86_64; do
+		echo ">> downloading the run's $name artifact (leg 1: gh run download)…"
+		gh run download "$run_id" --repo "$REPO_SLUG" --name "$name" --dir "$dir/download" ||
+			die "refusing: the $name artifact would not download"
+		art_id="$(gh api "repos/$REPO_SLUG/actions/runs/$run_id/artifacts" --paginate \
+			--jq ".artifacts[] | select(.name == \"$name\") | .id" | head -1)"
+		[[ -n "$art_id" ]] || die "refusing: the run carries no $name artifact"
+		echo ">> re-fetching $name through the API (leg 2: the artifact ZIP, CRC-verified)…"
+		gh api "repos/$REPO_SLUG/actions/artifacts/$art_id/zip" > "$leg2/$name.zip" ||
+			die "refusing: the $name artifact ZIP would not download"
+		unzip -tq "$leg2/$name.zip" >/dev/null ||
+			die "refusing: the $name artifact ZIP fails its own CRC — a truncated transport, the gh-truncation class"
+		unzip -q "$leg2/$name.zip" -d "$leg2/$name"
 	done
-	gh release download "$TAG" --repo "$REPO_SLUG" --pattern "SHA256SUMS" --dir "$dir" --clobber >/dev/null 2>&1 || true
-	if [[ ${#missing[@]} -gt 0 ]]; then
-		for name in "${missing[@]}"; do echo "::error::required asset missing: $name" >&2; done
-		die "refusing: the release does not carry the darwin kernel artifacts — the shipped-binary story P5 verifies has nothing signed to verify"
-	fi
-	[[ -f "$dir/SHA256SUMS" ]] || die "refusing: the release carries no SHA256SUMS — the re-signed digests have nothing to refresh"
 
+	for f in "$leg2"/*/*; do
+		name="$(basename "$f")"
+		[[ -f "$dir/download/$name" ]] || die "refusing: leg 2 carries $name but leg 1 does not — the transports disagree"
+		[[ "$(shasum -a 256 "$dir/download/$name" | awk '{print $1}')" == \
+			"$(shasum -a 256 "$f" | awk '{print $1}')" ]] ||
+			die "refusing: $name's two download legs disagree — a truncated or altered transport; re-run the lane"
+	done
+	for name in "${assets[@]}"; do
+		[[ -f "$dir/download/$name" ]] || die "refusing: the run's artifacts are missing $name — the Tools set cannot be cut from a partial build"
+		codesign --verify --strict "$dir/download/$name" ||
+			die "refusing: $name fails the CI ad-hoc signature check — truncated or altered bytes never reach the signing pass"
+		cp "$dir/download/$name" "$dir/Binaries-Signed/$name"
+		chmod 755 "$dir/Binaries-Signed/$name"   # CI uploads 644; a bare binary must keep its exec bit
+	done
+
+	# ── 3 · THE SIGNING PASS (the §7 recipe — run, never re-derived) ───────
 	for name in "${assets[@]}"; do
 		echo ">> signing $name…"
-		codesign --force --sign "$SIGNING_IDENTITY" --options runtime --timestamp "$dir/$name" 2>&1 |
+		codesign --force --options runtime --timestamp \
+			--sign "$SIGNING_IDENTITY" "$dir/Binaries-Signed/$name" 2>&1 |
 			grep -v "replacing existing signature" || true
-		verify_apple_signature "$dir/$name"
+		verify_apple_signature "$dir/Binaries-Signed/$name"
 	done
 
-	# THE NOTARIZATION of the darwin pair — the prompt's literal posture,
-	# through the lane's shared submission helper (named failure with the
-	# Notary log on rejection; re-submitted, never skipped).
-	notary_submit_darwin_artifacts "$dir" "${assets[@]}"
+	# One zip, one submission — each Mach-O inside is notarized.
+	( cd "$dir" && ditto -c -k --keepParent Binaries-Signed StewardMem-CLI-darwin.zip ) ||
+		die "the notarization vehicle could not be built"
+	notary_submit "$dir/StewardMem-CLI-darwin.zip"
 
-	local sums="$dir/SHA256SUMS"
-	local fresh="$dir/SHA256SUMS.fresh"
+	# ── 4 · THE VERIFICATION ARM — quarantine-exec, NEVER spctl ────────────
+	# `spctl -a` rejects bare CLIs EVEN when notarized ("does not seem to be
+	# an app") — the §7 measured wrong-verifier. The probe is the EXEC
+	# verdict, never the program's semantics: every invocation is bounded,
+	# carries NO credentials (the token env is scrubbed), and bench's target
+	# is a DEAD PORT. Measured the hard way (2026-11-01): `bench --version`
+	# is not a version probe, it is a load generator — it POSTs synthetic
+	# documents at the default target, and the default target is a running
+	# kernel. A binary that exits 0, that RAN and was bounded by the timeout,
+	# or that fails with the foreign-arch message PASSED Gatekeeper (its
+	# check precedes the CPU check — measured on the x86_64 set); a SIGKILL
+	# or a named Gatekeeper refusal is a red.
+	local probe_out probe_rc quarantine_fail=0 probe_args
+	local quarantine_dir="$dir/quarantine-test"
+	mkdir -p "$quarantine_dir"
+	for name in "${assets[@]}"; do
+		local copy="$quarantine_dir/$name"
+		cp "$dir/Binaries-Signed/$name" "$copy"
+		xattr -w com.apple.quarantine "0081;$(printf '%08x' "$(date +%s)");Safari;" "$copy" ||
+			die "refusing: the Safari-shaped quarantine could not be applied to $name"
+		case "$name" in
+			bench-*) probe_args=(--target http://127.0.0.1:1) ;;
+			*)       probe_args=(--version) ;;
+		esac
+		probe_rc=0
+		probe_out="$(env -u BRAIN_TOKEN -u BRAIN_TOKEN_FILE -u BRAIN_URL \
+			timeout 15 "$copy" "${probe_args[@]}" 2>&1)" || probe_rc=$?
+		case "$probe_rc" in
+			0)
+				echo "   quarantine-exec $name: PASS (${probe_out%%$'\n'*})"
+				;;
+			124)
+				echo "   quarantine-exec $name: PASS (the process RAN — Gatekeeper passed it — and was bounded)"
+				;;
+			126 | 127)
+				if grep -q "bad CPU type in executable" <<<"$probe_out"; then
+					echo "   quarantine-exec $name: PASS (foreign arch — Gatekeeper's check precedes the CPU check)"
+				else
+					echo "::error::quarantine-exec $name rc=$probe_rc: $probe_out" >&2
+					quarantine_fail=1
+				fi
+				;;
+			*)
+				echo "::error::quarantine-exec $name rc=$probe_rc: $probe_out" >&2
+				quarantine_fail=1
+				;;
+		esac
+	done
+	[[ "$quarantine_fail" == "0" ]] ||
+		die "refusing: the quarantine-exec arm failed — a notarized binary that Gatekeeper refuses must never ship"
+
+	# The sums over the SIGNED bytes (signing changed them — the drill's law).
+	( cd "$dir/Binaries-Signed" && shasum -a 256 ./* | sed 's|  \./|  |' > SHA256SUMS )
+	( cd "$dir/Binaries-Signed" && shasum -a 256 --check SHA256SUMS > /dev/null ) ||
+		die "refusing: the signed set's own sums do not check"
+
+	# ── 5 · THE BUILDERS (notarize + staple are IN the builders) ───────────
+	local tools_version="${TAG#v}"
+	"$REPO_ROOT/scripts/tools-pkg/build-tools-pkg.sh" --version "$tools_version" \
+		--staged-dir "$dir/Binaries-Signed" --out "$dir/StewardMem-Tools.pkg" ||
+		die "refusing: the selective pkg builder failed — its own gates name what they found"
+	"$REPO_ROOT/scripts/tools-pkg/build-tools-dmg.sh" --version "$tools_version" \
+		--staged-dir "$dir/Binaries-Signed" --pkg "$dir/StewardMem-Tools.pkg" \
+		--out "$dir/StewardMem-Tools.dmg" ||
+		die "refusing: the Tools DMG builder failed — its own gates name what they found"
+
+	# ── 6 · THE UPLOAD + THE PAGE'S SUMS OVER THE FINAL SET ────────────────
+	echo ">> uploading the stapled Tools DMG…"
+	gh release upload "$TAG" "$dir/StewardMem-Tools.dmg" --repo "$REPO_SLUG" --clobber
+
+	# The sums must describe the page AS PUBLISHED (the III-5 pattern). The
+	# workflow's SHA256SUMS describes the core set it published; the lane has
+	# since ADDED five assets the workflow never saw — the chain's three, the
+	# first-install DMG, and the Tools DMG. Those five are re-summed from the
+	# exact bytes this lane produced; the workflow's lines for the assets
+	# whose bytes the lane never touched are kept VERBATIM. The internet-side
+	# verification of the result is the page witness's — the page-shape check
+	# in release.sh and the round's own arms verify the published sums from
+	# the internet; that is the fail-closed net under this merge.
+	local page_dir="$dir/page"
+	mkdir -p "$page_dir"
+	gh release download "$TAG" --repo "$REPO_SLUG" --pattern "SHA256SUMS" --dir "$page_dir" --clobber >/dev/null
+	[[ -f "$page_dir/SHA256SUMS" ]] || die "refusing: the published release carries no SHA256SUMS — the sums have nothing to extend"
+
+	local fresh="$page_dir/SHA256SUMS.next"
+	local file
 	: > "$fresh"
-	local line file replaced
 	while IFS= read -r line; do
 		file="$(sed 's/^[0-9a-fA-F]* *//' <<<"$line")"
 		file="${file#\*}"
-		replaced=0
-		for name in "${assets[@]}"; do
-			if [[ "$file" == "$name" ]]; then
-				echo "$(shasum -a 256 "$dir/$name" | awk '{print $1}')  $name" >> "$fresh"
-				replaced=1
-				break
-			fi
-		done
-		if [[ "$replaced" != "1" ]]; then
-			echo "$line" >> "$fresh"
-		fi
-	done < "$sums"
-	mv "$fresh" "$sums"
+		case "$file" in
+			latest.json | "$(basename "$ARTIFACT")" | "$(basename "$ARTIFACT").sig" | "$(basename "$DMG")" | StewardMem-Tools.dmg) ;;
+			*) echo "$line" >> "$fresh" ;;
+		esac
+	done < "$page_dir/SHA256SUMS"
 
-	echo ">> uploading the signed artifacts with the refreshed SHA256SUMS…"
-	gh release upload "$TAG" "$dir/brain-server-darwin-arm64" "$dir/brain-server-darwin-x86_64" \
-		"$dir/mcp-darwin-arm64" "$dir/mcp-darwin-x86_64" "$sums" --repo "$REPO_SLUG" --clobber
-	echo ">> the darwin kernel artifacts are Developer-ID-signed and timestamped; SHA256SUMS tells the truth."
+	local owned=("$MANIFEST" "$ARTIFACT" "$ARTIFACT.sig" "$DMG" "$dir/StewardMem-Tools.dmg")
+	local path
+	for path in "${owned[@]}"; do
+		[[ -f "$path" ]] || die "refusing: the sums cannot describe an absent asset: $path"
+		echo "$(shasum -a 256 "$path" | awk '{print $1}')  $(basename "$path")" >> "$fresh"
+	done
+	mv "$fresh" "$page_dir/SHA256SUMS"
+	echo ">> uploading the page SHA256SUMS over the final set ($(wc -l < "$page_dir/SHA256SUMS" | tr -d ' ') assets)…"
+	gh release upload "$TAG" "$page_dir/SHA256SUMS" --repo "$REPO_SLUG" --clobber
+	echo ">> the stapled Tools DMG is published; the page's SHA256SUMS describes the page as published."
 }
 
-sign_darwin_release_artifacts
+publish_tools_dmg
+
