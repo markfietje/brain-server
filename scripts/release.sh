@@ -306,6 +306,25 @@ else
 fi
 echo "Chain:   https://github.com/stewardmem/stewardmem/releases/latest/download/latest.json"
 
+# ── THE PAGE-SHAPE CHECK ───────────────────────────────────────────────────
+# The register row 127's owed guard, made real (2026-11-01): the PUBLISHED
+# release must carry the ~9-asset trimmed set EXACTLY — an EXTRA asset is a
+# red (the bloat cannot return), a missing one is a promise the updater
+# discovers broken at the user's machine. It runs AFTER the chain check so a
+# green release means the endpoint answered AND the page is the right shape.
+# ONE implementation with TWO callers — this script and
+# `tests/release_page_gate.rs` (which drives it against fixtures).
+PAGE_CHECK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-page-check.sh"
+if bash "$PAGE_CHECK" "$TAG"; then
+  echo ">> the published page is the trimmed set, exactly: the page-shape gate is GREEN for ${TAG}."
+else
+  echo "error: the published page for ${TAG} is not the trimmed set — extra or missing assets." >&2
+  echo "       The trim is behavioral, not aspirational: fix the page (or the lane that" >&2
+  echo "       published it) before the release is called green. Inspect:" >&2
+  echo "       https://github.com/stewardmem/stewardmem/releases/tag/${TAG}" >&2
+  exit 1
+fi
+
 if command -v gh >/dev/null 2>&1; then
   # The COMMIT the tag points at, never the tag object.
   #
