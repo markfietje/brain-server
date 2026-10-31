@@ -30,6 +30,12 @@ pub mod verify;
 // flag (PLAN_MAS_FORK §3).
 #[cfg(not(feature = "mas"))]
 pub mod updater;
+// W-1 — the install core for the SERVICE posture. The same config boundary
+// as the updater: the wizard's install surface is DIRECT-CHANNEL ONLY
+// (2.4.5(ii)/(iii)), so the module, its pins and its commands are all
+// compiled out of the `mas` build — an excision, not a runtime flag.
+#[cfg(not(feature = "mas"))]
+pub mod service;
 
 mod token;
 
@@ -37,6 +43,8 @@ mod token;
 mod forget_pins;
 #[cfg(test)]
 mod recall_pins;
+#[cfg(all(test, not(feature = "mas")))]
+mod service_pins;
 #[cfg(test)]
 mod sidecar_pins;
 #[cfg(test)]
@@ -229,6 +237,71 @@ async fn kernel_wire_status() -> Result<sidecar::WireDto, String> {
         .map_err(|_| "wire_status task failed".to_string())
 }
 
+/// W-1 — the SERVICE posture's install (posture B). Consent, the port
+/// decision, the generated LaunchAgent plist, the mode laws and the version
+/// gate all live in `service.rs`; this edge only moves the work to the
+/// blocking pool (launchctl and the fs are blocking work, not webview work).
+#[cfg(not(feature = "mas"))]
+#[tauri::command]
+async fn service_install(app: tauri::AppHandle) -> Result<service::InstallDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<sidecar::KernelState>();
+        service::service_install(&app, state.inner())
+    })
+    .await
+    .map_err(|error| format!("service_install task failed: {error}"))
+}
+
+/// W-1 — the SERVICE posture's uninstall: bootout OUR label, remove OUR
+/// plist, enumerate. The data root is OFFERED by the DTO, never deleted
+/// here; clearing it is `service_remove_data`, its own named act.
+#[cfg(not(feature = "mas"))]
+#[tauri::command]
+async fn service_uninstall(app: tauri::AppHandle) -> Result<service::UninstallDto, String> {
+    tauri::async_runtime::spawn_blocking(move || service::service_uninstall(&app))
+        .await
+        .map_err(|error| format!("service_uninstall task failed: {error}"))
+}
+
+/// W-4 — the OFFERED service-data removal: deletes exactly the service root
+/// the uninstall DTO named. A named act with a named path, never silent.
+#[cfg(not(feature = "mas"))]
+#[tauri::command]
+async fn service_remove_data(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || service::service_remove_data(&app))
+        .await
+        .map_err(|error| format!("service_remove_data task failed: {error}"))?
+        .map_err(|error| error.kind().to_string())
+}
+
+/// W-2 — the posture marker's reading: what the user CHOSE (the machine's
+/// reality — launchd, the probe — is reported beside it by the caller).
+#[cfg(not(feature = "mas"))]
+#[tauri::command]
+async fn service_posture(app: tauri::AppHandle) -> Result<service::PostureDto, String> {
+    tauri::async_runtime::spawn_blocking(move || service::posture_load(&app))
+        .await
+        .map_err(|error| format!("service_posture task failed: {error}"))
+}
+
+/// W-2 — the posture choice, validated and saved. There is NO token
+/// parameter: posture C never receives a credential through this app (the
+/// operator pastes it into the remote kernel's own auth file).
+#[cfg(not(feature = "mas"))]
+#[tauri::command]
+async fn store_service_posture(
+    app: tauri::AppHandle,
+    posture: String,
+    url: Option<String>,
+) -> Result<service::PostureDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        service::posture_store(&app, &posture, url.as_deref())
+    })
+    .await
+    .map_err(|error| format!("store_service_posture task failed: {error}"))?
+    .map_err(|error| error.kind().to_string())
+}
+
 /// III-4 — the update CHECK. Read-only: it never installs and never writes.
 /// The answer is a DTO, never a thrown error, and `unreachable` is its own
 /// state — an endpoint that cannot be reached is never "you are up to date".
@@ -331,6 +404,16 @@ pub fn run() {
             kernel_wire_status,
             build_channel,
             signal_gateway_status,
+            #[cfg(not(feature = "mas"))]
+            service_install,
+            #[cfg(not(feature = "mas"))]
+            service_uninstall,
+            #[cfg(not(feature = "mas"))]
+            service_remove_data,
+            #[cfg(not(feature = "mas"))]
+            service_posture,
+            #[cfg(not(feature = "mas"))]
+            store_service_posture,
             #[cfg(not(feature = "mas"))]
             update_check,
             #[cfg(not(feature = "mas"))]

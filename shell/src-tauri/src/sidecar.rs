@@ -1297,6 +1297,24 @@ pub fn shutdown_app(app: &AppHandle) -> Option<String> {
     shutdown(state.inner()).kill_error
 }
 
+/// True when the child this process spawned is still alive — a start still
+/// booting, or a running app-managed kernel the service posture must stop
+/// before it can take the port. A dead child is reaped and answers false.
+pub fn child_alive(state: &KernelState) -> bool {
+    let mut guard = state
+        .child
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match guard.as_mut().map(Child::try_wait) {
+        Some(Ok(None)) => true,
+        Some(_) => {
+            *guard = None;
+            false
+        }
+        None => false,
+    }
+}
+
 // ── the Tauri edges ────────────────────────────────────────────────────────
 
 /// Every path the contract needs, resolved once.
@@ -1511,7 +1529,10 @@ pub fn start_with_paths(
     }
 }
 
-fn resolve_token() -> Result<String, ContractError> {
+/// The token resolution the start path and the service posture share
+/// (one custody implementation, two consumers): keychain → the shell's own
+/// env → a generated 32-byte token stored back into the keychain.
+pub(crate) fn resolve_token() -> Result<String, ContractError> {
     if let Some(token) = token::resolve_platform(std::env::var("BRAIN_SHELL_TOKEN").ok()) {
         return Ok(token);
     }
