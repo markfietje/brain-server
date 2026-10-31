@@ -131,17 +131,34 @@ fi
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 cp "$PROFILE" "$STAGE/embedded.provisionprofile"
+# The BUILD NUMBER (CFBundleVersion): ASC refuses a re-upload whose
+# version+build pair already exists, so every lane run carries a fresh,
+# monotonically increasing build number (date+time — sortable, unique per
+# run, injected via the generated overlay). The SHORT version
+# (CFBundleShortVersionString) stays the app's own semver; only the build
+# number moves per upload.
+BUILD_NUMBER="$(date +%Y%m%d%H%M)"
 cat > "$STAGE/tauri.appstore.profile.conf.json" <<JSON
 {
   "bundle": {
     "macOS": {
       "files": {
         "embedded.provisionprofile": "$STAGE/embedded.provisionprofile"
-      }
+      },
+      "bundleVersion": "$BUILD_NUMBER"
     }
   }
 }
 JSON
+echo ">> build number: $BUILD_NUMBER"
+# The BUILD NUMBER (CFBundleVersion): ASC refuses a re-upload whose
+# version+build pair already exists, so every lane run carries a fresh,
+# monotonically increasing build number (date+time — sortable, unique per
+# run). The SHORT version (CFBundleShortVersionString) stays the app's own
+# semver; only the build number moves.
+BUILD_NUMBER="$(date +%Y%m%d%H%M)"
+echo -n "$BUILD_NUMBER" > "$STAGE/build-number.txt"
+echo ">> build number: $BUILD_NUMBER"
 
 echo ">> building the MAS edition (mas feature, appstore overlay)…"
 # `--target` is PINNED, not implied: without it the bundler outputs to
