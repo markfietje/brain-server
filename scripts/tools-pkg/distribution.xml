@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Tools pkg's distribution: the selective installer. Core is the
+     recommended path and arrives pre-selected (the HIG's defaults-first
+     law); Bench and Connectors are one click away; nothing installs outside
+     the current user's home (the domains element REFUSES the system
+     targets — no admin, no sudo, ever). -->
+<installer-gui-script minSpecVersion="2">
+    <title>StewardMem Tools</title>
+    <options customize="always" allow-external-scripts="false" rootVolumeOnly="false"/>
+    <domains enable_anywhere="false" enable_currentUserHome="true" enable_localSystem="false"/>
+    <welcome file="welcome.html"/>
+    <conclusion file="conclusion.html"/>
+    <choices-outline>
+        <line choice="core"/>
+        <line choice="bench"/>
+        <line choice="connectors"/>
+    </choices-outline>
+    <choice id="core" title="Core (recommended)" description="brain-server, the brain CLI, and the MCP server — installed beside any existing service they would collide with, never over it." start_selected="true" start_enabled="true">
+        <pkg-ref id="com.stewardmem.tools.core"/>
+    </choice>
+    <choice id="bench" title="Bench" description="The benchmark harness." start_selected="false" start_enabled="true">
+        <pkg-ref id="com.stewardmem.tools.bench"/>
+    </choice>
+    <choice id="connectors" title="Connectors" description="The connector test double, the GitHub connector, and the CRM connector." start_selected="false" start_enabled="true">
+        <pkg-ref id="com.stewardmem.tools.connectors"/>
+    </choice>
+    <pkg-ref id="com.stewardmem.tools.core" version="__VERSION__">core.pkg</pkg-ref>
+    <pkg-ref id="com.stewardmem.tools.bench" version="__VERSION__">bench.pkg</pkg-ref>
+    <pkg-ref id="com.stewardmem.tools.connectors" version="__VERSION__">connectors.pkg</pkg-ref>
+</installer-gui-script>

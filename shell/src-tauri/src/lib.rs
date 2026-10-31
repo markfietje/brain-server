@@ -60,6 +60,8 @@ mod sidecar_pins;
 #[cfg(test)]
 mod token_pins;
 #[cfg(all(test, not(feature = "mas")))]
+mod tools_pkg_pins;
+#[cfg(all(test, not(feature = "mas")))]
 mod updater_pins;
 #[cfg(test)]
 mod verify_pins;
