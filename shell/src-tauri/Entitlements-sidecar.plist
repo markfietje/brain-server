@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The NESTED executables' entitlements (brain-server, brain-afm) — ITMS-90885
+  (2026-10-31): a nested Mach-O that carries com.apple.application-identifier
+  in its signature but no provisioning profile of its own is REFUSED for
+  TestFlight ("nested executables are expected to have provisioning profiles
+  with application identifiers matching the identifier in the signature").
+  The profile embeds in the MAIN bundle only — so the sidecars carry the
+  sandbox + network entitlements they actually use and NO identity
+  entitlements: nothing for the profile to mismatch, nothing for the
+  validator to demand.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.network.server</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+</dict>
+</plist>

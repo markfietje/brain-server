@@ -159,6 +159,29 @@ echo ">> building the MAS edition (mas feature, appstore overlay)…"
 APP="shell/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/StewardMem.app"
 [[ -d "$APP" ]] || fail "the MAS bundle did not appear at $APP"
 
+# ── THE NESTED-EXECUTABLE LAW (ITMS-90885, 2026-10-31) ─────────────────
+# Tauri signed EVERY Mach-O with the FULL entitlements — including
+# com.apple.application-identifier on the nested sidecars. A nested
+# executable carrying an application-identifier but no provisioning profile
+# of its own is REFUSED for TestFlight (nested helpers never carry
+# profiles; the profile embeds in the main bundle alone). The fix: re-sign
+# the sidecars with the REDUCED entitlements (sandbox + network, NO
+# identity keys), then re-sign the parent — nested-binary changes require
+# re-sealing the bundle.
+IDENTITY_NAME="${IDENTITY_LINE#*\"}"
+IDENTITY_NAME="${IDENTITY_NAME%\"}"
+for b in brain-server brain-afm; do
+  codesign --force --options runtime --timestamp \
+    --entitlements shell/src-tauri/Entitlements-sidecar.plist \
+    --sign "$IDENTITY_NAME" "$APP/Contents/MacOS/$b" \
+    || fail "the sidecar $b could not be re-signed with the reduced entitlements."
+done
+codesign --force --options runtime --timestamp \
+  --entitlements shell/src-tauri/Entitlements.plist \
+  --sign "$IDENTITY_NAME" "$APP" \
+  || fail "the bundle could not be re-sealed after the sidecar re-sign."
+echo ">> sidecars re-signed: sandbox + network, NO application-identifier (ITMS-90885)"
+
 # ── 5. The verification: the store's shape, ON the bytes ──────────────────
 echo ">> verifying the MAS edition's shape…"
 # NOTE on the greps: NO `-q`. Under `set -o pipefail`, `grep -q` closing its
@@ -177,6 +200,16 @@ codesign -dvv "$APP" 2>&1 | grep 'Identifier=com.stewardmem.shell.mas' >/dev/nul
   || fail "the privacy manifest is missing from Contents/Resources — the ASC upload would take ITMS-91053."
 plutil -p "$APP/Contents/Info.plist" | grep -q 'ITSAppUsesNonExemptEncryption' \
   || fail "ITSAppUsesNonExemptEncryption is missing from Info.plist."
+# The nested-executable law, witnessed: NO sidecar may carry an
+# application-identifier (ITMS-90885 refuses TestFlight for a nested Mach-O
+# with an identity entitlement but no profile of its own).
+for b in brain-server brain-afm; do
+  if codesign -d --entitlements :- "$APP/Contents/MacOS/$b" 2>/dev/null | grep -q 'application-identifier'; then
+    fail "the sidecar $b carries an application-identifier — ITMS-90885 will refuse TestFlight."
+  fi
+  codesign -d --entitlements :- "$APP/Contents/MacOS/$b" 2>/dev/null | grep -q 'app-sandbox' \
+    || fail "the sidecar $b lost its sandbox entitlement in the re-sign."
+done
 # The excision, proven on the bytes: the updater's own strings (its source
 # paths and its error prose, measured in the direct binary) must not appear
 # in the mas binary at all — the plugin, its commands and its module are
