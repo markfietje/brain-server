@@ -46,6 +46,9 @@ export interface UpdateDto {
 	evidence: string;
 }
 
+/** The whole report: every absent card is `null` — the renderer shows
+ * "not found — nothing touched", never a silent absence. `kernelOnPort`
+ * is always present: its honest "not running" is the free-port fact. */
 export interface DetectDto {
 	existing: ExistingInstallDto | null;
 	openclaw: OpenClawDto | null;
@@ -58,6 +61,8 @@ export interface DetectDto {
  * attaches to (loopback only, this release). */
 export const LOOPBACK_KERNEL_URL = 'http://127.0.0.1:8765';
 
+/** D3's total, human-sized for the card: 8192 → "8 KB". The counts the
+ * detection reports are bytes; the user reads them at a glance. */
 export function formatBytes(total: number): string {
 	if (total < 1024) return `${total} B`;
 	if (total < 1024 * 1024) return `${Math.round(total / 1024)} KB`;
