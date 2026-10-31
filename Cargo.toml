@@ -392,6 +392,17 @@ lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# The TEST/DEV profiles carry line-tables, not full debuginfo: full debug = 2
+# more than doubled the target/ footprint and the ubuntu-latest runners (the
+# Oct 2026 image migration shrank the root disk) ran out of space mid-compile
+# (rustc-LLVM: IO failure on output stream — os error 28). Line-tables keeps
+# every panic's file+line evidence — the drills' observed-text law survives
+# intact — while the object bulk that no drill ever reads is gone.
+[profile.dev]
+debug = "line-tables-only"
+[profile.test]
+debug = "line-tables-only"
 # F-50a: arithmetic near the i64 edge (paginated listings, DSAR/purge
 # offsets) must abort, never wrap silently — with panic=abort an overflow is
 # fail-stop. Measured cost on the synthetic bench: < 1% (see CHANGELOG 1.28.5).

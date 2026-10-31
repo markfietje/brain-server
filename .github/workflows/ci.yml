@@ -90,6 +90,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      # The disk law (the 2026-10-31 finding): the Oct-2026 ubuntu-latest
+      # image migration shrank the root disk, and a full-debuginfo test build
+      # hit `No space left on device` (os error 28) mid-compile in the
+      # compliance-pack lane. Two guards, both upstream-respectful: the
+      # profile caps test debuginfo at line-tables (Cargo.toml -- helps
+      # everywhere), and this step frees the runner's preinstalled bloat
+      # (~25 GB the build never touches). Space-hungry jobs carry it.
+      - name: Free runner disk (the image shrank; the build did not)
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: rustfmt, clippy
@@ -227,6 +240,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      # The disk law (the 2026-10-31 finding): the Oct-2026 ubuntu-latest
+      # image migration shrank the root disk, and a full-debuginfo test build
+      # hit `No space left on device` (os error 28) mid-compile in the
+      # compliance-pack lane. Two guards, both upstream-respectful: the
+      # profile caps test debuginfo at line-tables (Cargo.toml -- helps
+      # everywhere), and this step frees the runner's preinstalled bloat
+      # (~25 GB the build never touches). Space-hungry jobs carry it.
+      - name: Free runner disk (the image shrank; the build did not)
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -259,6 +285,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      # The disk law (the 2026-10-31 finding): the Oct-2026 ubuntu-latest
+      # image migration shrank the root disk, and a full-debuginfo test build
+      # hit `No space left on device` (os error 28) mid-compile in the
+      # compliance-pack lane. Two guards, both upstream-respectful: the
+      # profile caps test debuginfo at line-tables (Cargo.toml -- helps
+      # everywhere), and this step frees the runner's preinstalled bloat
+      # (~25 GB the build never touches). Space-hungry jobs carry it.
+      - name: Free runner disk (the image shrank; the build did not)
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -284,6 +323,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      # The disk law (the 2026-10-31 finding): the Oct-2026 ubuntu-latest
+      # image migration shrank the root disk, and a full-debuginfo test build
+      # hit `No space left on device` (os error 28) mid-compile in the
+      # compliance-pack lane. Two guards, both upstream-respectful: the
+      # profile caps test debuginfo at line-tables (Cargo.toml -- helps
+      # everywhere), and this step frees the runner's preinstalled bloat
+      # (~25 GB the build never touches). Space-hungry jobs carry it.
+      - name: Free runner disk (the image shrank; the build did not)
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -312,6 +364,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      # The disk law (the 2026-10-31 finding): the Oct-2026 ubuntu-latest
+      # image migration shrank the root disk, and a full-debuginfo test build
+      # hit `No space left on device` (os error 28) mid-compile in the
+      # compliance-pack lane. Two guards, both upstream-respectful: the
+      # profile caps test debuginfo at line-tables (Cargo.toml -- helps
+      # everywhere), and this step frees the runner's preinstalled bloat
+      # (~25 GB the build never touches). Space-hungry jobs carry it.
+      - name: Free runner disk (the image shrank; the build did not)
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -371,6 +436,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      # The disk law (the 2026-10-31 finding): the Oct-2026 ubuntu-latest
+      # image migration shrank the root disk, and a full-debuginfo test build
+      # hit `No space left on device` (os error 28) mid-compile in the
+      # compliance-pack lane. Two guards, both upstream-respectful: the
+      # profile caps test debuginfo at line-tables (Cargo.toml -- helps
+      # everywhere), and this step frees the runner's preinstalled bloat
+      # (~25 GB the build never touches). Space-hungry jobs carry it.
+      - name: Free runner disk (the image shrank; the build did not)
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: rustfmt, clippy
@@ -440,6 +518,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      # The disk law (the 2026-10-31 finding): the Oct-2026 ubuntu-latest
+      # image migration shrank the root disk, and a full-debuginfo test build
+      # hit `No space left on device` (os error 28) mid-compile in the
+      # compliance-pack lane. Two guards, both upstream-respectful: the
+      # profile caps test debuginfo at line-tables (Cargo.toml -- helps
+      # everywhere), and this step frees the runner's preinstalled bloat
+      # (~25 GB the build never touches). Space-hungry jobs carry it.
+      - name: Free runner disk (the image shrank; the build did not)
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: clippy
@@ -461,6 +552,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      # The disk law (the 2026-10-31 finding): the Oct-2026 ubuntu-latest
+      # image migration shrank the root disk, and a full-debuginfo test build
+      # hit `No space left on device` (os error 28) mid-compile in the
+      # compliance-pack lane. Two guards, both upstream-respectful: the
+      # profile caps test debuginfo at line-tables (Cargo.toml -- helps
+      # everywhere), and this step frees the runner's preinstalled bloat
+      # (~25 GB the build never touches). Space-hungry jobs carry it.
+      - name: Free runner disk (the image shrank; the build did not)
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: rustfmt, clippy
@@ -514,6 +618,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      # The disk law (the 2026-10-31 finding): the Oct-2026 ubuntu-latest
+      # image migration shrank the root disk, and a full-debuginfo test build
+      # hit `No space left on device` (os error 28) mid-compile in the
+      # compliance-pack lane. Two guards, both upstream-respectful: the
+      # profile caps test debuginfo at line-tables (Cargo.toml -- helps
+      # everywhere), and this step frees the runner's preinstalled bloat
+      # (~25 GB the build never touches). Space-hungry jobs carry it.
+      - name: Free runner disk (the image shrank; the build did not)
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: cargo build (debug binaries)
@@ -558,6 +675,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      # The disk law (the 2026-10-31 finding): the Oct-2026 ubuntu-latest
+      # image migration shrank the root disk, and a full-debuginfo test build
+      # hit `No space left on device` (os error 28) mid-compile in the
+      # compliance-pack lane. Two guards, both upstream-respectful: the
+      # profile caps test debuginfo at line-tables (Cargo.toml -- helps
+      # everywhere), and this step frees the runner's preinstalled bloat
+      # (~25 GB the build never touches). Space-hungry jobs carry it.
+      - name: Free runner disk (the image shrank; the build did not)
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: cargo build --release --features bench (server + bench)
@@ -600,6 +730,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      # The disk law (the 2026-10-31 finding): the Oct-2026 ubuntu-latest
+      # image migration shrank the root disk, and a full-debuginfo test build
+      # hit `No space left on device` (os error 28) mid-compile in the
+      # compliance-pack lane. Two guards, both upstream-respectful: the
+      # profile caps test debuginfo at line-tables (Cargo.toml -- helps
+      # everywhere), and this step frees the runner's preinstalled bloat
+      # (~25 GB the build never touches). Space-hungry jobs carry it.
+      - name: Free runner disk (the image shrank; the build did not)
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: cargo build --release (compile gate + binaries for both live gates)
@@ -727,6 +870,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      # The disk law (the 2026-10-31 finding): the Oct-2026 ubuntu-latest
+      # image migration shrank the root disk, and a full-debuginfo test build
+      # hit `No space left on device` (os error 28) mid-compile in the
+      # compliance-pack lane. Two guards, both upstream-respectful: the
+      # profile caps test debuginfo at line-tables (Cargo.toml -- helps
+      # everywhere), and this step frees the runner's preinstalled bloat
+      # (~25 GB the build never touches). Space-hungry jobs carry it.
+      - name: Free runner disk (the image shrank; the build did not)
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
       - name: cache mdbook binary
         # cargo install compiles mdbook (~50 crates) from source on EVERY run
@@ -812,6 +968,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      # The disk law (the 2026-10-31 finding): the Oct-2026 ubuntu-latest
+      # image migration shrank the root disk, and a full-debuginfo test build
+      # hit `No space left on device` (os error 28) mid-compile in the
+      # compliance-pack lane. Two guards, both upstream-respectful: the
+      # profile caps test debuginfo at line-tables (Cargo.toml -- helps
+      # everywhere), and this step frees the runner's preinstalled bloat
+      # (~25 GB the build never touches). Space-hungry jobs carry it.
+      - name: Free runner disk (the image shrank; the build did not)
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
       - name: cache lipstyk binary
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
