@@ -13,6 +13,39 @@ measured. Those records are kept as they were written (this file is
 append-only), and their heading says `Unreleased` because that is what they
 were when the round landed — not because the work is still unreleased.
 
+## [1.29.39] — 2026-11-01 — the first trimmed release: one stapled image carries the macOS set, and the release proves its own page
+
+The release page shrinks from a 40-asset wall to the nine files that
+matter. Everything a Mac installs lives inside one stapled disk image —
+the kernel, the CLI, the MCP surface, a selective installer that proposes
+instead of asking blind, and an uninstaller — so the first download that
+matters opens clean even offline. The Linux set ships as one tarball. And
+the release is now the thing that proves the shape: the cut refuses to be
+called green until the published page is exactly the trimmed set, the
+update chain answers on the public internet, and the endpoint's round
+trip verifies against the key the app ships.
+
+### Release notes
+
+**New**
+
+- **Every macOS installable ships inside one stapled disk image.** The
+  kernel, the CLI tools, the MCP surface, the selective installer (which
+  preserves an existing setup it detects rather than overwriting it), and
+  an uninstaller — one download, signed and notarized, verified offline by
+  its staple.
+- **Releases prove their own page.** A release whose published page
+  carries an extra asset, or is missing one the updater needs, is refused
+  instead of called green — the page shape is checked, not assumed.
+
+**Changed**
+
+- **The release page carries nine files, not forty.** The macOS binaries
+  ride inside the stapled disk image instead of as bare downloads; the
+  Linux tools ship as one tarball whose contents keep the familiar
+  per-binary names. Every file on the page is described by its checksum
+  file, and the checksum file describes the page as published.
+
 ## [1.29.38] — 2026-10-31 — the App Store edition exists: sandboxed, updater-free, Signal-free, and the CI disk law
 
 The Mac App Store fork's build side lands (the operator-approved plan's
