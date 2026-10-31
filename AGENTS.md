@@ -1,5 +1,96 @@
 # Agent Execution Log — StewardMem
 
+> **R143 "Installed" (the install-wizard round lands, 2026-10-31): the
+> shell's SERVICE posture exists — the gate's ONE posture screen, the
+> generated per-user LaunchAgent, and the machine witness that proves the
+> real edges. THE MECHANISM DECISION, operator 2026-10-31, after the W-0
+> deadlock: SMAppService is REPLACED by a classic per-user LaunchAgent with
+> a GENERATED plist — W-0 measured that the SMAppService plist must be a
+> static bundle asset (`BundleProgram`; relative program paths EX_CONFIG,
+> and writing the plist into the Developer-ID-sealed bundle would break the
+> app's own signature), but launchd expands nothing, so a static plist
+> cannot carry the three user-absolute keys the kernel requires
+> (`AUTH_TOKEN_FILE`, `BRAIN_DATA_ROOT`, `BRAIN_DB_PATH`). The generated
+> plist carries them; the evidence is the wizard prompt's §10
+> (`plans/brain-shell/EXECUTION_PROMPT_INSTALL_WIZARD_2026-10-31.md`).**
+>
+> **The contract, one place (`shell/src-tauri/src/service.rs`):** one label,
+> ours only (`com.stewardmem.shell.service` — the pin reads the module's own
+> source and refuses the operator's label outright); the program is the
+> bundle's own sealed sidecar at its CURRENT absolute path (no copy, no
+> staging); the plist's `EnvironmentVariables` is byte-for-byte the
+> eight-key spawn allowlist `sidecar::command_spec` derives (one allowlist,
+> two consumers; no secret rides the plist — token by reference); the
+> service root is OUTSIDE the bundle (0700, token 0600 — the
+> `prepare_auth_file` law reused); consent before storage (`ConsentRefused`
+> before any fs write); port exclusivity is physics (a foreign holder
+> refuses `PortHeld { holder }` naming what the probe found, BEFORE anything
+> is written); the version gate is the belt (the SERVED version against the
+> sealed provenance, both named on a mismatch, the failed agent booted out —
+> never a flapping half-install); every outcome named (`Installed` /
+> `AlreadyInstalled` / `PortHeld{holder}` / `VersionMismatch` / `Refused`;
+> uninstall returns the removal list + the residue enumeration and the data
+> root is an OFFER, never a silent keep or delete). **AlreadyInstalled
+> idempotency is the update/move recovery**: reinstall over a live agent
+> repairs the plist from the CURRENT path and never double-bootstraps — the
+> only launchctl call is the print probe. No unsafe, no shell (exec'd
+> `/bin/launchctl`, argv only), no HTTP client. **The mas excision is
+> COMPILED OUT, not flagged** — module + pins + all five commands behind
+> `cfg(not(feature = "mas"))`; `cargo check --features mas` green. **16 new
+> pins** (lib tests 64 → 80), and **the three red-first drills ran and were
+> reverted from the round's own copies, never git**: the collision-label
+> drill (the source-scan pin red against a module that named the operator's
+> label), the port-bypass drill (install wrote before probing; probe-first
+> is now the pin), the consent-bypass drill (storage before the marker; the
+> refusal now precedes every write).
+>
+> **W-2, the gate's ONE posture screen** (`KernelGate.svelte`): after
+> consent, direct channel only, `build_channel !== 'direct'` bypasses the
+> posture commands entirely (an older core keeps today's behavior). A (run
+> inside the app) is pre-selected and primary; B and C are the disclosed
+> alternatives; the Signal sentence names what background mode buys;
+> "do nothing" is always available. Posture C adopts its kernel BEFORE the
+> local probe (the wire base points at the chosen kernel; loopback only
+> this release, the refusal names the law). The decision re-runs as a
+> SECTION (`run-mode-section.svelte`, registered under General in
+> `core-settings.ts` — the registry census act), uninstall a named act
+> whose DTO lists what was removed and OFFERS the data root. **30 keys ×
+> five real catalogs**, parity proven by the injection script, text-audit
+> rows + 8 locale shortenings. **THE NAMED BAND MOVE: 218,526 → 225,336
+> gzipped (+6,810)** — the posture screen + the run-mode section + 30 keys
+> × 5 locales, paid for knowingly.
+>
+> **W-5, THE MACHINE WITNESS** (`service_machine_witness`, `#[ignore]`, run
+> explicitly in three operator-gated legs; full receipts in
+> `plans/brain-shell/W5_MACHINE_WITNESS_2026-10-31.md`): leg 1 — the REAL
+> install edge against the operator's running kernel refused with the
+> holder named VERBATIM ("a kernel that answers as a Brain kernel, not
+> started by this app") and wrote NOTHING; leg 2 (operator-gated: the
+> operator's `com.brain.server` bootout'ed for the window) — the REAL
+> install under OUR label, **the belt on first boot under launchd (served
+> 1.29.38 == the tree-sealed 1.29.38)**, the mode laws on the REAL root
+> (root 0700, auth-token 0600, plist 0644), the app's real wire attaching
+> with the shared keychain bearer (`kind: "ok"`, never double-start), then
+> the switch B→A: `uninstalled`, the agent + plist named in removed[], the
+> data root OFFERED, the offered removal run, the machine as found; leg 3 —
+> the operator's service restored, **their plist byte-identical
+> (`9ff0064c…`) across every leg boundary**, 8765 held again. **Two
+> measured facts the witness itself found:** `PortHeld` is the
+> `ServiceError` variant — the DTO carries it as `refused` + `kind:
+> "portHeld"` (the witness first asserted the wrong shape and the REAL edge
+> corrected it); and `launchctl list` keeps a DYING, PID-LESS row for a
+> bootout'ed label for seconds (both labels, measured) — the registration
+> probe is `launchctl print`, which is what the idempotency step already
+> used, and the witness now uses it in both directions.
+>
+> **OWED, named:** `requiresApproval` + the OS dialog copy on a
+> real-identity build (rides MAS Phase 0); the Login-Items pane-toggle live
+> test (the virtualized row would not scroll under automation); the no-app
+> escape-hatch script (the residue law reversed — lands with the Tools
+> round's installer work); S-4's user-path negative controls + the offline
+> spctl toggle; the 18-pin count in the round record is 16 `#[test]` fns +
+> the two compile-shape witnesses (the honest count is recorded here).
+
 > **R142 "Fallback" (M3-d, 2026-10-26): the shell's chat stopped riding
 > `/recall` — a sent question now grounds, streams and finals over the chat
 > spine (`POST /chat/turns`), and the round's LAW CHANGE is D1: a named

@@ -8,11 +8,12 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use crate::service::{
     InstallDecision, InstallDto, LaunchctlResult, POSTURE_FILE, SERVICE_LABEL, ServiceError,
     ServicePaths, decide_install, enumerate_residue, install_with_paths, plist_xml,
-    remove_service_data, save_posture, service_command_spec, uninstall_with_paths,
+    remove_service_data, run_launchctl, save_posture, service_command_spec, uninstall_with_paths,
 };
 use crate::sidecar::{
     self, AUTH_FILE, ContractError, KernelState, LOG_FILE, Probe, ProbeOutcome, WaitOutcome,
@@ -638,4 +639,567 @@ fn install_dto_names_the_child_stop_fact() {
     let dto = InstallDto::refused(ServiceError::ConsentRefused);
     assert!(!dto.stopped_app_kernel);
     assert_eq!(dto.outcome, "refused");
+}
+
+// ── the machine witness (W-5) ──────────────────────────────────────────────
+//
+// The pins above are hermetic: temp dirs, canned edges. This witness is the
+// OTHER half — the REAL edges on a REAL machine, run explicitly, leg by leg,
+// with the operator's say-so at each gate. It proves what the pins cannot:
+// launchd actually bootstraps OUR label, the sealed sidecar actually serves
+// the port, and the operator's `com.brain.server` is byte-identical before,
+// between and after every act — the collision receipt bookending the whole
+// witness.
+//
+// The legs (the operator's windows, EXECUTION_PROMPT_TOOLS_DISTRIBUTION §0.4):
+//
+//   WITNESS_LEG=1  receipts + the collision leg. No operator act. With 8765
+//                  held by the operator's kernel, the REAL install edge
+//                  refuses PortHeld { holder }, names the holder, and writes
+//                  NOTHING (no plist, no root, no launchctl call).
+//   — operator: `launchctl bootout gui/<uid>/com.brain.server` —
+//   WITNESS_LEG=2  the happy path. REQUIRES 8765 free (the operator's
+//                  bootout IS the gate; a held port refuses leg 2 by name).
+//                  The REAL install → Installed, the belt (served == seal),
+//                  the mode laws, the attach receipt, then the switch B→A:
+//                  the REAL uninstall, the offered data root, the offered
+//                  removal — the machine left as found.
+//   — operator: `launchctl bootstrap gui/<uid> ~/Library/LaunchAgents/com.brain.server.plist` —
+//   WITNESS_LEG=3  the restore receipt: the operator's plist byte-identical,
+//                  8765 held again by their kernel, OUR label gone
+//                  everywhere.
+//
+// Consent: passed `true` explicitly — the witness runs BY the operator's
+// hand (the consent-before-storage LAW is pinned hermetically above; what
+// this witness adds is the machine). Every location below is in the named
+// write-set: OUR plist in the user's LaunchAgents, OUR service root under
+// the app's own data dir, the witness's seal record in a scratch dir. The
+// operator's label is READ (the hash, `launchctl list`) and never written.
+
+/// The recorded collision receipt baseline for the operator's plist —
+/// measured 2026-10-31 before any witness act (the round's STATE; the W-0
+/// evidence carried the same bytes). The witness refuses to run beside any
+/// OTHER com.brain.server.
+const OPERATOR_PLIST_BASELINE: &str =
+    "9ff0064c368ece5d4bec78168f2f2708877db9f764b6d0849cd3cb8709913cf0";
+const OPERATOR_LABEL: &str = "com.brain.server";
+/// The app's own identifier (tauri.conf.json) — the app_data_dir the real
+/// install resolves through `service_paths` on an AppHandle.
+const APP_IDENTIFIER: &str = "com.stewardmem.shell";
+
+/// `shasum -a 256` exec'd directly (argv only, no shell — the same source
+/// the §0.4 receipt names).
+fn shasum(path: &Path) -> Result<String, String> {
+    let output = std::process::Command::new("/usr/bin/shasum")
+        .args(["-a", "256"])
+        .arg(path)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_string())
+}
+
+/// `git -C <root> …`, exec'd directly. The seal record's truth fields.
+fn git(root: &Path, args: &[&str]) -> Result<String, String> {
+    let output = std::process::Command::new("/usr/bin/git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// The machine's uid, the same source `service::uid` execs.
+fn machine_uid() -> Result<u32, String> {
+    let output = std::process::Command::new("/usr/bin/id")
+        .arg("-u")
+        .output()
+        .map_err(|error| error.to_string())?;
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| "the uid was not a number".to_string())
+}
+
+fn launchctl_list() -> Result<String, String> {
+    let output = std::process::Command::new("/bin/launchctl")
+        .arg("list")
+        .output()
+        .map_err(|error| error.to_string())?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// The `launchctl list` line for one label: `PID\tStatus\tLabel`.
+fn list_line(list: &str, label: &str) -> Option<String> {
+    list.lines()
+        .find(|line| line.split_whitespace().nth(2) == Some(label))
+        .map(str::to_string)
+}
+
+/// The kernel's Cargo version — the sealer's source, read the sealer's way.
+fn cargo_kernel_version(root: &Path) -> Result<String, String> {
+    let text = fs::read_to_string(root.join("Cargo.toml")).map_err(|e| e.to_string())?;
+    let mut in_package = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_package = trimmed == "[package]";
+            continue;
+        }
+        if in_package && let Some(rest) = trimmed.strip_prefix("version = \"") {
+            let end = rest.find('"').ok_or("unterminated version")?;
+            return Ok(rest[..end].to_string());
+        }
+    }
+    Err("Cargo.toml [package] has no version".to_string())
+}
+
+/// The wire's x-api-version — the sealer's second source, read the same way.
+fn openapi_x_api_version(root: &Path) -> Result<String, String> {
+    let text = fs::read_to_string(root.join("openapi.yaml")).map_err(|e| e.to_string())?;
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("x-api-version: \"") {
+            let end = rest.find('"').ok_or("unterminated x-api-version")?;
+            return Ok(rest[..end].to_string());
+        }
+    }
+    Err("openapi.yaml has no x-api-version".to_string())
+}
+
+/// The REAL paths the service posture resolves on this machine: the user's
+/// LaunchAgents, the app's own data dir (the identifier at
+/// tauri.conf.json:5), the kernel binary this tree builds.
+fn witness_paths(home: &Path, sidecar: &Path, resource_dir: &Path) -> ServicePaths {
+    let app_dir = home
+        .join("Library/Application Support")
+        .join(APP_IDENTIFIER);
+    ServicePaths {
+        service_root: app_dir.join("service"),
+        launch_agents_dir: home.join("Library/LaunchAgents"),
+        config_dir: app_dir,
+        sidecar: sidecar.to_path_buf(),
+        resource_dir: resource_dir.to_path_buf(),
+    }
+}
+
+/// The collision receipt, asserted: the operator's plist must hash to the
+/// recorded baseline, or the witness refuses to run beside an unrecognized
+/// com.brain.server. Returns the live hash for the receipt.
+fn assert_operator_receipt(home: &Path) -> String {
+    let plist = home
+        .join("Library/LaunchAgents")
+        .join(format!("{OPERATOR_LABEL}.plist"));
+    let hash = shasum(&plist).expect("the operator's com.brain.server.plist must exist");
+    assert_eq!(
+        hash, OPERATOR_PLIST_BASELINE,
+        "the operator's plist is NOT the witnessed baseline — refusing to run beside an unrecognized com.brain.server (live {hash})"
+    );
+    hash
+}
+
+/// Our label must be UNREGISTERED from launchd: nothing under
+/// com.stewardmem.shell.service is installed before or after a witness leg.
+/// The registration check is `launchctl print` — the same probe the install's
+/// idempotency step uses — because `launchctl list` keeps a dying, pid-less
+/// row for a bootout'ed label for a few seconds (measured on this machine,
+/// for both labels); a retried print is the definitive registration fact.
+fn assert_our_label_absent(uid: u32) {
+    let domain = format!("gui/{uid}/{SERVICE_LABEL}");
+    for attempt in 0..5 {
+        let registered = std::process::Command::new("/bin/launchctl")
+            .args(["print", &domain])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(true);
+        if !registered {
+            return;
+        }
+        if attempt == 4 {
+            panic!(
+                "OUR label is still registered in launchd — the witness refuses to run over an existing install"
+            );
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// Our label must be REGISTERED (the installed state), quoted with its pid.
+fn assert_our_label_registered(uid: u32) -> String {
+    let domain = format!("gui/{uid}/{SERVICE_LABEL}");
+    let output = std::process::Command::new("/bin/launchctl")
+        .args(["print", &domain])
+        .output()
+        .expect("launchctl print");
+    assert!(
+        output.status.success(),
+        "our agent must be registered while installed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let list = launchctl_list().expect("launchctl list");
+    list_line(&list, SERVICE_LABEL).expect("the registered agent carries a pid in launchctl list")
+}
+
+/// The witness's own artifacts must be absent (the machine as found).
+fn assert_no_witness_artifacts(paths: &ServicePaths) {
+    assert!(
+        !paths.plist_path().exists(),
+        "our plist already exists — remove the stray install before witnessing"
+    );
+    assert!(
+        !paths.service_root.exists(),
+        "our service root already exists — remove the stray install before witnessing"
+    );
+}
+
+/// Seal the provenance record the belt reads, from the SAME sources the
+/// release sealer reads (Cargo.toml [package] version, openapi.yaml
+/// x-api-version, the tree state, the artifact bytes) — the truthful record
+/// for THIS tree and THIS binary, written into the witness's scratch
+/// resource dir. The release sealer writes ISO-8601 `built_at` and refuses a
+/// dirty tree; the witness records the epoch and the dirty bit truthfully —
+/// the belt reads only the two sealed versions.
+fn seal_the_witness_record(root: &Path, sidecar: &Path, resource_dir: &Path) -> String {
+    let kernel_version = cargo_kernel_version(root).expect("the kernel's Cargo version");
+    let x_api_version = openapi_x_api_version(root).expect("the wire's x-api-version");
+    assert_eq!(
+        kernel_version, x_api_version,
+        "version lockstep broken: Cargo.toml {kernel_version} != openapi.yaml {x_api_version}"
+    );
+    let commit = git(root, &["rev-parse", "HEAD"]).expect("git rev-parse");
+    let describe = git(root, &["describe", "--tags", "--always"]).expect("git describe");
+    let dirty = !git(root, &["status", "--porcelain"])
+        .expect("git status")
+        .is_empty();
+    let digest = shasum(sidecar).expect("the kernel binary must exist");
+    let size = fs::metadata(sidecar).expect("the kernel binary").len();
+    let record = serde_json::json!({
+        "schema": 1,
+        "kernel_commit": commit,
+        "kernel_describe": describe,
+        "kernel_version": kernel_version,
+        "x_api_version": x_api_version,
+        "source_dirty": dirty,
+        "built_at": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs(),
+        "artifacts": [{
+            "name": "brain-server",
+            "target": "arm64-apple-darwin",
+            "sha256": digest,
+            "size": size,
+            "archs": ["arm64"],
+        }],
+    });
+    let dir = resource_dir.join("binaries");
+    fs::create_dir_all(&dir).expect("the witness resource dir");
+    fs::write(
+        dir.join("SIDECAR_PROVENANCE.json"),
+        serde_json::to_string_pretty(&record).expect("the seal record serializes"),
+    )
+    .expect("the seal record writes");
+    x_api_version
+}
+
+fn real_probe() -> ProbeOutcome {
+    sidecar::probe(
+        sidecar::PORT,
+        Duration::from_millis(sidecar::PROBE_TIMEOUT_MS),
+    )
+}
+
+#[test]
+#[ignore = "the machine witness: run explicitly, one operator-gated leg at a time"]
+fn service_machine_witness() {
+    let leg = match std::env::var("WITNESS_LEG").as_deref() {
+        Ok("1") | Ok("2") | Ok("3") => std::env::var("WITNESS_LEG").expect("checked above"),
+        Ok(other) => panic!("WITNESS_LEG={other} is not a leg (1|2|3)"),
+        Err(_) => panic!(
+            "the machine witness runs BY LEG, operator-gated: WITNESS_LEG=1 \
+             (receipts + the collision leg; no operator act) → the operator \
+             bootouts com.brain.server → WITNESS_LEG=2 (the happy path: \
+             install, the belt, the mode laws, the attach, the B→A switch) → \
+             the operator re-bootstraps com.brain.server → WITNESS_LEG=3 \
+             (the restore receipt)"
+        ),
+    };
+    let home = PathBuf::from(std::env::var("HOME").expect("HOME"));
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("the repo root above shell/src-tauri")
+        .to_path_buf();
+    let sidecar_bin = repo_root.join("target/release/brain-server");
+    let resource_dir = std::env::temp_dir().join("w5-machine-witness");
+    let uid = machine_uid().expect("the machine uid");
+
+    match leg.as_str() {
+        "1" => leg_one(&home, &sidecar_bin, uid),
+        "2" => leg_two(&home, &repo_root, &sidecar_bin, &resource_dir, uid),
+        _ => leg_three(&home, uid),
+    }
+}
+
+/// LEG 1 — receipts first, then the collision leg: the REAL install edge
+/// against a port the operator's kernel holds. The refusal IS the proof.
+fn leg_one(home: &Path, sidecar_bin: &Path, uid: u32) {
+    println!("── LEG 1: receipts + the collision leg ──");
+    let hash = assert_operator_receipt(home);
+    println!("receipt: com.brain.server.plist sha256 = {hash}");
+    let list = launchctl_list().expect("launchctl list");
+    let line = list_line(&list, OPERATOR_LABEL)
+        .expect("the operator's label must be present in launchd for leg 1");
+    println!("receipt: launchctl list → {line}");
+    let outcome = real_probe();
+    assert!(
+        matches!(outcome, ProbeOutcome::Probe(_)),
+        "leg 1 witnesses a machine whose 8765 is held by the operator's Brain kernel; the probe saw {outcome:?}"
+    );
+    println!("receipt: the 8765 probe → {outcome:?}");
+    let paths = witness_paths(home, sidecar_bin, Path::new(""));
+    assert_no_witness_artifacts(&paths);
+    assert_our_label_absent(uid);
+
+    // The REAL edge: real probe, real wait, real token custody, real
+    // launchctl, real uid — a wrong step here would REALLY bootstrap. That
+    // is the point.
+    let state = KernelState::default();
+    let mut probe_once = real_probe;
+    let mut wait = |expected: &str| {
+        sidecar::wait_bounded(real_probe, expected, sidecar::WAIT_MS, sidecar::POLL_MS)
+    };
+    let dto = install_with_paths(
+        &paths,
+        &state,
+        true, // the operator's say-so: the witness runs by their hand
+        &mut probe_once,
+        &mut wait,
+        &mut sidecar::resolve_token,
+        &mut run_launchctl,
+        uid,
+    );
+    println!("the REAL install edge answered: {dto:?}");
+    // PortHeld { holder } is the ServiceError variant: the DTO carries it as
+    // the refused outcome with kind "portHeld" — the shape the hermetic pin
+    // and the wizard's copy both key on.
+    assert_eq!(dto.outcome, "refused", "dto: {dto:?}");
+    assert_eq!(dto.kind.as_deref(), Some("portHeld"), "dto: {dto:?}");
+    assert_eq!(
+        dto.holder.as_deref(),
+        Some("a kernel that answers as a Brain kernel, not started by this app"),
+        "the holder sentence must name what the probe found, verbatim"
+    );
+    assert!(!dto.stopped_app_kernel, "dto: {dto:?}");
+
+    // Nothing written: no plist, no service root, no launchd registration —
+    // and the operator's bytes untouched.
+    assert_no_witness_artifacts(&paths);
+    assert_our_label_absent(uid);
+    let after = assert_operator_receipt(home);
+    assert_eq!(hash, after, "the collision receipt must be byte-identical");
+
+    println!("LEG 1 COMPLETE — the refusal is the proof.");
+    println!(
+        "OPERATOR, for the happy-path window: launchctl bootout gui/{uid}/{OPERATOR_LABEL} \
+         — then re-run with WITNESS_LEG=2"
+    );
+}
+
+/// LEG 2 — the happy path (the operator's bootout is the gate), the belt,
+/// the mode laws, the attach receipt, and the switch B→A. The machine is
+/// left as found.
+fn leg_two(home: &Path, repo_root: &Path, sidecar_bin: &Path, resource_dir: &Path, uid: u32) {
+    println!("── LEG 2: the happy path + the switch B→A ──");
+    let hash = assert_operator_receipt(home);
+    println!(
+        "receipt: com.brain.server.plist sha256 = {hash} (the service is STOPPED, the bytes stay)"
+    );
+    let outcome = real_probe();
+    assert_eq!(
+        outcome,
+        ProbeOutcome::NotRunning,
+        "leg 2 requires 8765 FREE — the operator's bootout is the gate; the probe saw {outcome:?}"
+    );
+    let paths = witness_paths(home, sidecar_bin, resource_dir);
+    assert_no_witness_artifacts(&paths);
+    assert_our_label_absent(uid);
+
+    let sealed = seal_the_witness_record(repo_root, sidecar_bin, resource_dir);
+    println!(
+        "receipt: the seal, from the tree's own sources — x_api_version {sealed}, \
+         artifact {}",
+        sidecar_bin.display()
+    );
+
+    let state = KernelState::default();
+    let mut probe_once = real_probe;
+    let mut wait = |expected: &str| {
+        sidecar::wait_bounded(real_probe, expected, sidecar::WAIT_MS, sidecar::POLL_MS)
+    };
+    let dto = install_with_paths(
+        &paths,
+        &state,
+        true, // the operator's say-so: the witness runs by their hand
+        &mut probe_once,
+        &mut wait,
+        &mut sidecar::resolve_token,
+        &mut run_launchctl,
+        uid,
+    );
+    println!("the REAL install edge answered: {dto:?}");
+    assert_eq!(dto.outcome, "installed", "dto: {dto:?}");
+    assert_eq!(dto.service_label.as_deref(), Some(SERVICE_LABEL));
+    assert_eq!(
+        dto.plist_path.as_deref(),
+        Some(paths.plist_path().display().to_string()).as_deref()
+    );
+    // The belt: the SERVED version == the sealed provenance, both named.
+    assert_eq!(
+        dto.expected.as_deref(),
+        Some(sealed.as_str()),
+        "dto: {dto:?}"
+    );
+    assert_eq!(
+        dto.observed.as_deref(),
+        Some(sealed.as_str()),
+        "dto: {dto:?}"
+    );
+
+    // The mode laws, witnessed on the REAL root.
+    let root_mode = fs::metadata(&paths.service_root)
+        .expect("the service root")
+        .permissions()
+        .mode()
+        & 0o7777;
+    let auth_mode = fs::metadata(paths.auth_file())
+        .expect("the auth file")
+        .permissions()
+        .mode()
+        & 0o7777;
+    let plist_mode = fs::metadata(paths.plist_path())
+        .expect("the plist")
+        .permissions()
+        .mode()
+        & 0o7777;
+    println!(
+        "receipt: ls -le — {} mode {:o} · {} mode {:o} · {} mode {:o}",
+        paths.service_root.display(),
+        root_mode,
+        paths.auth_file().display(),
+        auth_mode,
+        paths.plist_path().display(),
+        plist_mode,
+    );
+    assert_eq!(root_mode, 0o700, "the service root is 0700");
+    assert_eq!(auth_mode, 0o600, "the auth file is 0600");
+    assert_eq!(
+        plist_mode, 0o644,
+        "the plist follows the directory convention"
+    );
+
+    // Attach, never double-start: the app's own wire — origin + the SHARED
+    // bearer from token custody — reaches the launchd-served kernel, and
+    // launchd holds exactly ONE brain-server agent (ours; the operator's is
+    // bootout'ed, and no app child exists to double-start).
+    let wire = sidecar::wire_status(sidecar::PORT);
+    println!("receipt: the wire, aimed at the served kernel → {wire:?}");
+    assert_eq!(
+        wire.kind, "ok",
+        "the app's wire must reach the launchd-served kernel with the shared bearer"
+    );
+    let served = real_probe();
+    assert!(
+        matches!(served, ProbeOutcome::Probe(_)),
+        "the served kernel answers as a Brain kernel; the probe saw {served:?}"
+    );
+    println!("receipt: the served kernel → {served:?}");
+    let ours = assert_our_label_registered(uid);
+    println!("receipt: launchctl list → {ours}");
+    let list = launchctl_list().expect("launchctl list");
+    assert!(list_line(&list, OPERATOR_LABEL).is_none());
+
+    // The switch B→A: the REAL uninstall. The removal is enumerated, the
+    // data root is OFFERED — and then the offered act runs, named, so the
+    // machine is left as found.
+    let dto = uninstall_with_paths(&paths, &mut run_launchctl, uid);
+    println!("the REAL uninstall edge answered: {dto:?}");
+    assert_eq!(dto.outcome, "uninstalled", "dto: {dto:?}");
+    assert_eq!(dto.removed.len(), 2, "dto: {dto:?}");
+    assert!(dto.removed[0].contains(SERVICE_LABEL), "dto: {dto:?}");
+    assert_eq!(
+        dto.removed[1],
+        paths.plist_path().display().to_string(),
+        "dto: {dto:?}"
+    );
+    assert_eq!(
+        dto.offered,
+        vec![paths.service_root.display().to_string()],
+        "the offer names the exact data root"
+    );
+    assert_eq!(
+        dto.residue,
+        vec![paths.service_root.display().to_string()],
+        "the residue enumeration names exactly the offered root"
+    );
+    remove_service_data(&paths.service_root).expect("the offered removal, named and bounded");
+    assert!(
+        enumerate_residue(&paths).is_empty(),
+        "after the offered removal the fixed enumeration is empty"
+    );
+
+    // The machine as found: no agent, no plist, no root, a free port — and
+    // the operator's bytes untouched through the WHOLE window.
+    assert_our_label_absent(uid);
+    assert_no_witness_artifacts(&paths);
+    let outcome = real_probe();
+    assert_eq!(outcome, ProbeOutcome::NotRunning, "the port is free again");
+    let after = assert_operator_receipt(home);
+    assert_eq!(
+        hash, after,
+        "the collision receipt must be byte-identical across the whole happy-path window"
+    );
+
+    println!("LEG 2 COMPLETE — the machine is as found.");
+    println!(
+        "OPERATOR, to restore: launchctl bootstrap gui/{uid} ~/Library/LaunchAgents/{OPERATOR_LABEL}.plist \
+         — then re-run with WITNESS_LEG=3"
+    );
+}
+
+/// LEG 3 — the restore receipt: the operator's service is back, their bytes
+/// byte-identical, our label gone everywhere. The restore IS part of the
+/// evidence.
+fn leg_three(home: &Path, uid: u32) {
+    println!("── LEG 3: the restore receipt ──");
+    let hash = assert_operator_receipt(home);
+    println!("receipt: com.brain.server.plist sha256 = {hash} — BYTE-IDENTICAL to the baseline");
+    let list = launchctl_list().expect("launchctl list");
+    let line = list_line(&list, OPERATOR_LABEL)
+        .expect("the operator's label must be back in launchd after the restore");
+    println!("receipt: launchctl list → {line}");
+    let outcome = real_probe();
+    assert!(
+        matches!(outcome, ProbeOutcome::Probe(_)),
+        "8765 must be held again by the operator's Brain kernel; the probe saw {outcome:?}"
+    );
+    println!("receipt: the 8765 probe → {outcome:?}");
+    assert_our_label_absent(uid);
+    let paths = witness_paths(home, Path::new(""), Path::new(""));
+    assert_no_witness_artifacts(&paths);
+
+    println!("WITNESS CLOSED — the machine is as found; every receipt is in the round record.");
+    println!("(uid context for the operator's commands: gui/{uid})");
 }
